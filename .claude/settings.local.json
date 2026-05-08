@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"C:\\\\Users\\\\monkeylicker\\\\Desktop\\\\JoallaBonusStages-main\")",
+      "Bash(ls \"C:\\\\Users\\\\monkeylicker\\\\Desktop\\\\BBS\")",
+      "Bash(ls \"C:\\\\Users\\\\monkeylicker\\\\Desktop\\\\Work\\\\Baby Steps Stuff\\\\assripnew\\\\BabyStepsRetail\\\\ExportedProject\")",
+      "Bash(grep -v \"\\\\.meta$\")",
+      "Bash(find \"C:\\\\Users\\\\monkeylicker\\\\Desktop\\\\Work\\\\Baby Steps Stuff\\\\assripnew\\\\BabyStepsRetail\" -maxdepth 4 -name \"catalog*.json\" 2>/dev/null | head -20)",
+      "Bash(grep -E \"\\\\.prefab$\")",
+      "Bash(python3 -c ' *)",
+      "Bash(cat \"/mnt/c/Users/monkeylicker/source/repos/BabyStepsQuickSave/BabyStepsQuickSave/PropPalette.cs\")",
+      "Bash(powershell.exe -Command \"Get-Content 'C:\\\\Users\\\\monkeylicker\\\\source\\\\repos\\\\BabyStepsQuickSave\\\\BabyStepsQuickSave\\\\PropPalette.cs'\")",
+      "Bash(powershell.exe -Command ' *)",
+      "Bash(Select-String '.')",
+      "Bash(n\\\\\")",
+      "Bash('$count++')",
+      "Bash(powershell.exe -NonInteractive -Command ' *)",
+      "Bash(find /mnt/c/Users/monkeylicker/source/repos/BabyStepsQuickSave -maxdepth 3 | sort)",
+      "PowerShell(Rename-Item \"C:\\\\Users\\\\monkeylicker\\\\source\\\\repos\\\\BabyStepsQuickSave\\\\BabyStepsQuickSave\\\\BabyStepsQuickSave.csproj\" \"BabyBlocks.csproj\")",
+      "PowerShell(Rename-Item \"C:\\\\Users\\\\monkeylicker\\\\source\\\\repos\\\\BabyStepsQuickSave\\\\BabyStepsQuickSave\" \"BabyBlocks\")"
+    ]
+  }
+}
