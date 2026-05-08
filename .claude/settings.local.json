@@ -17,7 +17,16 @@
       "Bash(powershell.exe -NonInteractive -Command ' *)",
       "Bash(find /mnt/c/Users/monkeylicker/source/repos/BabyStepsQuickSave -maxdepth 3 | sort)",
       "PowerShell(Rename-Item \"C:\\\\Users\\\\monkeylicker\\\\source\\\\repos\\\\BabyStepsQuickSave\\\\BabyStepsQuickSave\\\\BabyStepsQuickSave.csproj\" \"BabyBlocks.csproj\")",
-      "PowerShell(Rename-Item \"C:\\\\Users\\\\monkeylicker\\\\source\\\\repos\\\\BabyStepsQuickSave\\\\BabyStepsQuickSave\" \"BabyBlocks\")"
+      "PowerShell(Rename-Item \"C:\\\\Users\\\\monkeylicker\\\\source\\\\repos\\\\BabyStepsQuickSave\\\\BabyStepsQuickSave\" \"BabyBlocks\")",
+      "Bash(dotnet build *)",
+      "Bash(ls \"C:\\\\Program Files \\(x86\\)\\\\Steam\\\\steamapps\\\\common\\\\Baby Steps\\\\MelonLoader\\\\Il2CppAssemblies\\\\\" | Select-String -i \"scene\")",
+      "PowerShell(Get-ChildItem \"C:\\\\Program Files \\(x86\\)\\\\Steam\\\\steamapps\\\\common\\\\Baby Steps\\\\MelonLoader\\\\Il2CppAssemblies\\\\\" | Where-Object { $_.Name -match -join\\(\"scene\",\"manag\"\\) } | Select-Object Name)",
+      "Bash(awk -F: '$1 > 42694 && $1 < 46000')",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Program Files \\(x86\\)\\\\Steam\\\\steamapps\\\\common\\\\Baby Steps\\\\MelonLoader\\\\Il2CppAssemblies\\\\Il2CppGPUInstancer.dll\"\\); $text = [System.Text.Encoding]::ASCII.GetString\\($bytes\\); $idx = $text.IndexOf\\(\"GPUInstancer\"\\); Write-Host \"First occurrence at: $idx\"; if\\($idx -ge 0\\) { Write-Host $text.Substring\\([Math]::Max\\(0,$idx-20\\), 80\\) })",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Program Files \\(x86\\)\\\\Steam\\\\steamapps\\\\common\\\\Baby Steps\\\\MelonLoader\\\\Il2CppAssemblies\\\\Il2CppGPUInstancer.dll\"\\); $text = [System.Text.Encoding]::ASCII.GetString\\($bytes\\); $matches2 = [System.Text.RegularExpressions.Regex]::Matches\\($text, 'GPUInstancer\\\\b'\\); Write-Host \"Count: $\\($matches2.Count\\)\"; # Check context around first few for namespace $matches2 | Select-Object -First 5 | ForEach-Object { Write-Host \"--- at $\\($_.Index\\)\"; Write-Host $text.Substring\\([Math]::Max\\(0,$_.Index-30\\), 80\\) })",
+      "Bash(powershell -Command ' *)",
+      "Bash(Get-ChildItem \"C:\\\\Program Files \\(x86\\)\\\\Steam\\\\steamapps\\\\common\\\\\" -ErrorAction SilentlyContinue | Select-Object Name)",
+      "Bash(cat \"C:\\\\Users\\\\MONKEY~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-monkeylicker-source-repos\\\\BabyBlocks\\\\6d12cc84-cb9d-475b-9299-6b38eb11fa27\\\\tasks\\\\bbw4tqdrv.output\" 2>/dev/null || echo \"File not ready yet\")"
     ]
   }
 }

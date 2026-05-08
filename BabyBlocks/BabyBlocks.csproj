@@ -691,6 +691,7 @@
 		<Compile Include="LevelEditorHistory.cs" />
 		<Compile Include="LevelEditorManager.cs" />
 		<Compile Include="LevelEditor.cs" />
+		<Compile Include="SceneHierarchyScanner.cs" />
 	</ItemGroup>
 
 	<ItemGroup>

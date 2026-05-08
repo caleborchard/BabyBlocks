@@ -61,8 +61,12 @@ namespace BabyBlocks
 
                 // MeshCollider on the child so raycasts hit exact mesh geometry.
                 // Non-convex MeshColliders are fine here since we have no Rigidbody.
-                var mc = child.AddComponent<MeshCollider>();
-                mc.sharedMesh = part.mesh;
+                // Skip collider for GPUI props — visual test only for now.
+                if (!info.IsGpui)
+                {
+                    var mc = child.AddComponent<MeshCollider>();
+                    mc.sharedMesh = part.mesh;
+                }
             }
 
             var leo = root.AddComponent<LevelEditorObject>();

@@ -22,6 +22,8 @@ namespace BabyBlocks
             ClassInjector.RegisterTypeInIl2Cpp<GizmoHandle>();
 
             new HarmonyLib.Harmony("BabyBlocks.Patches").PatchAll();
+
+            SceneHierarchyScanner.Init();
         }
 
         public override void OnUpdate()
@@ -64,6 +66,10 @@ namespace BabyBlocks
             // Level editor input — only runs in cursor mode.
             if (flyCamActive && cursorMode)
                 LevelEditor.Update();
+
+            // Scene hierarchy scanner — available any time the freecam is active.
+            if (flyCamActive)
+                SceneHierarchyScanner.OnUpdate();
         }
 
         public override void OnGUI()
@@ -92,6 +98,7 @@ namespace BabyBlocks
                 player.gameObject.SetActive(false);
                 player.pm.SwitchToDisabledMode();
                 LevelEditor.EnsureManager();
+                PropLibrary.ScanGpuiProps();
             }
             else
             {

@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using Il2Cpp;
 using MelonLoader;
 using UnityEngine;
 using UnityEngine.AddressableAssets;
@@ -26,6 +27,9 @@ namespace BabyBlocks
         public List<PropMeshPart> parts     = new();
         public bool               isLoaded;
         public bool               isInvalid;
+
+        public int  gpuiIndex  = -1;
+        public bool IsGpui     => gpuiIndex >= 0;
 
         public bool HasMesh    => parts != null && parts.Count > 0;
         public bool IsPrimitive => id.StartsWith("primitive://", StringComparison.Ordinal);
@@ -177,6 +181,219 @@ namespace BabyBlocks
         {
             _filtered.Clear();
             foreach (var p in _all) _filtered.Add(p);
+        }
+
+        // ── GPUI prop scan ───────────────────────────────────────────────────
+
+        // Called once BestRegionLoader is live. Identifies GPUI _player prefabs in
+        // loadedProps (no MeshRenderer, only MeshCollider), then for each one looks
+        // up the matching visual prefab in the addressable catalog (same name minus
+        // "_player" suffix, under Assets/_Props/), loads it via Addressables to get
+        // real meshes + materials, and falls back to collider-only if that fails.
+        public static void ScanGpuiProps()
+        {
+            var brl = BestRegionLoader.me;
+            if (brl == null)
+            {
+                MelonLogger.Warning("[PropLibrary] BestRegionLoader not ready — call ScanGpuiProps later.");
+                return;
+            }
+
+            var loaded = brl.loadedProps;
+            if (loaded == null || loaded.Length == 0)
+            {
+                MelonLogger.Warning("[PropLibrary] loadedProps is null/empty.");
+                return;
+            }
+
+            // Build basename → addressable path lookup from the catalog.
+            // Visual GPUI props live under Assets/_Props/ without the _player suffix.
+            var visualLookup = BuildGpuiVisualLookup();
+            MelonLogger.Msg($"[PropLibrary] Visual prop lookup: {visualLookup.Count} entries.");
+
+            int insertAt = PrimitiveNames.Length;
+            int added    = 0;
+            int skipped  = 0;
+            int gpuiIdx  = 0;
+
+            for (int i = 0; i < loaded.Length; i++)
+            {
+                var prefabGO = loaded[i];
+                if (prefabGO == null) continue;
+
+                bool hasRenderer = prefabGO.GetComponentInChildren<MeshRenderer>() != null
+                                || prefabGO.GetComponentInChildren<SkinnedMeshRenderer>() != null;
+                if (hasRenderer) continue;
+
+                bool hasCollider = prefabGO.GetComponentInChildren<MeshCollider>() != null;
+                if (!hasCollider) continue;
+
+                int    gi     = gpuiIdx++;
+                string gpuiId = $"gpui://{gi}";
+                if (_byId.ContainsKey(gpuiId)) { skipped++; continue; }
+
+                string baseName = prefabGO.name
+                    .Replace("(Clone)", "")
+                    .Replace("_player", "")
+                    .Replace("_Player", "")
+                    .Trim();
+
+                var info = new PropInfo(gpuiId, baseName);
+                info.gpuiIndex = gi;
+
+                // Try to load the visual prefab (has mesh + materials).
+                if (visualLookup.TryGetValue(baseName, out string visualPath))
+                {
+                    MelonLogger.Msg($"[PropLibrary] GPUI[{gi}] \"{baseName}\" → loading \"{visualPath}\"");
+                    try
+                    {
+                        var handle   = Addressables.LoadAssetAsync<GameObject>(visualPath);
+                        var visualGO = handle.WaitForCompletion();
+                        if (visualGO != null)
+                        {
+                            var instance = UnityEngine.Object.Instantiate(
+                                visualGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
+                            ExtractParts(instance, info);
+                            if (!info.HasMesh)
+                            {
+                                MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] visual prefab loaded but ExtractParts found no mesh — dumping hierarchy:");
+                                LogHierarchy(instance);
+                            }
+                            UnityEngine.Object.Destroy(instance);
+                        }
+                        else
+                        {
+                            MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] Addressables returned null for \"{visualPath}\"");
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] visual load failed: {e.Message}");
+                    }
+                }
+                else
+                {
+                    MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] \"{baseName}\" — no visual path in catalog, using collider fallback");
+                }
+
+                // Fall back to collision-mesh extraction if visual load didn't yield parts.
+                if (!info.HasMesh)
+                {
+                    var instance = UnityEngine.Object.Instantiate(
+                        prefabGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
+                    try   { ExtractPartsFromColliders(instance, info); }
+                    catch (Exception e) { MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] collider extract failed: {e.Message}"); }
+                    UnityEngine.Object.Destroy(instance);
+                }
+
+                info.isLoaded  = true;
+                info.isInvalid = !info.HasMesh;
+
+                if (info.HasMesh)
+                {
+                    _all.Insert(insertAt, info);
+                    _byId[gpuiId] = info;
+                    insertAt++;
+                    added++;
+                    MelonLogger.Msg($"[PropLibrary] GPUI[{gi}] \"{baseName}\" — {info.parts.Count} part(s)");
+                }
+                else
+                {
+                    skipped++;
+                    MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] \"{baseName}\" — no mesh found, skipping");
+                }
+            }
+
+            BuildFiltered();
+            MelonLogger.Msg($"[PropLibrary] GPUI scan complete: {added} added, {skipped} skipped.");
+        }
+
+        // Scans the addressable catalog for visual prop prefabs under Assets/_Props/
+        // and returns a dictionary from basename (no extension, no _player suffix) to
+        // the full addressable path.
+        static Dictionary<string, string> BuildGpuiVisualLookup()
+        {
+            var lookup = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
+            if (!File.Exists(catalogPath)) return lookup;
+
+            try
+            {
+                string json = File.ReadAllText(catalogPath);
+                AddVisualPathsToLookup(json, lookup);
+
+                int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
+                if (kdIdx >= 0)
+                {
+                    int valStart = json.IndexOf('"', kdIdx + 17) + 1;
+                    int valEnd   = json.IndexOf('"', valStart);
+                    if (valStart > 0 && valEnd > valStart)
+                    {
+                        byte[] bytes   = Convert.FromBase64String(json.Substring(valStart, valEnd - valStart));
+                        string decoded = Encoding.UTF8.GetString(bytes);
+                        AddVisualPathsToLookup(decoded, lookup);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[PropLibrary] GPUI visual lookup build failed: {e.Message}");
+            }
+
+            return lookup;
+        }
+
+        static void AddVisualPathsToLookup(string text, Dictionary<string, string> lookup)
+        {
+            int i = 0;
+            while (i < text.Length)
+            {
+                int start = text.IndexOf("Assets/_Props/", i, StringComparison.Ordinal);
+                if (start < 0) break;
+                int end = start;
+                while (end < text.Length)
+                {
+                    char c = text[end];
+                    if (c == '"' || c == '\0' || c < ' ') break;
+                    end++;
+                }
+                i = end + 1;
+                string path = text.Substring(start, end - start);
+                if (!path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)) continue;
+
+                string name = Path.GetFileNameWithoutExtension(path);
+                // Skip _player collision prefabs and lower LOD variants.
+                if (name.EndsWith("_player", StringComparison.OrdinalIgnoreCase)) continue;
+                if (name.EndsWith("_Player", StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsLowerLodVariant(path)) continue;
+
+                if (!lookup.ContainsKey(name))
+                    lookup[name] = path;
+            }
+        }
+
+        // _player prefabs have MeshColliders but no MeshRenderers; extract their
+        // shared meshes so we have geometry to display in the level editor.
+        // Materials will be null (renders grey) until GPUI rendering is wired up.
+        static void ExtractPartsFromColliders(GameObject root, PropInfo info)
+        {
+            var colliders = new List<MeshCollider>();
+            CollectMeshColliders(root.transform, colliders);
+
+            var rootT = root.transform;
+            foreach (var mc in colliders)
+            {
+                if (mc.sharedMesh == null) continue;
+                AddPart(info, mc.sharedMesh, null, mc.transform, rootT);
+            }
+        }
+
+        static void CollectMeshColliders(Transform t, List<MeshCollider> result)
+        {
+            var mc = t.GetComponent<MeshCollider>();
+            if (mc != null && mc.sharedMesh != null) result.Add(mc);
+            for (int i = 0; i < t.childCount; i++)
+                CollectMeshColliders(t.GetChild(i), result);
         }
 
         // ── Addressable prop loading ─────────────────────────────────────────
