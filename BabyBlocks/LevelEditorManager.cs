@@ -28,9 +28,14 @@ namespace BabyBlocks
             if (!PropLibrary.IsInitialized) PropLibrary.Init();
         }
 
-        // Spawns a game asset prop. Each mesh part becomes a child GameObject with its own
-        // MeshCollider so collision uses exact mesh geometry for every part.
-        // Multi-part models (e.g. CreepDoll) are grouped under one root LevelEditorObject.
+        // Spawns a game asset prop.
+        //
+        // GPUI props with a pool template (rocks, roots, trees, etc.) are spawned by
+        // cloning the pre-instantiated pool object, which preserves MicroSplatRockObject
+        // and any other component-driven rendering, giving correct materials automatically.
+        //
+        // Other props (wooden planks, beams, etc.) build child GameObjects from
+        // PropMeshPart data as before.  Each part gets its own MeshCollider.
         public LevelEditorObject SpawnFromPropInfo(PropInfo info, Vector3 position)
         {
             PropLibrary.LoadPropData(info);
@@ -40,6 +45,7 @@ namespace BabyBlocks
                 return null;
             }
 
+            // ── Mesh-part path ───────────────────────────────────────────────
             var root = new GameObject($"LEO_{info.displayName}");
             root.transform.position = position;
             root.layer = PropLayer;
@@ -59,14 +65,10 @@ namespace BabyBlocks
                 var mr = child.AddComponent<MeshRenderer>();
                 if (part.materials != null) mr.sharedMaterials = part.materials;
 
-                // MeshCollider on the child so raycasts hit exact mesh geometry.
-                // Non-convex MeshColliders are fine here since we have no Rigidbody.
-                // Skip collider for GPUI props — visual test only for now.
-                if (!info.IsGpui)
-                {
-                    var mc = child.AddComponent<MeshCollider>();
-                    mc.sharedMesh = part.mesh;
-                }
+                // MeshCollider on every part so raycasts and the player collide with
+                // placed props.  Non-convex is fine — no Rigidbody on these objects.
+                var mc = child.AddComponent<MeshCollider>();
+                mc.sharedMesh = part.mesh;
             }
 
             var leo = root.AddComponent<LevelEditorObject>();
@@ -74,6 +76,14 @@ namespace BabyBlocks
             leo.addressableKey = info.id;
             _objects.Add(leo);
             return leo;
+        }
+
+        // Sets the layer on a GameObject and all of its descendants.
+        static void SetLayerRecursive(GameObject go, int layer)
+        {
+            go.layer = layer;
+            for (int i = 0; i < go.transform.childCount; i++)
+                SetLayerRecursive(go.transform.GetChild(i).gameObject, layer);
         }
 
         public LevelEditorObject SpawnPrimitive(PrimitiveType type, Vector3 position)
