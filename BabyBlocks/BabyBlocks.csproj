@@ -686,6 +686,7 @@
 		<Compile Include="Core.cs" />
 		<Compile Include="Components.cs" />
 		<Compile Include="PropLibrary.cs" />
+		<Compile Include="PropMetadataPanel.cs" />
 		<Compile Include="GizmoRenderer.cs" />
 		<Compile Include="PropPalette.cs" />
 		<Compile Include="LevelEditorHistory.cs" />

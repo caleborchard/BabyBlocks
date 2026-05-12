@@ -31,9 +31,13 @@ namespace BabyBlocks
         static readonly Vector3 TipScale      = new(0.14f, 0.20f, 0.14f);
         static readonly Vector3 ScaleTipPos   = new(0f, 0.55f, 0f);
         static readonly Vector3 ScaleTipScale = new(0.16f, 0.16f, 0.16f);
+        static readonly float PlaneSizeMove   = 0.2625f;
+        static readonly float PlaneSizeScale  = 0.30f;
+        static readonly float PlaneThickness  = 0.03f;
 
         static Mesh _shaftMesh, _coneTipMesh, _cubeTipMesh, _sphereMesh, _ringMesh;
         static Material[] _mats, _hoverMats;
+        static Material[] _planeMats, _planeHoverMats;
         static Material _freeMat, _freeHoverMat;
         static Material _outlineMat, _outlineDepthMat;
         // Reversed-winding meshes cached by source mesh to support multi-part outlines.
@@ -41,8 +45,23 @@ namespace BabyBlocks
 
         static GameObject _root, _arrowHandles, _ringHandles;
         static Camera _outlineCam, _overlayCam;
+        static Vector3 _pivotPos;
+        static bool _pivotOverrideActive;
+        static Vector3 _pivotOverride;
 
         public static bool IsReady => _root != null;
+        public static Vector3 PivotPosition => _pivotPos;
+
+        public static void SetPivotOverride(Vector3 pivot)
+        {
+            _pivotOverrideActive = true;
+            _pivotOverride = pivot;
+        }
+
+        public static void ClearPivotOverride()
+        {
+            _pivotOverrideActive = false;
+        }
 
         public static void Init()
         {
@@ -53,21 +72,23 @@ namespace BabyBlocks
             _overlayCam = BuildCam(100f);
         }
 
-        public static void Sync(LevelEditorObject selected, LevelEditor.ToolMode tool, Camera mainCam)
+        public static void Sync(IReadOnlyList<LevelEditorObject> selection, LevelEditorObject primary,
+            LevelEditor.ToolMode tool, Camera mainCam)
         {
             if (_root == null) return;
-            bool visible = selected != null;
+            bool visible = selection != null && selection.Count > 0;
             _root.SetActive(visible);
             if (_outlineCam != null) _outlineCam.enabled = visible;
             if (_overlayCam != null) _overlayCam.enabled = visible;
             if (!visible) return;
 
-            _root.transform.position = selected.transform.position;
+            _pivotPos = _pivotOverrideActive ? _pivotOverride : GetSelectionBoundsCenter(selection);
+            _root.transform.position = _pivotPos;
             _root.transform.rotation = (tool == LevelEditor.ToolMode.Scale)
-                ? selected.transform.rotation
+                ? (primary != null ? primary.transform.rotation : Quaternion.identity)
                 : Quaternion.identity;
             float dist = Vector3.Distance(mainCam.transform.position, _root.transform.position);
-            _root.transform.localScale = Vector3.one * Mathf.Max(dist * 0.07f, 1.5f);
+            _root.transform.localScale = Vector3.one * Mathf.Max(dist * 0.14f, 0.02f);
 
             bool rotating = tool == LevelEditor.ToolMode.Rotate;
             if (_arrowHandles != null) _arrowHandles.SetActive(!rotating);
@@ -135,6 +156,13 @@ namespace BabyBlocks
             var  tipMesh   = scaleMode ? _cubeTipMesh  : _coneTipMesh;
             var  tipPos    = scaleMode ? ScaleTipPos   : TipPos;
             var  tipScale  = scaleMode ? ScaleTipScale : TipScale;
+            var  planeSize  = scaleMode ? PlaneSizeScale : PlaneSizeMove;
+            var  planePosXY = new Vector3(planeSize * 0.5f, planeSize * 0.5f, 0f);
+            var  planePosYZ = new Vector3(0f, planeSize * 0.5f, -planeSize * 0.5f);
+            var  planePosXZ = new Vector3(planeSize * 0.5f, 0f, -planeSize * 0.5f);
+            var  planeScaleXY = new Vector3(planeSize, planeSize, PlaneThickness);
+            var  planeScaleYZ = new Vector3(PlaneThickness, planeSize, planeSize);
+            var  planeScaleXZ = new Vector3(planeSize, PlaneThickness, planeSize);
 
             var rootRot = _root.transform.rotation;
             for (int i = 0; i < 3; i++)
@@ -151,38 +179,64 @@ namespace BabyBlocks
                     mat, Layer, _overlayCam);
             }
 
-            var sphereMat = (hoveredAxis == 3 && _freeHoverMat != null) ? _freeHoverMat : _freeMat;
-            if (sphereMat != null)
-                Graphics.DrawMesh(_sphereMesh,
-                    Matrix4x4.TRS(origin, Quaternion.identity, Vector3.one * 0.22f * s),
-                    sphereMat, Layer, _overlayCam);
+            var freeMat = (hoveredAxis == 3 && _freeHoverMat != null) ? _freeHoverMat : _freeMat;
+            var freeMesh = scaleMode ? _cubeTipMesh : _sphereMesh;
+            var freeRot = scaleMode ? rootRot : Quaternion.identity;
+            if (freeMat != null)
+                Graphics.DrawMesh(freeMesh,
+                    Matrix4x4.TRS(origin, freeRot, Vector3.one * 0.22f * s),
+                    freeMat, Layer, _overlayCam);
+
+            if (_planeMats != null && _planeHoverMats != null)
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    int axisIndex = 4 + i;
+                    var mat = (hoveredAxis == axisIndex) ? _planeHoverMats[i] : _planeMats[i];
+                    if (mat == null) continue;
+
+                    Vector3 localPos  = i == 0 ? planePosXY : i == 1 ? planePosYZ : planePosXZ;
+                    Vector3 localSize = i == 0 ? planeScaleXY : i == 1 ? planeScaleYZ : planeScaleXZ;
+                    var pos = origin + rootRot * (localPos * s);
+
+                    Graphics.DrawMesh(_cubeTipMesh,
+                        Matrix4x4.TRS(pos, rootRot, localSize * s),
+                        mat, Layer, _overlayCam);
+                }
+            }
         }
 
         // Outline is submitted to _outlineCam (depth 99, fresh depth buffer) so it always
         // renders over scene geometry. The depth-write mask stamps the selected object's
         // silhouette first so the ring only appears at the edge, not on the object's face.
         // Handles both single-mesh (MeshFilter on root) and multi-part (children) objects.
-        public static void DrawOutline(LevelEditorObject selected)
+        public static void DrawOutline(IReadOnlyList<LevelEditorObject> selection)
         {
-            if (selected == null || _outlineMat == null || _outlineCam == null) return;
+            if (selection == null || selection.Count == 0 || _outlineMat == null || _outlineCam == null) return;
 
             var cam = Camera.main;
             if (cam == null) return;
 
-            // Root MeshFilter covers primitives and legacy single-part props.
-            var rootMf = selected.GetComponent<MeshFilter>();
-            if (rootMf != null)
+            for (int s = 0; s < selection.Count; s++)
             {
-                DrawMeshOutline(rootMf.sharedMesh, selected.transform, cam);
-                return;
-            }
+                var selected = selection[s];
+                if (selected == null) continue;
 
-            // Multi-part: draw an outline for every child MeshFilter.
-            // Use index-based loop to avoid any IL2Cpp foreach compatibility issues.
-            var childMfs = selected.GetComponentsInChildren<MeshFilter>();
-            if (childMfs == null) return;
-            for (int i = 0; i < childMfs.Length; i++)
-                if (childMfs[i] != null) DrawMeshOutline(childMfs[i].sharedMesh, childMfs[i].transform, cam);
+                // Root MeshFilter covers primitives and legacy single-part props.
+                var rootMf = selected.GetComponent<MeshFilter>();
+                if (rootMf != null)
+                {
+                    DrawMeshOutline(rootMf.sharedMesh, selected.transform, cam);
+                    continue;
+                }
+
+                // Multi-part: draw an outline for every child MeshFilter.
+                // Use index-based loop to avoid any IL2Cpp foreach compatibility issues.
+                var childMfs = selected.GetComponentsInChildren<MeshFilter>();
+                if (childMfs == null) continue;
+                for (int i = 0; i < childMfs.Length; i++)
+                    if (childMfs[i] != null) DrawMeshOutline(childMfs[i].sharedMesh, childMfs[i].transform, cam);
+            }
         }
 
         static void DrawMeshOutline(Mesh srcMesh, Transform t, Camera cam)
@@ -241,6 +295,20 @@ namespace BabyBlocks
 
             _freeMat      = MakeGizmoMat(shader, new Color(0.72f, 0.72f, 0.72f), GizmoQueue);
             _freeHoverMat = MakeGizmoMat(shader, Color.white, GizmoQueue);
+
+            var planeColors = new Color[]
+            {
+                axisColors[2], // XY -> blue (Z)
+                axisColors[0], // YZ -> red (X)
+                axisColors[1], // XZ -> green (Y)
+            };
+            _planeMats = new Material[3];
+            _planeHoverMats = new Material[3];
+            for (int i = 0; i < 3; i++)
+            {
+                _planeMats[i] = MakeGizmoMat(shader, planeColors[i], GizmoQueue);
+                _planeHoverMats[i] = MakeGizmoMat(shader, Color.Lerp(planeColors[i], Color.white, 0.45f), GizmoQueue);
+            }
 
             var outlineColor = new Color(1f, 0.85f, 0.1f, 1f);
 
@@ -318,6 +386,23 @@ namespace BabyBlocks
             freeCol.layer = Layer;
             freeCol.AddComponent<SphereCollider>();
             freeCol.AddComponent<GizmoHandle>().axisIndex = 3;
+
+            var planePosXY = new Vector3(PlaneSizeMove * 0.5f, PlaneSizeMove * 0.5f, 0f);
+            var planePosYZ = new Vector3(0f, PlaneSizeMove * 0.5f, -PlaneSizeMove * 0.5f);
+            var planePosXZ = new Vector3(PlaneSizeMove * 0.5f, 0f, -PlaneSizeMove * 0.5f);
+            var planeScaleXY = new Vector3(PlaneSizeMove, PlaneSizeMove, PlaneThickness);
+            var planeScaleYZ = new Vector3(PlaneThickness, PlaneSizeMove, PlaneSizeMove);
+            var planeScaleXZ = new Vector3(PlaneSizeMove, PlaneThickness, PlaneSizeMove);
+            for (int i = 0; i < 3; i++)
+            {
+                var col = new GameObject($"GizmoPlaneCol_{i}");
+                col.transform.SetParent(_arrowHandles.transform, false);
+                col.transform.localPosition = i == 0 ? planePosXY : i == 1 ? planePosYZ : planePosXZ;
+                col.transform.localScale = i == 0 ? planeScaleXY : i == 1 ? planeScaleYZ : planeScaleXZ;
+                col.layer = Layer;
+                col.AddComponent<BoxCollider>();
+                col.AddComponent<GizmoHandle>().axisIndex = 4 + i;
+            }
 
             _ringHandles = new GameObject("RingHandles");
             _ringHandles.transform.SetParent(_root.transform, false);
@@ -407,6 +492,50 @@ namespace BabyBlocks
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
             return mesh;
+        }
+
+        public static Vector3 GetSelectionBoundsCenter(IReadOnlyList<LevelEditorObject> selection)
+        {
+            if (selection == null || selection.Count == 0) return Vector3.zero;
+            bool hasBounds = false;
+            Bounds b = new Bounds(Vector3.zero, Vector3.zero);
+
+            for (int s = 0; s < selection.Count; s++)
+            {
+                var selected = selection[s];
+                if (selected == null) continue;
+                var renderers = selected.GetComponentsInChildren<Renderer>();
+                if (renderers == null || renderers.Length == 0)
+                {
+                    if (!hasBounds)
+                    {
+                        b = new Bounds(selected.transform.position, Vector3.zero);
+                        hasBounds = true;
+                    }
+                    else
+                    {
+                        b.Encapsulate(selected.transform.position);
+                    }
+                    continue;
+                }
+
+                for (int i = 0; i < renderers.Length; i++)
+                {
+                    var r = renderers[i];
+                    if (r == null) continue;
+                    if (!hasBounds)
+                    {
+                        b = r.bounds;
+                        hasBounds = true;
+                    }
+                    else
+                    {
+                        b.Encapsulate(r.bounds);
+                    }
+                }
+            }
+
+            return hasBounds ? b.center : Vector3.zero;
         }
 
         // Reversed winding so only silhouette-edge back-faces survive Cull Back,

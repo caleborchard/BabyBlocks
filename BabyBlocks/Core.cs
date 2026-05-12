@@ -13,6 +13,7 @@ namespace BabyBlocks
     {
         public static bool flyCamActive;
         public static bool cursorMode;
+        static bool _flyTeleportInProgress;
 
         public override void OnInitializeMelon()
         {
@@ -23,16 +24,14 @@ namespace BabyBlocks
 
             new HarmonyLib.Harmony("BabyBlocks.Patches").PatchAll();
 
-            SceneHierarchyScanner.Init();
+            // Scene hierarchy scanner is disabled for now.
         }
 
         public override void OnUpdate()
         {
-            if (Input.GetKeyDown(KeyCode.F1) && PlayerMovement.me != null)
-                ToggleFlyMode();
+            if (Input.GetKeyDown(KeyCode.BackQuote) && PlayerMovement.me != null)
+                ToggleEditorMode();
 
-            if (Input.GetKeyDown(KeyCode.Tab) && flyCamActive)
-                ToggleCursorMode();
 
             // Re-assert the loading transform on the fly cam every frame while
             // flying.  TeleportCo resets it to the player's torso at the end of
@@ -68,8 +67,7 @@ namespace BabyBlocks
                 LevelEditor.Update();
 
             // Scene hierarchy scanner — available any time the freecam is active.
-            if (flyCamActive)
-                SceneHierarchyScanner.OnUpdate();
+            // Scene hierarchy scanner is disabled for now.
         }
 
         public override void OnGUI()
@@ -121,8 +119,28 @@ namespace BabyBlocks
             Cursor.visible   = cursorMode;
         }
 
+        static void ToggleEditorMode()
+        {
+            if (!flyCamActive)
+            {
+                ToggleFlyMode();
+                ToggleCursorMode();
+                return;
+            }
+
+            if (cursorMode)
+            {
+                ToggleCursorMode();
+                return;
+            }
+
+            ToggleCursorMode();
+        }
+
         public static void HandleFlyCamTeleport(FlyCam flyCam)
         {
+            if (_flyTeleportInProgress || Menu.me.teleporting) return;
+
             var ray = Camera.main.ScreenPointToRay(new Vector3(Screen.width / 2f, Screen.height / 2f));
             if (!Physics.Raycast(ray, out var hit, 1000f, LayerCache.PropTerrainMask))
                 return;
@@ -137,14 +155,14 @@ namespace BabyBlocks
                 player.anim.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
             }
 
+            _flyTeleportInProgress = true;
             Menu.me.Teleport(hit.point);
 
-            // TeleportCo re-enables the player object and calls OnStandUp() at the
-            // end of every teleport — undo that to keep the player hidden while flying.
-            MelonCoroutines.Start(ReApplyFlyState());
+            // Exit fly mode after the teleport completes so the player regains control.
+            MelonCoroutines.Start(ExitFlyModeAfterTeleport());
         }
 
-        static System.Collections.IEnumerator ReApplyFlyState()
+        static System.Collections.IEnumerator ExitFlyModeAfterTeleport()
         {
             while (Menu.me.teleporting)
                 yield return null;
@@ -152,20 +170,15 @@ namespace BabyBlocks
             // One extra frame for TeleportCo's final cleanup to complete.
             yield return null;
 
-            if (!flyCamActive) yield break;
+            if (flyCamActive)
+                ToggleFlyMode();
 
-            var player = PlayerMovement.me;
-            if (player == null) yield break;
-
-            // TeleportCo called SetActive(true) + OnStandUp() — undo both.
-            player.gameObject.SetActive(false);
-            player.pm.SwitchToDisabledMode();
-            // loadingTransform re-assertion is handled by OnUpdate next frame.
+            _flyTeleportInProgress = false;
         }
     }
 
     // Replace FlyCam.Update entirely so we can add right-click look in cursor mode
-    // and suppress the native left-click teleport when the level editor is active.
+    // and keep left-click teleport in fly mode.
     [HarmonyPatch(typeof(FlyCam), "Update")]
     class FlyCamUpdatePatch
     {
@@ -174,15 +187,19 @@ namespace BabyBlocks
             if (FlyCam.locked) return false;
 
             // Movement — identical to native FlyCam, always active.
+            bool uiTyping = Core.cursorMode && LevelEditor.IsTypingInUI;
             var input = Vector3.zero;
-            if (Input.GetKey(KeyCode.W)) input += Vector3.forward;
-            if (Input.GetKey(KeyCode.S)) input += Vector3.back;
-            if (Input.GetKey(KeyCode.D)) input += Vector3.right;
-            if (Input.GetKey(KeyCode.A)) input += Vector3.left;
-            if (Input.GetKey(KeyCode.E)) input += Vector3.up;
-            if (Input.GetKey(KeyCode.Q)) input += Vector3.down;
-            if (Input.GetKey(KeyCode.LeftShift)) input *= 10.0f;
-            if (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.LeftAlt)) input *= 30f;
+            if (!uiTyping)
+            {
+                if (Input.GetKey(KeyCode.W)) input += Vector3.forward;
+                if (Input.GetKey(KeyCode.S)) input += Vector3.back;
+                if (Input.GetKey(KeyCode.D)) input += Vector3.right;
+                if (Input.GetKey(KeyCode.A)) input += Vector3.left;
+                if (Input.GetKey(KeyCode.E)) input += Vector3.up;
+                if (Input.GetKey(KeyCode.Q)) input += Vector3.down;
+                if (Input.GetKey(KeyCode.LeftShift)) input *= 10.0f;
+                if (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.LeftAlt)) input *= 30f;
+            }
 
             // Mouse look:
             //   • Normal fly mode  → always active (cursor locked).
