@@ -19,12 +19,35 @@ namespace BabyBlocks
         public Vector3    localScale;
     }
 
+    public class PropColliderPart
+    {
+        public enum ColliderType { Mesh, Box, Sphere, Capsule }
+        public ColliderType type;
+        // Mesh
+        public Mesh  mesh;
+        public bool  convex;
+        // Box
+        public Vector3 center;
+        public Vector3 size;
+        // Sphere / Capsule
+        public float radius;
+        // Capsule
+        public float height;
+        public int   direction;
+        // Local transform relative to prop root
+        public Vector3    localPosition;
+        public Quaternion localRotation;
+        public Vector3    localScale;
+    }
+
     public class PropInfo
     {
         public readonly string id;
         public          string displayName;
 
-        public List<PropMeshPart> parts = new();
+        public List<PropMeshPart>      parts         = new();
+        public List<PropColliderPart>  colliderParts = new();
+        public bool HasColliderParts => colliderParts != null && colliderParts.Count > 0;
         public bool               isLoaded;
         public bool               isInvalid;
 
@@ -50,6 +73,7 @@ namespace BabyBlocks
         static readonly string[] PrimitiveNames = { "Cube", "Sphere", "Capsule", "Cylinder", "Plane", "Quad" };
         static bool _loggedAssetFolders;
         static Type _bestRegionType;
+        static readonly HashSet<string> _gpuiScannedNames = new(StringComparer.OrdinalIgnoreCase);
 
         static readonly string[] ExcludedAssetPrefixes =
         {
@@ -76,13 +100,23 @@ namespace BabyBlocks
         public static IReadOnlyList<PropInfo> AllProps => _all;
         public static IReadOnlyList<PropInfo> FilteredProps => _filtered;
 
-        public static bool IsInitialized { get; private set; }
+        public static bool   IsInitialized { get; private set; }
+        public static string SearchText    { get; private set; } = "";
+
+        public static void SetSearch(string text)
+        {
+            text ??= "";
+            if (string.Equals(text, SearchText, StringComparison.OrdinalIgnoreCase)) return;
+            SearchText = text;
+            BuildFiltered();
+        }
 
         public static void Init()
         {
             _all.Clear();
             _byId.Clear();
             _filtered.Clear();
+            _gpuiScannedNames.Clear();
 
             foreach (var name in PrimitiveNames)
             {
@@ -112,10 +146,19 @@ namespace BabyBlocks
         static void BuildFiltered()
         {
             _filtered.Clear();
-            foreach (var p in _all) _filtered.Add(p);
+            if (string.IsNullOrEmpty(SearchText))
+            {
+                foreach (var p in _all) _filtered.Add(p);
+                return;
+            }
+            foreach (var p in _all)
+            {
+                if (p.displayName.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0
+                    || p.id.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0)
+                    _filtered.Add(p);
+            }
         }
 
-        // Back-compat stub — original implementation scanned BestRegionLoader data.
         public static void ScanGpuiProps()
         {
             if (!IsInitialized) return;
@@ -123,26 +166,155 @@ namespace BabyBlocks
             var loaded = TryGetLoadedProps();
             if (loaded == null || loaded.Length == 0) return;
 
-            int added = 0;
+            var visualLookup = BuildGpuiVisualLookup();
+
+            int insertAt = PrimitiveNames.Length;
+            int added    = 0;
+            int gpuiIdx  = 0;
+
             for (int i = 0; i < loaded.Length; i++)
             {
-                var go = loaded[i];
-                if (go == null) continue;
+                var prefabGO = loaded[i];
+                if (prefabGO == null) continue;
 
-                var baseName = NormalizePropName(go.name);
-                if (string.IsNullOrEmpty(baseName)) continue;
+                bool hasRenderer = prefabGO.GetComponentInChildren<MeshRenderer>() != null
+                                || prefabGO.GetComponentInChildren<SkinnedMeshRenderer>() != null;
+                if (hasRenderer) continue;
 
-                // Keep ids simple so LoadPropData can match by name.
-                var id = baseName;
-                if (_byId.ContainsKey(id)) continue;
+                bool hasCollider = prefabGO.GetComponentInChildren<MeshCollider>() != null;
+                if (!hasCollider) continue;
 
-                var info = new PropInfo(id, baseName);
-                _all.Add(info);
-                _byId[id] = info;
-                added++;
+                string baseName = NormalizePropName(prefabGO.name);
+                if (_gpuiScannedNames.Contains(baseName)) continue;
+
+                int    gi     = gpuiIdx++;
+                string gpuiId = $"gpui://{gi}";
+                if (_byId.ContainsKey(gpuiId)) continue;
+
+                var info = new PropInfo(gpuiId, baseName);
+                info.gpuiIndex = gi;
+
+                // Try to load the visual prefab from the catalog.
+                if (visualLookup.TryGetValue(baseName, out string visualPath))
+                {
+                    try
+                    {
+                        var handle   = Addressables.LoadAssetAsync<GameObject>(visualPath);
+                        var visualGO = handle.WaitForCompletion();
+                        if (visualGO != null)
+                        {
+                            var instance = UnityEngine.Object.Instantiate(
+                                visualGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
+                            try   { ExtractPartsFromInstance(instance, info); }
+                            finally { UnityEngine.Object.Destroy(instance); }
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] \"{baseName}\" visual load failed: {e.Message}");
+                    }
+                }
+
+                // Fall back to collider-mesh extraction if visual load yielded nothing.
+                if (!info.HasMesh)
+                {
+                    var instance = UnityEngine.Object.Instantiate(
+                        prefabGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
+                    try   { ExtractPartsFromColliders(instance, info); }
+                    catch (Exception e) { MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] collider extract failed: {e.Message}"); }
+                    UnityEngine.Object.Destroy(instance);
+                }
+
+                info.isLoaded  = true;
+                info.isInvalid = !info.HasMesh;
+
+                _gpuiScannedNames.Add(baseName);
+
+                if (info.HasMesh)
+                {
+                    _all.Insert(insertAt, info);
+                    _byId[gpuiId] = info;
+                    insertAt++;
+                    added++;
+                }
+                else
+                {
+                    MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] \"{baseName}\" — no mesh found, skipping.");
+                }
             }
 
             if (added > 0) BuildFiltered();
+            MelonLogger.Msg($"[PropLibrary] GPUI scan complete: {added} props added.");
+        }
+
+        static Dictionary<string, string> BuildGpuiVisualLookup()
+        {
+            var    lookup      = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
+            if (!File.Exists(catalogPath)) return lookup;
+
+            try
+            {
+                string json = File.ReadAllText(catalogPath);
+                AddVisualPathsToLookup(json, lookup);
+
+                int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
+                if (kdIdx >= 0)
+                {
+                    int valStart = json.IndexOf('"', kdIdx + 17) + 1;
+                    int valEnd   = json.IndexOf('"', valStart);
+                    if (valStart > 0 && valEnd > valStart)
+                    {
+                        byte[] bytes   = Convert.FromBase64String(json.Substring(valStart, valEnd - valStart));
+                        string decoded = Encoding.UTF8.GetString(bytes);
+                        AddVisualPathsToLookup(decoded, lookup);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[PropLibrary] GPUI visual lookup build failed: {e.Message}");
+            }
+
+            return lookup;
+        }
+
+        static void AddVisualPathsToLookup(string text, Dictionary<string, string> lookup)
+        {
+            int i = 0;
+            while (i < text.Length)
+            {
+                int start = text.IndexOf("Assets/_Props/", i, StringComparison.Ordinal);
+                if (start < 0) break;
+                int end = start;
+                while (end < text.Length)
+                {
+                    char c = text[end];
+                    if (c == '"' || c == '\0' || c < ' ') break;
+                    end++;
+                }
+                i = end + 1;
+                string path = text.Substring(start, end - start);
+                if (!path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)) continue;
+
+                string name = Path.GetFileNameWithoutExtension(path);
+                if (name.EndsWith("_player", StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsLowerLodVariant(path)) continue;
+
+                if (!lookup.ContainsKey(name))
+                    lookup[name] = path;
+            }
+        }
+
+        static void ExtractPartsFromColliders(GameObject root, PropInfo info)
+        {
+            var arr   = root.GetComponentsInChildren<MeshCollider>(true);
+            var rootT = root.transform;
+            foreach (var mc in arr)
+            {
+                if (mc == null || mc.sharedMesh == null) continue;
+                AddPart(info, mc.sharedMesh, null, mc.transform, rootT);
+            }
         }
 
         static void EnumerateFromCatalog()
@@ -616,6 +788,53 @@ namespace BabyBlocks
             {
                 if (smr == null || smr.sharedMesh == null) continue;
                 AddPart(info, smr.sharedMesh, smr.sharedMaterials, smr.transform, root.transform);
+            }
+
+            // Capture pre-cooked colliders from the prefab so they can be reused at spawn time.
+            var rootT = root.transform;
+            var rootScale = rootT.lossyScale;
+            var cols = root.GetComponentsInChildren<Collider>(true);
+            foreach (var col in cols)
+            {
+                if (col == null || col.isTrigger) continue;
+                var t = col.transform;
+                var cp = new PropColliderPart
+                {
+                    localPosition = rootT.InverseTransformPoint(t.position),
+                    localRotation = Quaternion.Inverse(rootT.rotation) * t.rotation,
+                    localScale    = new Vector3(
+                        t.lossyScale.x / (rootScale.x != 0f ? rootScale.x : 1f),
+                        t.lossyScale.y / (rootScale.y != 0f ? rootScale.y : 1f),
+                        t.lossyScale.z / (rootScale.z != 0f ? rootScale.z : 1f))
+                };
+                if (col is MeshCollider mc && mc.sharedMesh != null)
+                {
+                    cp.type   = PropColliderPart.ColliderType.Mesh;
+                    cp.mesh   = mc.sharedMesh;
+                    cp.convex = mc.convex;
+                }
+                else if (col is BoxCollider bc)
+                {
+                    cp.type   = PropColliderPart.ColliderType.Box;
+                    cp.center = bc.center;
+                    cp.size   = bc.size;
+                }
+                else if (col is SphereCollider sc)
+                {
+                    cp.type   = PropColliderPart.ColliderType.Sphere;
+                    cp.center = sc.center;
+                    cp.radius = sc.radius;
+                }
+                else if (col is CapsuleCollider cc)
+                {
+                    cp.type      = PropColliderPart.ColliderType.Capsule;
+                    cp.center    = cc.center;
+                    cp.radius    = cc.radius;
+                    cp.height    = cc.height;
+                    cp.direction = cc.direction;
+                }
+                else continue;
+                info.colliderParts.Add(cp);
             }
         }
 

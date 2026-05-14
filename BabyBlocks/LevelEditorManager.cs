@@ -65,17 +65,166 @@ namespace BabyBlocks
                 var mr = child.AddComponent<MeshRenderer>();
                 if (part.materials != null) mr.sharedMaterials = part.materials;
 
-                // MeshCollider on every part so raycasts and the player collide with
-                // placed props.  Non-convex is fine — no Rigidbody on these objects.
-                var mc = child.AddComponent<MeshCollider>();
-                mc.sharedMesh = part.mesh;
             }
+
+            if (PropMetadataPanel.GetUseRenderMeshCollider(info.id))
+                ApplyColliderParts(root, info);
 
             var leo = root.AddComponent<LevelEditorObject>();
             leo.objectType     = "Addressable";
             leo.addressableKey = info.id;
             _objects.Add(leo);
             return leo;
+        }
+
+        // Per-source-mesh cache so the GPU readback only happens once per unique mesh.
+        static readonly Dictionary<int, Mesh> _physicsMeshCache = new();
+
+        // Reads vertex positions and triangle indices from the GPU vertex/index buffers.
+        // Game meshes are shipped without Read/Write enabled, so Mesh.vertices is unavailable.
+        // GetVertexBuffer/GetIndexBuffer bypass that; position is assumed Float32×3 at byte-offset 0
+        // in stream 0 (standard Unity layout). Returns null and caches null on failure.
+        static Mesh BuildPhysicsMesh(Mesh source)
+        {
+            if (source == null) return null;
+            int id = source.GetInstanceID();
+            if (_physicsMeshCache.TryGetValue(id, out var hit)) return hit;
+
+            Mesh result = null;
+            try
+            {
+                bool posOk = false;
+                foreach (var a in source.GetVertexAttributes())
+                {
+                    if (a.attribute == UnityEngine.Rendering.VertexAttribute.Position
+                        && a.format    == UnityEngine.Rendering.VertexAttributeFormat.Float32
+                        && a.dimension == 3
+                        && a.stream    == 0)
+                    { posOk = true; break; }
+                }
+                if (!posOk) { _physicsMeshCache[id] = null; return null; }
+
+                var vb         = source.GetVertexBuffer(0);
+                int floatsPerV = vb.stride / 4;
+                int vCount     = source.vertexCount;
+                var floatBuf   = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<float>(vCount * floatsPerV);
+                vb.GetData(floatBuf.Cast<Il2CppSystem.Array>());
+                vb.Release();
+
+                var positions = new Vector3[vCount];
+                for (int i = 0; i < vCount; i++)
+                {
+                    int b = i * floatsPerV;
+                    positions[i] = new Vector3(floatBuf[b], floatBuf[b + 1], floatBuf[b + 2]);
+                }
+
+                var ib     = source.GetIndexBuffer();
+                int iCount = (int)source.GetIndexCount(0);
+                int[] tris = new int[iCount];
+                if (ib.stride == 2)
+                {
+                    var idxBuf = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<ushort>(iCount);
+                    ib.GetData(idxBuf.Cast<Il2CppSystem.Array>());
+                    for (int i = 0; i < iCount; i++) tris[i] = idxBuf[i];
+                }
+                else
+                {
+                    var idxBuf = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<int>(iCount);
+                    ib.GetData(idxBuf.Cast<Il2CppSystem.Array>());
+                    for (int i = 0; i < iCount; i++) tris[i] = idxBuf[i];
+                }
+                ib.Release();
+
+                result = new Mesh { name = source.name + "_phys" };
+                result.vertices  = positions;
+                result.triangles = tris;
+                result.RecalculateBounds();
+            }
+            catch { result = null; }
+
+            _physicsMeshCache[id] = result;
+            return result;
+        }
+
+        // Adds PropCollider children to root based on the currently enabled MeshRenderers.
+        // For props with pre-cooked prefab colliders those are used instead.
+        // Deduplicates LOD variants by bounds so only one collider per unique mesh shape is added.
+        public static void ApplyColliderParts(GameObject root, PropInfo info)
+        {
+            if (root == null || info == null) return;
+            int layer = PropLayer;
+
+            if (info.HasColliderParts)
+            {
+                foreach (var cp in info.colliderParts)
+                {
+                    var go = new GameObject("PropCollider");
+                    go.transform.SetParent(root.transform, false);
+                    go.transform.localPosition = cp.localPosition;
+                    go.transform.localRotation = cp.localRotation;
+                    go.transform.localScale    = cp.localScale;
+                    go.layer = layer;
+                    switch (cp.type)
+                    {
+                        case PropColliderPart.ColliderType.Mesh:
+                            var mc = go.AddComponent<MeshCollider>();
+                            mc.sharedMesh = cp.mesh;
+                            mc.convex     = cp.convex;
+                            break;
+                        case PropColliderPart.ColliderType.Box:
+                            var bc2 = go.AddComponent<BoxCollider>();
+                            bc2.center = cp.center;
+                            bc2.size   = cp.size;
+                            break;
+                        case PropColliderPart.ColliderType.Sphere:
+                            var sc = go.AddComponent<SphereCollider>();
+                            sc.center = cp.center;
+                            sc.radius = cp.radius;
+                            break;
+                        case PropColliderPart.ColliderType.Capsule:
+                            var cc = go.AddComponent<CapsuleCollider>();
+                            cc.center    = cp.center;
+                            cc.radius    = cp.radius;
+                            cc.height    = cp.height;
+                            cc.direction = cp.direction;
+                            break;
+                    }
+                }
+                return;
+            }
+
+            // GPU-readback path: one collider per unique-bounds enabled renderer.
+            var seenBounds = new HashSet<string>();
+            foreach (var mf in root.GetComponentsInChildren<MeshFilter>(true))
+            {
+                if (mf == null || mf.sharedMesh == null) continue;
+                var mr = mf.GetComponent<MeshRenderer>();
+                if (mr == null || !mr.enabled) continue;
+
+                var b   = mf.sharedMesh.bounds;
+                string key = $"{b.center.x:F2},{b.center.y:F2},{b.center.z:F2}|{b.size.x:F2},{b.size.y:F2},{b.size.z:F2}";
+                if (!seenBounds.Add(key)) continue;
+
+                var go = new GameObject("PropCollider");
+                go.transform.SetParent(root.transform, false);
+                go.transform.localPosition = mf.transform.localPosition;
+                go.transform.localRotation = mf.transform.localRotation;
+                go.transform.localScale    = mf.transform.localScale;
+                go.layer = layer;
+
+                var physMesh = BuildPhysicsMesh(mf.sharedMesh);
+                if (physMesh != null)
+                {
+                    var mc = go.AddComponent<MeshCollider>();
+                    mc.sharedMesh = physMesh;
+                }
+                else
+                {
+                    var bc = go.AddComponent<BoxCollider>();
+                    bc.center = b.center;
+                    bc.size   = b.size;
+                }
+            }
         }
 
         // Sets the layer on a GameObject and all of its descendants.

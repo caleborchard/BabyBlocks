@@ -15,6 +15,7 @@ namespace BabyBlocks
         public string displayName;
         public string category;
         public bool excluded;
+        public bool useRenderMeshCollider;
         public string overrideMaterialId;
         public int index;
         public List<string> disabledRenderers = new();
@@ -39,10 +40,11 @@ namespace BabyBlocks
         const float RendererListH = 120f;
         const float AutoSaveDelay = 0.75f;
 
+        const string SearchField      = "propMetaSearch";
         const string DisplayNameField = "propMetaDisplayName";
-        const string CategoryField = "propMetaCategory";
-        const string OverrideField = "propMetaOverride";
-        const string NoOverrideLabel = "(no override)";
+        const string CategoryField    = "propMetaCategory";
+        const string OverrideField    = "propMetaOverride";
+        const string NoOverrideLabel  = "(no override)";
 
         static Rect _windowRect;
         static bool _windowInitialized;
@@ -53,6 +55,7 @@ namespace BabyBlocks
         static string _displayName = "";
         static string _category = "";
         static bool _excluded;
+        static bool _useRenderMeshCollider;
         static string _overrideMaterialName = "";
         static string _selectedMaterialName = "";
         static string _defaultMaterialName = "";
@@ -64,7 +67,8 @@ namespace BabyBlocks
         static Vector2 _mainScroll;
         static string _materialSearch = "";
         static GUIStyle _materialButtonStyle;
-        static readonly List<string> _materialNames = new();
+        static readonly List<string> _materialNames  = new();
+        static readonly List<string> _materialLabels = new(); // "name [Shader]" for display/search
         static readonly Dictionary<string, Material> _materialByName = new(StringComparer.OrdinalIgnoreCase);
         static bool _materialsLoaded;
 
@@ -76,6 +80,7 @@ namespace BabyBlocks
         static float _lastChangeTime;
         static Renderer[] _selectedRenderers;
         static Material[][] _selectedDefaultMaterials;
+        static LevelEditorObject _selectedLEO;
 
         static readonly Dictionary<string, PropExtraInfo> _byId = new(StringComparer.Ordinal);
         static bool _loaded;
@@ -116,7 +121,8 @@ namespace BabyBlocks
             AutoSaveIfIdle();
 
             string focused = GUI.GetNameOfFocusedControl();
-            IsTypingInUI = focused == DisplayNameField
+            IsTypingInUI = focused == SearchField
+                        || focused == DisplayNameField
                         || focused == CategoryField
                         || focused == OverrideField;
             if (string.IsNullOrEmpty(_propId))
@@ -135,6 +141,14 @@ namespace BabyBlocks
         static void DrawContents()
         {
             GUILayout.BeginVertical();
+
+            GUILayout.Label("Search props");
+            GUI.SetNextControlName(SearchField);
+            string newSearch = GUILayout.TextField(PropLibrary.SearchText ?? string.Empty);
+            if (!string.Equals(newSearch, PropLibrary.SearchText, StringComparison.Ordinal))
+                PropLibrary.SetSearch(newSearch);
+
+            GUILayout.Space(4f);
 
             _mainScroll = GUILayout.BeginScrollView(_mainScroll, GUILayout.ExpandHeight(true));
 
@@ -183,6 +197,15 @@ namespace BabyBlocks
                 MarkDirty();
             }
 
+            var newUseMeshCol = GUILayout.Toggle(_useRenderMeshCollider, "Use render mesh as collider");
+            if (newUseMeshCol != _useRenderMeshCollider)
+            {
+                _useRenderMeshCollider = newUseMeshCol;
+                ApplyColliderToSelected(newUseMeshCol);
+                ApplyCurrent();
+                _dirty = false;
+            }
+
             GUILayout.Space(4f);
 
             GUILayout.Label("Current material: " + (string.IsNullOrEmpty(_defaultMaterialName) ? "(unknown)" : _defaultMaterialName));
@@ -202,6 +225,7 @@ namespace BabyBlocks
                     {
                         entry.enabled = newEnabled;
                         if (entry.renderer != null) entry.renderer.enabled = newEnabled;
+                        else if (entry.collider != null) entry.collider.enabled = newEnabled;
                         if (!newEnabled) _disabledRendererPaths.Add(entry.path);
                         else _disabledRendererPaths.Remove(entry.path);
                         MarkDirty();
@@ -236,9 +260,9 @@ namespace BabyBlocks
                 int selectedIndex = GetMaterialIndex(_selectedMaterialName);
                 string search = _materialSearch != null ? _materialSearch.Trim() : string.Empty;
                 bool hasSearch = !string.IsNullOrEmpty(search);
-                for (int i = 0; i < _materialNames.Count; i++)
+                for (int i = 0; i < _materialLabels.Count; i++)
                 {
-                    string label = _materialNames[i];
+                    string label = _materialLabels[i];
                     if (hasSearch && label.IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0)
                         continue;
 
@@ -309,8 +333,10 @@ namespace BabyBlocks
             if (_materialsLoaded) return;
             _materialsLoaded = true;
             _materialNames.Clear();
+            _materialLabels.Clear();
             _materialByName.Clear();
             _materialNames.Add(NoOverrideLabel);
+            _materialLabels.Add(NoOverrideLabel);
 
             try
             {
@@ -323,13 +349,29 @@ namespace BabyBlocks
                         var m = mats[i];
                         if (m == null || string.IsNullOrEmpty(m.name)) continue;
                         if (!seen.Add(m.name)) continue;
+                        string shaderName = m.shader != null ? m.shader.name : string.Empty;
+                        string label = string.IsNullOrEmpty(shaderName)
+                            ? m.name
+                            : $"{m.name}  [{shaderName}]";
                         _materialNames.Add(m.name);
+                        _materialLabels.Add(label);
                         _materialByName[m.name] = m;
                     }
                 }
 
+                // Sort by label but keep names and labels in sync.
                 if (_materialNames.Count > 2)
-                    _materialNames.Sort(1, _materialNames.Count - 1, StringComparer.OrdinalIgnoreCase);
+                {
+                    var pairs = new List<(string name, string label)>(_materialNames.Count - 1);
+                    for (int i = 1; i < _materialNames.Count; i++)
+                        pairs.Add((_materialNames[i], _materialLabels[i]));
+                    pairs.Sort((a, b) => string.Compare(a.label, b.label, StringComparison.OrdinalIgnoreCase));
+                    for (int i = 0; i < pairs.Count; i++)
+                    {
+                        _materialNames[i + 1]  = pairs[i].name;
+                        _materialLabels[i + 1] = pairs[i].label;
+                    }
+                }
             }
             catch (Exception e)
             {
@@ -341,7 +383,7 @@ namespace BabyBlocks
         {
             if (string.IsNullOrEmpty(_propId)) return;
             string overrideToSave = GetOverrideToSave();
-            var info = Apply(_propId, _displayName, _category, _excluded, overrideToSave, _disabledRendererPaths);
+            var info = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider, overrideToSave, _disabledRendererPaths);
             if (info != null)
                 _index = info.index;
             _overrideMaterialName = overrideToSave ?? string.Empty;
@@ -363,6 +405,7 @@ namespace BabyBlocks
 
         static void SyncFromSelection(LevelEditorObject selectedObject)
         {
+            _selectedLEO = selectedObject;
             string id = GetSelectedPropId(selectedObject);
             if (string.Equals(id, _propId, StringComparison.Ordinal)) return;
 
@@ -380,6 +423,7 @@ namespace BabyBlocks
             _defaultMaterialName = string.Empty;
             CacheDefaultMaterials(selectedObject);
             _excluded = false;
+            _useRenderMeshCollider = false;
             _index = -1;
             _dirty = false;
             _showMaterialDropdown = false;
@@ -395,6 +439,7 @@ namespace BabyBlocks
                 _category = info.category ?? string.Empty;
                 _overrideMaterialName = info.overrideMaterialId ?? string.Empty;
                 _excluded = info.excluded;
+                _useRenderMeshCollider = info.useRenderMeshCollider;
                 _index = info.index;
                 if (info.disabledRenderers != null)
                 {
@@ -476,29 +521,71 @@ namespace BabyBlocks
         {
             public string path;
             public Renderer renderer;
+            public Collider collider;
             public bool enabled;
         }
 
         static void BuildRendererEntries(LevelEditorObject obj)
         {
             _rendererEntries.Clear();
-            if (obj == null || _selectedRenderers == null) return;
+            if (obj == null) return;
 
             var root = obj.transform;
-            for (int i = 0; i < _selectedRenderers.Length; i++)
+
+            if (_selectedRenderers != null)
             {
-                var r = _selectedRenderers[i];
-                if (r == null) continue;
-                string path = BuildPath(root, r.transform);
-                var entry = new RendererEntry
+                for (int i = 0; i < _selectedRenderers.Length; i++)
                 {
-                    path = path,
-                    renderer = r,
-                    enabled = r.enabled
-                };
-                if (_disabledRendererPaths.Contains(path)) entry.enabled = false;
-                _rendererEntries.Add(entry);
+                    var r = _selectedRenderers[i];
+                    if (r == null) continue;
+                    string path = BuildPath(root, r.transform);
+                    var entry = new RendererEntry
+                    {
+                        path = path,
+                        renderer = r,
+                        enabled = r.enabled
+                    };
+                    if (_disabledRendererPaths.Contains(path)) entry.enabled = false;
+                    _rendererEntries.Add(entry);
+                }
             }
+
+            var colliders = obj.GetComponentsInChildren<Collider>(true);
+            if (colliders != null)
+            {
+                for (int i = 0; i < colliders.Length; i++)
+                {
+                    var c = colliders[i];
+                    if (c == null) continue;
+                    string path = BuildPath(root, c.transform) + " [" + c.GetType().Name + "]";
+                    var entry = new RendererEntry
+                    {
+                        path = path,
+                        collider = c,
+                        enabled = c.enabled
+                    };
+                    if (_disabledRendererPaths.Contains(path)) entry.enabled = false;
+                    _rendererEntries.Add(entry);
+                }
+            }
+        }
+
+        static void ApplyColliderToSelected(bool enable)
+        {
+            if (_selectedLEO == null) return;
+
+            // Destroy all PropCollider children (our previously added colliders).
+            foreach (var t in _selectedLEO.GetComponentsInChildren<Transform>(true))
+            {
+                if (t != null && t != _selectedLEO.transform && t.gameObject.name == "PropCollider")
+                    UnityEngine.Object.Destroy(t.gameObject);
+            }
+
+            if (!enable) return;
+
+            var info = PropLibrary.FindById(_selectedLEO.addressableKey);
+            if (info != null)
+                LevelEditorManager.ApplyColliderParts(_selectedLEO.gameObject, info);
         }
 
         static void ApplyRendererVisibility()
@@ -507,9 +594,9 @@ namespace BabyBlocks
             for (int i = 0; i < _rendererEntries.Count; i++)
             {
                 var entry = _rendererEntries[i];
-                if (entry.renderer == null) continue;
                 bool enabled = !_disabledRendererPaths.Contains(entry.path);
-                entry.renderer.enabled = enabled;
+                if (entry.renderer != null) entry.renderer.enabled = enabled;
+                else if (entry.collider != null) entry.collider.enabled = enabled;
                 entry.enabled = enabled;
             }
             // TODO: Skip instantiating disabled renderers when spawning a new object.
@@ -670,6 +757,14 @@ namespace BabyBlocks
             Load();
         }
 
+        public static bool GetUseRenderMeshCollider(string id)
+        {
+            EnsureLoaded();
+            return !string.IsNullOrEmpty(id)
+                && _byId.TryGetValue(id, out var info)
+                && info.useRenderMeshCollider;
+        }
+
         static bool TryGet(string id, out PropExtraInfo info)
         {
             EnsureLoaded();
@@ -682,7 +777,7 @@ namespace BabyBlocks
         }
 
         static PropExtraInfo Apply(string id, string displayName, string category,
-            bool excluded, string overrideMaterialName, HashSet<string> disabledRenderers)
+            bool excluded, bool useRenderMeshCollider, string overrideMaterialName, HashSet<string> disabledRenderers)
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return null;
@@ -690,6 +785,7 @@ namespace BabyBlocks
             bool any = !string.IsNullOrEmpty(displayName)
                     || !string.IsNullOrEmpty(category)
                     || excluded
+                    || useRenderMeshCollider
                     || !string.IsNullOrEmpty(overrideMaterialName)
                     || (disabledRenderers != null && disabledRenderers.Count > 0);
 
@@ -711,6 +807,7 @@ namespace BabyBlocks
             info.displayName = displayName ?? string.Empty;
             info.category = category ?? string.Empty;
             info.excluded = excluded;
+            info.useRenderMeshCollider = useRenderMeshCollider;
             info.overrideMaterialId = overrideMaterialName ?? string.Empty;
             info.disabledRenderers = new List<string>();
             if (disabledRenderers != null)
@@ -834,6 +931,7 @@ namespace BabyBlocks
                 AppendJsonField(sb, "displayName", item.displayName, 6).Append(",\n");
                 AppendJsonField(sb, "category", item.category, 6).Append(",\n");
                 sb.Append("      \"excluded\": ").Append(item.excluded ? "true" : "false").Append(",\n");
+                sb.Append("      \"useRenderMeshCollider\": ").Append(item.useRenderMeshCollider ? "true" : "false").Append(",\n");
                 AppendJsonField(sb, "overrideMaterialId", item.overrideMaterialId, 6).Append(",\n");
                 AppendJsonArray(sb, "disabledRenderers", item.disabledRenderers, 6).Append(",\n");
                 sb.Append("      \"index\": ").Append(item.index).Append("\n");
@@ -921,6 +1019,7 @@ namespace BabyBlocks
                     displayName = ExtractString(obj, "displayName"),
                     category = ExtractString(obj, "category"),
                     excluded = ExtractBool(obj, "excluded"),
+                    useRenderMeshCollider = ExtractBool(obj, "useRenderMeshCollider"),
                     overrideMaterialId = ExtractString(obj, "overrideMaterialId"),
                     index = ExtractInt(obj, "index", 0),
                     disabledRenderers = ExtractStringArray(obj, "disabledRenderers")

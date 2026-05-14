@@ -68,8 +68,8 @@ namespace BabyBlocks
             InitMeshes();
             InitMaterials();
             BuildColliders();
-            _outlineCam = BuildCam(99f);
-            _overlayCam = BuildCam(100f);
+            _outlineCam = BuildCam(99f,  500000f);
+            _overlayCam = BuildCam(100f, 500000f);
         }
 
         public static void Sync(IReadOnlyList<LevelEditorObject> selection, LevelEditorObject primary,
@@ -97,12 +97,16 @@ namespace BabyBlocks
             if (_outlineCam != null)
             {
                 _outlineCam.transform.SetPositionAndRotation(mainCam.transform.position, mainCam.transform.rotation);
-                _outlineCam.projectionMatrix = mainCam.projectionMatrix;
+                _outlineCam.fieldOfView    = mainCam.fieldOfView;
+                _outlineCam.aspect         = mainCam.aspect;
+                _outlineCam.nearClipPlane  = mainCam.nearClipPlane;
             }
             if (_overlayCam != null)
             {
                 _overlayCam.transform.SetPositionAndRotation(mainCam.transform.position, mainCam.transform.rotation);
-                _overlayCam.projectionMatrix = mainCam.projectionMatrix;
+                _overlayCam.fieldOfView    = mainCam.fieldOfView;
+                _overlayCam.aspect         = mainCam.aspect;
+                _overlayCam.nearClipPlane  = mainCam.nearClipPlane;
             }
         }
 
@@ -343,7 +347,7 @@ namespace BabyBlocks
 
         // Overlay camera: ClearFlags=Depth so each frame starts with an empty depth buffer,
         // making everything submitted to it always pass depth testing.
-        static Camera BuildCam(float depth)
+        static Camera BuildCam(float depth, float farClip = 500000f)
         {
             var go  = new GameObject($"GizmoOverlayCam_{depth}");
             UnityEngine.Object.DontDestroyOnLoad(go);
@@ -352,7 +356,7 @@ namespace BabyBlocks
             cam.cullingMask   = Mask;
             cam.depth         = depth;
             cam.nearClipPlane = 0.01f;
-            cam.farClipPlane  = 10000f;
+            cam.farClipPlane  = farClip;
             cam.enabled       = false;
             return cam;
         }

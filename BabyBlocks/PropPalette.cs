@@ -16,8 +16,15 @@ namespace BabyBlocks
         static int VisibleSlots =>
             Mathf.Clamp(Mathf.FloorToInt((Screen.height - 100f) / (ItemH + Pad)), 4, 15);
 
-        static int _scrollOffset  = 0;
-        static int _draggingIndex = -1; // index into PropLibrary.FilteredProps
+        static int   _scrollOffset    = 0;
+        static int   _draggingIndex   = -1; // index into PropLibrary.FilteredProps
+        static int   _lastFilterCount = -1;
+        static float _scrollTimer;
+        static bool  _scrollActive;
+        static bool  _scrollInDelay;
+
+        const float ScrollInitialDelay  = 0.35f;
+        const float ScrollRepeatInterval = 0.08f;
 
         public static Rect PanelRect { get; private set; }
 
@@ -30,13 +37,38 @@ namespace BabyBlocks
         {
             if (!PropLibrary.IsInitialized) return;
             int total = PropLibrary.FilteredProps.Count;
-            int page  = VisibleSlots;
-            if (total > 0)
+            if (total == 0) return;
+
+            bool minusHeld  = Input.GetKey(KeyCode.Minus);
+            bool equalsHeld = Input.GetKey(KeyCode.Equals);
+
+            if (!minusHeld && !equalsHeld)
             {
-                if (Input.GetKeyDown(KeyCode.Minus))
-                    _scrollOffset = Mathf.Max(0, _scrollOffset - page);
-                if (Input.GetKeyDown(KeyCode.Equals))
-                    _scrollOffset = Mathf.Min(Mathf.Max(0, total - 1), _scrollOffset + page);
+                _scrollActive = false;
+                _scrollTimer  = 0f;
+                return;
+            }
+
+            int dir = minusHeld ? -1 : 1;
+
+            int page = VisibleSlots;
+
+            if (!_scrollActive)
+            {
+                _scrollActive  = true;
+                _scrollInDelay = true;
+                _scrollTimer   = 0f;
+                _scrollOffset  = Mathf.Clamp(_scrollOffset + dir * page, 0, total - 1);
+                return;
+            }
+
+            _scrollTimer += Time.unscaledDeltaTime;
+            float threshold = _scrollInDelay ? ScrollInitialDelay : ScrollRepeatInterval;
+            if (_scrollTimer >= threshold)
+            {
+                _scrollTimer  -= threshold;
+                _scrollInDelay = false;
+                _scrollOffset  = Mathf.Clamp(_scrollOffset + dir * page, 0, total - 1);
             }
         }
 
@@ -56,6 +88,12 @@ namespace BabyBlocks
             var props   = PropLibrary.FilteredProps;
             int total   = props.Count;
             int visible = VisibleSlots;
+
+            if (total != _lastFilterCount)
+            {
+                _scrollOffset    = 0;
+                _lastFilterCount = total;
+            }
 
             _scrollOffset = Mathf.Clamp(_scrollOffset, 0, Mathf.Max(0, total - 1));
 
