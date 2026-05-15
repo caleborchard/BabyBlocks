@@ -50,9 +50,10 @@ namespace BabyBlocks
             root.transform.position = position;
             root.layer = PropLayer;
 
-            foreach (var part in info.parts)
+            for (int i = 0; i < info.parts.Count; i++)
             {
-                var child = new GameObject("Part");
+                var part  = info.parts[i];
+                var child = new GameObject($"Part_{i}");
                 child.transform.SetParent(root.transform, false);
                 child.transform.localPosition = part.localPosition;
                 child.transform.localRotation = part.localRotation;
@@ -64,11 +65,13 @@ namespace BabyBlocks
 
                 var mr = child.AddComponent<MeshRenderer>();
                 if (part.materials != null) mr.sharedMaterials = part.materials;
-
             }
 
-            if (PropMetadataPanel.GetUseRenderMeshCollider(info.id))
-                ApplyColliderParts(root, info);
+            ApplyColliderParts(root, info, PropMetadataPanel.GetUseRenderMeshCollider(info.id));
+
+            string surfaceTag = PropMetadataPanel.GetSurfaceType(info.id);
+            if (!string.IsNullOrEmpty(surfaceTag))
+                PropMetadataPanel.ApplySurfaceTypeToRoot(root, surfaceTag);
 
             var leo = root.AddComponent<LevelEditorObject>();
             leo.objectType     = "Addressable";
@@ -84,7 +87,7 @@ namespace BabyBlocks
         // Game meshes are shipped without Read/Write enabled, so Mesh.vertices is unavailable.
         // GetVertexBuffer/GetIndexBuffer bypass that; position is assumed Float32×3 at byte-offset 0
         // in stream 0 (standard Unity layout). Returns null and caches null on failure.
-        static Mesh BuildPhysicsMesh(Mesh source)
+        internal static Mesh BuildPhysicsMesh(Mesh source)
         {
             if (source == null) return null;
             int id = source.GetInstanceID();
@@ -138,6 +141,7 @@ namespace BabyBlocks
                 result = new Mesh { name = source.name + "_phys" };
                 result.vertices  = positions;
                 result.triangles = tris;
+                result.RecalculateNormals();
                 result.RecalculateBounds();
             }
             catch { result = null; }
@@ -149,16 +153,19 @@ namespace BabyBlocks
         // Adds PropCollider children to root based on the currently enabled MeshRenderers.
         // For props with pre-cooked prefab colliders those are used instead.
         // Deduplicates LOD variants by bounds so only one collider per unique mesh shape is added.
-        public static void ApplyColliderParts(GameObject root, PropInfo info)
+        // applyRenderMesh controls whether the render-mesh fallback path runs.
+        // The pre-cooked collider path (HasColliderParts) always runs regardless.
+        public static void ApplyColliderParts(GameObject root, PropInfo info, bool applyRenderMesh = false)
         {
             if (root == null || info == null) return;
             int layer = PropLayer;
 
             if (info.HasColliderParts)
             {
-                foreach (var cp in info.colliderParts)
+                for (int i = 0; i < info.colliderParts.Count; i++)
                 {
-                    var go = new GameObject("PropCollider");
+                    var cp = info.colliderParts[i];
+                    var go = new GameObject($"PropCollider_{i}");
                     go.transform.SetParent(root.transform, false);
                     go.transform.localPosition = cp.localPosition;
                     go.transform.localRotation = cp.localRotation;
@@ -193,8 +200,11 @@ namespace BabyBlocks
                 return;
             }
 
-            // GPU-readback path: one collider per unique-bounds enabled renderer.
+            if (!applyRenderMesh) return;
+
+            // Render-mesh path: one collider per unique-bounds enabled renderer.
             var seenBounds = new HashSet<string>();
+            int colIdx = 0;
             foreach (var mf in root.GetComponentsInChildren<MeshFilter>(true))
             {
                 if (mf == null || mf.sharedMesh == null) continue;
@@ -205,7 +215,7 @@ namespace BabyBlocks
                 string key = $"{b.center.x:F2},{b.center.y:F2},{b.center.z:F2}|{b.size.x:F2},{b.size.y:F2},{b.size.z:F2}";
                 if (!seenBounds.Add(key)) continue;
 
-                var go = new GameObject("PropCollider");
+                var go = new GameObject($"PropCollider_{colIdx++}");
                 go.transform.SetParent(root.transform, false);
                 go.transform.localPosition = mf.transform.localPosition;
                 go.transform.localRotation = mf.transform.localRotation;
@@ -213,17 +223,11 @@ namespace BabyBlocks
                 go.layer = layer;
 
                 var physMesh = BuildPhysicsMesh(mf.sharedMesh);
-                if (physMesh != null)
-                {
-                    var mc = go.AddComponent<MeshCollider>();
-                    mc.sharedMesh = physMesh;
-                }
-                else
-                {
-                    var bc = go.AddComponent<BoxCollider>();
-                    bc.center = b.center;
-                    bc.size   = b.size;
-                }
+                var mc = go.AddComponent<MeshCollider>();
+                // GPU-readback produces a clean CPU-readable mesh; fall back to assigning
+                // sharedMesh directly if readback fails — PhysX can consume non-readable
+                // meshes just as the old per-part code did.
+                mc.sharedMesh = physMesh != null ? physMesh : mf.sharedMesh;
             }
         }
 

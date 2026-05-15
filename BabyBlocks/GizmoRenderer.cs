@@ -1,6 +1,9 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using Il2Cpp;
+using MelonLoader;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace BabyBlocks
 {
@@ -39,12 +42,32 @@ namespace BabyBlocks
         static Material[] _mats, _hoverMats;
         static Material[] _planeMats, _planeHoverMats;
         static Material _freeMat, _freeHoverMat;
-        static Material _outlineMat, _outlineDepthMat;
-        // Reversed-winding meshes cached by source mesh to support multi-part outlines.
-        static readonly Dictionary<Mesh, Mesh> _outlineMeshCache = new();
+        // Outline pipeline — two cameras after the main scene camera:
+        //
+        //  _outlineRingCam (depth 99,  ClearFlags=Nothing) — inherits the main scene depth
+        //    buffer unchanged.  Draws the normal-expanded shell with ZTest=Always so the ring
+        //    is always visible over terrain and other scene objects.  ZWrite=Off keeps the
+        //    depth buffer at its incoming main-scene values for the cover pass below.
+        //
+        //  _outlineCoverCam (depth 99.5, ClearFlags=Nothing) — also inherits the main-scene
+        //    depth (ring didn't write depth).  Re-draws the prop with its own original
+        //    materials using ZTest=LEqual against real scene depth, so the prop is correctly
+        //    occluded by other scene objects (doesn't float over terrain).  Because this camera
+        //    renders after the ring (depth 99.5 > 99) the prop color overwrites the ring
+        //    exactly where the prop surface is visible.  Only the silhouette edge — where no
+        //    prop geometry exists — keeps the yellow ring color.
+        //
+        // Normal-based vertex expansion (each vertex moved LocalThick along its normal) gives
+        // correct inner-hole outlines (inner normals point inward → expanded geometry covers
+        // the hole edge). Position-based normal averaging in ComputeSmoothedNormals ensures
+        // smooth expansion even across UV seams.
+        const float LocalThick = 0.04f; // local-space expansion per vertex
+        static Material _outlineMat;
+        static readonly Dictionary<Mesh, Mesh> _outlineExpandedCache = new();
+        static Camera _mainCamRef; // set by Sync(); avoids Camera.main tag dependency
 
         static GameObject _root, _arrowHandles, _ringHandles;
-        static Camera _outlineCam, _overlayCam;
+        static Camera _outlineRingCam, _outlineCoverCam, _overlayCam;
         static Vector3 _pivotPos;
         static bool _pivotOverrideActive;
         static Vector3 _pivotOverride;
@@ -68,18 +91,21 @@ namespace BabyBlocks
             InitMeshes();
             InitMaterials();
             BuildColliders();
-            _outlineCam = BuildCam(99f,  500000f);
-            _overlayCam = BuildCam(100f, 500000f);
+            _outlineRingCam  = BuildCam( 99f,  500000f, CameraClearFlags.Nothing); // ring, inherits scene depth
+            _outlineCoverCam = BuildCam( 99.5f,500000f, CameraClearFlags.Nothing); // cover, inherits scene depth
+            _overlayCam      = BuildCam(100f,  500000f, CameraClearFlags.Depth);   // gizmo arrows
         }
 
         public static void Sync(IReadOnlyList<LevelEditorObject> selection, LevelEditorObject primary,
             LevelEditor.ToolMode tool, Camera mainCam)
         {
             if (_root == null) return;
+            _mainCamRef = mainCam;
             bool visible = selection != null && selection.Count > 0;
             _root.SetActive(visible);
-            if (_outlineCam != null) _outlineCam.enabled = visible;
-            if (_overlayCam != null) _overlayCam.enabled = visible;
+            if (_outlineRingCam  != null) _outlineRingCam.enabled  = visible;
+            if (_outlineCoverCam != null) _outlineCoverCam.enabled = visible;
+            if (_overlayCam      != null) _overlayCam.enabled      = visible;
             if (!visible) return;
 
             _pivotPos = _pivotOverrideActive ? _pivotOverride : GetSelectionBoundsCenter(selection);
@@ -94,13 +120,18 @@ namespace BabyBlocks
             if (_arrowHandles != null) _arrowHandles.SetActive(!rotating);
             if (_ringHandles  != null) _ringHandles.SetActive(rotating);
 
-            if (_outlineCam != null)
+            if (_outlineRingCam != null)
             {
-                _outlineCam.transform.SetPositionAndRotation(mainCam.transform.position, mainCam.transform.rotation);
-                _outlineCam.fieldOfView    = mainCam.fieldOfView;
-                _outlineCam.aspect         = mainCam.aspect;
-                _outlineCam.nearClipPlane  = mainCam.nearClipPlane;
+                _outlineRingCam.transform.SetPositionAndRotation(mainCam.transform.position, mainCam.transform.rotation);
+                _outlineRingCam.projectionMatrix = mainCam.projectionMatrix;
             }
+
+            if (_outlineCoverCam != null)
+            {
+                _outlineCoverCam.transform.SetPositionAndRotation(mainCam.transform.position, mainCam.transform.rotation);
+                _outlineCoverCam.projectionMatrix = mainCam.projectionMatrix;
+            }
+
             if (_overlayCam != null)
             {
                 _overlayCam.transform.SetPositionAndRotation(mainCam.transform.position, mainCam.transform.rotation);
@@ -112,9 +143,10 @@ namespace BabyBlocks
 
         public static void SetActive(bool on)
         {
-            if (_root       != null) _root.SetActive(on);
-            if (_outlineCam != null) _outlineCam.enabled = on;
-            if (_overlayCam != null) _overlayCam.enabled = on;
+            if (_root            != null) _root.SetActive(on);
+            if (_outlineRingCam  != null) _outlineRingCam.enabled  = on;
+            if (_outlineCoverCam != null) _outlineCoverCam.enabled = on;
+            if (_overlayCam      != null) _overlayCam.enabled      = on;
         }
 
         // Returns the hovered GizmoHandle for a ray, or null. Free sphere (axisIndex=3) wins over arrows.
@@ -210,15 +242,12 @@ namespace BabyBlocks
             }
         }
 
-        // Outline is submitted to _outlineCam (depth 99, fresh depth buffer) so it always
-        // renders over scene geometry. The depth-write mask stamps the selected object's
-        // silhouette first so the ring only appears at the edge, not on the object's face.
-        // Handles both single-mesh (MeshFilter on root) and multi-part (children) objects.
         public static void DrawOutline(IReadOnlyList<LevelEditorObject> selection)
         {
-            if (selection == null || selection.Count == 0 || _outlineMat == null || _outlineCam == null) return;
+            if (selection == null || selection.Count == 0) return;
+            if (_outlineMat == null || _outlineRingCam == null || _outlineCoverCam == null) return;
 
-            var cam = Camera.main;
+            var cam = _mainCamRef != null ? _mainCamRef : Camera.main;
             if (cam == null) return;
 
             for (int s = 0; s < selection.Count; s++)
@@ -226,20 +255,23 @@ namespace BabyBlocks
                 var selected = selection[s];
                 if (selected == null) continue;
 
-                // Root MeshFilter covers primitives and legacy single-part props.
                 var rootMf = selected.GetComponent<MeshFilter>();
-                if (rootMf != null)
+                if (rootMf != null && rootMf.sharedMesh != null)
                 {
                     DrawMeshOutline(rootMf.sharedMesh, selected.transform, cam);
                     continue;
                 }
 
-                // Multi-part: draw an outline for every child MeshFilter.
-                // Use index-based loop to avoid any IL2Cpp foreach compatibility issues.
                 var childMfs = selected.GetComponentsInChildren<MeshFilter>();
                 if (childMfs == null) continue;
                 for (int i = 0; i < childMfs.Length; i++)
-                    if (childMfs[i] != null) DrawMeshOutline(childMfs[i].sharedMesh, childMfs[i].transform, cam);
+                {
+                    var mf = childMfs[i];
+                    if (mf == null || mf.sharedMesh == null) continue;
+                    var mr = mf.GetComponent<MeshRenderer>();
+                    if (mr == null || !mr.enabled) continue;
+                    DrawMeshOutline(mf.sharedMesh, mf.transform, cam);
+                }
             }
         }
 
@@ -247,25 +279,118 @@ namespace BabyBlocks
         {
             if (srcMesh == null) return;
 
-            if (!_outlineMeshCache.TryGetValue(srcMesh, out var rev))
+            var ws = t.lossyScale;
+
+            // Pass 1 — ring cam (ClearFlags=Nothing, inherits main-scene depth):
+            // Draw the normal-expanded shell with ZTest=Always so the ring is always
+            // visible over terrain and other scene objects.
+            // ZWrite=Off → depth buffer stays at main-scene values for the cover pass.
+            if (!_outlineExpandedCache.TryGetValue(srcMesh, out var expanded))
             {
-                rev = BuildReversedMesh(srcMesh);
-                _outlineMeshCache[srcMesh] = rev;
+                expanded = BuildExpandedMesh(srcMesh);
+                _outlineExpandedCache[srcMesh] = expanded;
             }
-            if (rev == null) return;
-
-            float dist = Vector3.Distance(cam.transform.position, t.position);
-            float ow   = Mathf.Max(dist * 0.004f, 0.03f);
-            var   ws   = t.lossyScale;
-
-            if (_outlineDepthMat != null)
-                Graphics.DrawMesh(srcMesh,
+            if (expanded != null)
+            {
+                Graphics.DrawMesh(expanded,
                     Matrix4x4.TRS(t.position, t.rotation, ws),
-                    _outlineDepthMat, Layer, _outlineCam);
+                    _outlineMat, Layer, _outlineRingCam);
+            }
 
-            Graphics.DrawMesh(rev,
-                Matrix4x4.TRS(t.position, t.rotation, ws + Vector3.one * ow),
-                _outlineMat, Layer, _outlineCam);
+            // Pass 2 — cover cam (ClearFlags=Nothing, inherits main-scene depth):
+            // Re-draw the original mesh with its actual material(s) using ZTest=LEqual
+            // against the real scene depth.  The prop renders only where D_prop <= D_scene,
+            // so it is correctly occluded by other scene objects and does NOT float over
+            // terrain.  Because this camera renders after the ring (depth 99.5 > 99) the
+            // prop color overwrites ring pixels exactly where the prop surface is visible.
+            // Only the silhouette edge — where no prop geometry exists — stays yellow.
+            var mr = t.GetComponent<MeshRenderer>();
+            if (mr == null || !mr.enabled) return;
+            var mats = mr.sharedMaterials;
+            if (mats == null) return;
+            for (int j = 0; j < mats.Length; j++)
+            {
+                var mat = mats[j];
+                if (mat == null) continue;
+                Graphics.DrawMesh(srcMesh, t.localToWorldMatrix, mat, Layer, _outlineCoverCam, j);
+            }
+        }
+
+        // Builds a version of the mesh where every vertex is offset by its normal × LocalThick.
+        // This creates a uniform outline shell on ALL surfaces, including inner holes, because
+        // inner normals point inward — the expanded geometry covers the inner edge correctly.
+        // Falls back to BuildPhysicsMesh + ComputeSmoothedNormals for non-readable game meshes.
+        static Mesh BuildExpandedMesh(Mesh source)
+        {
+            var verts   = source.vertices;
+            var normals = source.normals;
+            var tris    = source.triangles;
+
+            if (verts == null || verts.Length == 0 || tris == null || tris.Length == 0)
+            {
+                var phys = LevelEditorManager.BuildPhysicsMesh(source);
+                if (phys == null) return null;
+                verts   = phys.vertices;
+                tris    = phys.triangles;
+                normals = null;
+            }
+
+            if (normals == null || normals.Length != verts.Length)
+                normals = ComputeSmoothedNormals(verts, tris);
+
+            var expanded = new Vector3[verts.Length];
+            for (int i = 0; i < verts.Length; i++)
+                expanded[i] = verts[i] + normals[i] * LocalThick;
+
+            var mesh = new Mesh();
+            mesh.vertices  = expanded;
+            mesh.triangles = tris;
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        // Computes smooth normals even across UV/lightmap seams by grouping vertices
+        // that share the same quantised world position rather than the same vertex index.
+        // This prevents the per-face faceting that appears when a mesh has duplicate
+        // vertices at seam edges (common in non-readable game meshes via BuildPhysicsMesh).
+        static Vector3[] ComputeSmoothedNormals(Vector3[] verts, int[] tris)
+        {
+            // Step 1: accumulate area-weighted face normals per vertex index.
+            var indexAcc = new Vector3[verts.Length];
+            for (int i = 0; i < tris.Length; i += 3)
+            {
+                int i0 = tris[i], i1 = tris[i + 1], i2 = tris[i + 2];
+                var n = Vector3.Cross(verts[i1] - verts[i0], verts[i2] - verts[i0]);
+                indexAcc[i0] += n;
+                indexAcc[i1] += n;
+                indexAcc[i2] += n;
+            }
+
+            // Step 2: merge by quantised position so that seam-duplicate vertices
+            // (same XYZ, different UV index) share the same smoothed normal.
+            const int Q = 8192; // ~0.12 mm precision at unit scale
+            var posAcc = new Dictionary<(int, int, int), Vector3>(verts.Length);
+            for (int i = 0; i < verts.Length; i++)
+            {
+                var key = (Mathf.RoundToInt(verts[i].x * Q),
+                           Mathf.RoundToInt(verts[i].y * Q),
+                           Mathf.RoundToInt(verts[i].z * Q));
+                posAcc[key] = posAcc.TryGetValue(key, out var existing)
+                    ? existing + indexAcc[i]
+                    : indexAcc[i];
+            }
+
+            // Step 3: write back position-averaged normals per vertex index.
+            var result = new Vector3[verts.Length];
+            for (int i = 0; i < verts.Length; i++)
+            {
+                var key = (Mathf.RoundToInt(verts[i].x * Q),
+                           Mathf.RoundToInt(verts[i].y * Q),
+                           Mathf.RoundToInt(verts[i].z * Q));
+                var n = posAcc.TryGetValue(key, out var v) ? v : indexAcc[i];
+                result[i] = n == Vector3.zero ? Vector3.up : n.normalized;
+            }
+            return result;
         }
 
         static void InitMeshes()
@@ -316,23 +441,15 @@ namespace BabyBlocks
 
             var outlineColor = new Color(1f, 0.85f, 0.1f, 1f);
 
+            // Outline ring — ZTest=Always so the ring is visible over all scene objects.
+            // ZWrite=Off so the depth buffer stays at its incoming main-scene values, which
+            // the cover cam then uses to correctly occlude the prop behind scene objects.
             _outlineMat = new Material(shader);
             _outlineMat.color = outlineColor;
             if (_outlineMat.HasProperty("_BaseColor")) _outlineMat.SetColor("_BaseColor", outlineColor);
             _outlineMat.renderQueue = 3001;
-
-            // Depth-write mask: SrcBlend=Zero/DstBlend=One leaves colour unchanged
-            // while ZWrite stamps the selected object's silhouette into the outline cam's
-            // fresh depth buffer so the ring is suppressed on the object's own surface.
-            var depthShader = Shader.Find("Standard") ?? Shader.Find("Universal Render Pipeline/Unlit");
-            if (depthShader != null)
-            {
-                _outlineDepthMat = new Material(depthShader);
-                _outlineDepthMat.SetInt("_SrcBlend", 0);  // Zero
-                _outlineDepthMat.SetInt("_DstBlend", 1);  // One
-                _outlineDepthMat.SetInt("_ZWrite",   1);  // On
-                _outlineDepthMat.renderQueue = 2990;
-            }
+            _outlineMat.SetInt("_ZWrite", 0); // Off — preserve real scene depth for cover pass
+            _outlineMat.SetInt("_ZTest",  8); // Always — ring visible over terrain/other objects
         }
 
         static Material MakeGizmoMat(Shader shader, Color color, int queue)
@@ -345,14 +462,13 @@ namespace BabyBlocks
             return m;
         }
 
-        // Overlay camera: ClearFlags=Depth so each frame starts with an empty depth buffer,
-        // making everything submitted to it always pass depth testing.
-        static Camera BuildCam(float depth, float farClip = 500000f)
+        static Camera BuildCam(float depth, float farClip = 500000f,
+            CameraClearFlags clearFlags = CameraClearFlags.Depth)
         {
             var go  = new GameObject($"GizmoOverlayCam_{depth}");
             UnityEngine.Object.DontDestroyOnLoad(go);
             var cam = go.AddComponent<Camera>();
-            cam.clearFlags    = CameraClearFlags.Depth;
+            cam.clearFlags    = clearFlags;
             cam.cullingMask   = Mask;
             cam.depth         = depth;
             cam.nearClipPlane = 0.01f;
@@ -542,23 +658,5 @@ namespace BabyBlocks
             return hasBounds ? b.center : Vector3.zero;
         }
 
-        // Reversed winding so only silhouette-edge back-faces survive Cull Back,
-        // producing the outline ring without needing shader _Cull overrides.
-        static Mesh BuildReversedMesh(Mesh source)
-        {
-            var srcTris = source.triangles;
-            var tris    = new int[srcTris.Length];
-            for (int i = 0; i < srcTris.Length; i += 3)
-            {
-                tris[i]     = srcTris[i];
-                tris[i + 1] = srcTris[i + 2];
-                tris[i + 2] = srcTris[i + 1];
-            }
-            var mesh = new Mesh();
-            mesh.vertices  = source.vertices;
-            mesh.triangles = tris;
-            mesh.RecalculateBounds();
-            return mesh;
-        }
     }
 }

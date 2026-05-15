@@ -7,6 +7,7 @@ using UnityEngine;
 using System.Collections;
 using UnityEngine.AddressableAssets;
 using UnityEngine.ResourceManagement.AsyncOperations;
+using MelonLoader.Utils;
 
 namespace BabyBlocks
 {
@@ -53,6 +54,8 @@ namespace BabyBlocks
 
         public int gpuiIndex = -1;
         public bool IsGpui => gpuiIndex >= 0;
+        public string visualPath     = "";  // GPUI: addressable path to visual prefab
+        public string gpuiPrefabName = "";  // GPUI: pool prefab name for collider-only fallback
 
         public bool HasMesh => parts != null && parts.Count > 0;
         public bool IsPrimitive => id.StartsWith("primitive://", StringComparison.Ordinal);
@@ -99,6 +102,57 @@ namespace BabyBlocks
 
         public static IReadOnlyList<PropInfo> AllProps => _all;
         public static IReadOnlyList<PropInfo> FilteredProps => _filtered;
+
+        static string GpuiCachePath =>
+            Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks_GpuiCache.txt");
+
+        static bool TryLoadGpuiCache(string catalogPath,
+            out List<(string baseName, string id, string visualPath, string prefabName)> entries)
+        {
+            entries = null;
+            try
+            {
+                if (!File.Exists(GpuiCachePath)) return false;
+                var lines = File.ReadAllLines(GpuiCachePath);
+                if (lines.Length == 0 || !lines[0].StartsWith("MTIME=")) return false;
+                string cachedMtime = lines[0].Substring(6);
+                string actualMtime = File.Exists(catalogPath)
+                    ? File.GetLastWriteTimeUtc(catalogPath).Ticks.ToString()
+                    : "0";
+                if (cachedMtime != actualMtime) return false;
+                entries = new List<(string, string, string, string)>();
+                for (int i = 1; i < lines.Length; i++)
+                {
+                    var line = lines[i];
+                    if (!line.StartsWith("PROP|")) continue;
+                    var p = line.Substring(5).Split('|');
+                    if (p.Length >= 4) entries.Add((p[0], p[1], p[2], p[3]));
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+
+        static void SaveGpuiCache(string catalogPath,
+            List<(string baseName, string id, string visualPath, string prefabName)> entries)
+        {
+            try
+            {
+                string mtime = File.Exists(catalogPath)
+                    ? File.GetLastWriteTimeUtc(catalogPath).Ticks.ToString()
+                    : "0";
+                var sb = new StringBuilder();
+                sb.Append("MTIME=").AppendLine(mtime);
+                foreach (var (baseName, id, visualPath, prefabName) in entries)
+                    sb.Append("PROP|").Append(baseName).Append('|').Append(id).Append('|')
+                      .Append(visualPath).Append('|').AppendLine(prefabName);
+                File.WriteAllText(GpuiCachePath, sb.ToString());
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[PropLibrary] GPUI cache save failed: {e.Message}");
+            }
+        }
 
         public static bool   IsInitialized { get; private set; }
         public static string SearchText    { get; private set; } = "";
@@ -163,14 +217,42 @@ namespace BabyBlocks
         {
             if (!IsInitialized) return;
 
+            string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
+            int insertAt = PrimitiveNames.Length;
+            int added    = 0;
+
+            // Fast path: load from cache so no catalog parsing or pool scanning needed.
+            if (TryLoadGpuiCache(catalogPath, out var cached) && cached != null)
+            {
+                int gi = 0;
+                foreach (var (baseName, id, visualPath, prefabName) in cached)
+                {
+                    if (_byId.ContainsKey(id) || _gpuiScannedNames.Contains(baseName)) continue;
+                    var info = new PropInfo(id, baseName)
+                    {
+                        gpuiIndex     = gi++,
+                        visualPath    = visualPath,
+                        gpuiPrefabName = prefabName,
+                        isLoaded      = false,
+                        isInvalid     = false,
+                    };
+                    _all.Insert(insertAt++, info);
+                    _byId[id] = info;
+                    _gpuiScannedNames.Add(baseName);
+                    added++;
+                }
+                if (added > 0) BuildFiltered();
+                MelonLogger.Msg($"[PropLibrary] GPUI cache loaded: {added} props.");
+                return;
+            }
+
+            // Cold path: scan the GPUI pool and catalog (no Addressables loads here).
             var loaded = TryGetLoadedProps();
             if (loaded == null || loaded.Length == 0) return;
 
-            var visualLookup = BuildGpuiVisualLookup();
-
-            int insertAt = PrimitiveNames.Length;
-            int added    = 0;
-            int gpuiIdx  = 0;
+            var visualLookup  = BuildGpuiVisualLookup();
+            var cacheEntries  = new List<(string, string, string, string)>();
+            int gpuiIdx       = 0;
 
             for (int i = 0; i < loaded.Length; i++)
             {
@@ -191,58 +273,27 @@ namespace BabyBlocks
                 string gpuiId = $"gpui://{gi}";
                 if (_byId.ContainsKey(gpuiId)) continue;
 
-                var info = new PropInfo(gpuiId, baseName);
-                info.gpuiIndex = gi;
+                visualLookup.TryGetValue(baseName, out string visualPath);
+                visualPath   ??= "";
+                string prefabName = prefabGO.name;
 
-                // Try to load the visual prefab from the catalog.
-                if (visualLookup.TryGetValue(baseName, out string visualPath))
+                var info = new PropInfo(gpuiId, baseName)
                 {
-                    try
-                    {
-                        var handle   = Addressables.LoadAssetAsync<GameObject>(visualPath);
-                        var visualGO = handle.WaitForCompletion();
-                        if (visualGO != null)
-                        {
-                            var instance = UnityEngine.Object.Instantiate(
-                                visualGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
-                            try   { ExtractPartsFromInstance(instance, info); }
-                            finally { UnityEngine.Object.Destroy(instance); }
-                        }
-                    }
-                    catch (Exception e)
-                    {
-                        MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] \"{baseName}\" visual load failed: {e.Message}");
-                    }
-                }
-
-                // Fall back to collider-mesh extraction if visual load yielded nothing.
-                if (!info.HasMesh)
-                {
-                    var instance = UnityEngine.Object.Instantiate(
-                        prefabGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
-                    try   { ExtractPartsFromColliders(instance, info); }
-                    catch (Exception e) { MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] collider extract failed: {e.Message}"); }
-                    UnityEngine.Object.Destroy(instance);
-                }
-
-                info.isLoaded  = true;
-                info.isInvalid = !info.HasMesh;
+                    gpuiIndex      = gi,
+                    visualPath     = visualPath,
+                    gpuiPrefabName = prefabName,
+                    isLoaded       = false,
+                    isInvalid      = false,
+                };
 
                 _gpuiScannedNames.Add(baseName);
-
-                if (info.HasMesh)
-                {
-                    _all.Insert(insertAt, info);
-                    _byId[gpuiId] = info;
-                    insertAt++;
-                    added++;
-                }
-                else
-                {
-                    MelonLogger.Warning($"[PropLibrary] GPUI[{gi}] \"{baseName}\" — no mesh found, skipping.");
-                }
+                _all.Insert(insertAt++, info);
+                _byId[gpuiId] = info;
+                cacheEntries.Add((baseName, gpuiId, visualPath, prefabName));
+                added++;
             }
 
+            SaveGpuiCache(catalogPath, cacheEntries);
             if (added > 0) BuildFiltered();
             MelonLogger.Msg($"[PropLibrary] GPUI scan complete: {added} props added.");
         }
@@ -442,6 +493,12 @@ namespace BabyBlocks
                 return;
             }
 
+            if (info.IsGpui)
+            {
+                LoadGpuiPropData(info);
+                return;
+            }
+
             // Try to clone a cached prefab from BestRegionLoader so materials remain intact.
             try
             {
@@ -488,6 +545,63 @@ namespace BabyBlocks
             }
             catch { }
             return false;
+        }
+
+        static void LoadGpuiPropData(PropInfo info)
+        {
+            // Try visual prefab first.
+            if (!string.IsNullOrEmpty(info.visualPath))
+            {
+                try
+                {
+                    var handle   = Addressables.LoadAssetAsync<GameObject>(info.visualPath);
+                    var visualGO = handle.WaitForCompletion();
+                    if (visualGO != null)
+                    {
+                        var instance = UnityEngine.Object.Instantiate(
+                            visualGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
+                        try   { ExtractPartsFromInstance(instance, info); }
+                        finally { UnityEngine.Object.Destroy(instance); }
+                    }
+                }
+                catch (Exception e)
+                {
+                    MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" visual load failed: {e.Message}");
+                }
+            }
+
+            // Collider-mesh fallback.
+            if (!info.HasMesh && !string.IsNullOrEmpty(info.gpuiPrefabName))
+            {
+                try
+                {
+                    var loaded = TryGetLoadedProps();
+                    if (loaded != null)
+                    {
+                        string target = NormalizePropName(info.gpuiPrefabName);
+                        for (int i = 0; i < loaded.Length; i++)
+                        {
+                            var go = loaded[i];
+                            if (go == null) continue;
+                            if (!string.Equals(NormalizePropName(go.name), target,
+                                    StringComparison.OrdinalIgnoreCase)) continue;
+                            var instance = UnityEngine.Object.Instantiate(
+                                go, new Vector3(0f, -99999f, 0f), Quaternion.identity);
+                            try   { ExtractPartsFromColliders(instance, info); }
+                            catch { }
+                            UnityEngine.Object.Destroy(instance);
+                            break;
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" collider load failed: {e.Message}");
+                }
+            }
+
+            info.isLoaded  = true;
+            info.isInvalid = !info.HasMesh;
         }
 
         static bool TryLoadAddressable(PropInfo info)
@@ -807,31 +921,32 @@ namespace BabyBlocks
                         t.lossyScale.y / (rootScale.y != 0f ? rootScale.y : 1f),
                         t.lossyScale.z / (rootScale.z != 0f ? rootScale.z : 1f))
                 };
-                if (col is MeshCollider mc && mc.sharedMesh != null)
+                var asMesh = col.TryCast<MeshCollider>();
+                if (asMesh != null && asMesh.sharedMesh != null)
                 {
                     cp.type   = PropColliderPart.ColliderType.Mesh;
-                    cp.mesh   = mc.sharedMesh;
-                    cp.convex = mc.convex;
+                    cp.mesh   = asMesh.sharedMesh;
+                    cp.convex = asMesh.convex;
                 }
-                else if (col is BoxCollider bc)
+                else if (col.TryCast<BoxCollider>() is BoxCollider asBox)
                 {
                     cp.type   = PropColliderPart.ColliderType.Box;
-                    cp.center = bc.center;
-                    cp.size   = bc.size;
+                    cp.center = asBox.center;
+                    cp.size   = asBox.size;
                 }
-                else if (col is SphereCollider sc)
+                else if (col.TryCast<SphereCollider>() is SphereCollider asSphere)
                 {
                     cp.type   = PropColliderPart.ColliderType.Sphere;
-                    cp.center = sc.center;
-                    cp.radius = sc.radius;
+                    cp.center = asSphere.center;
+                    cp.radius = asSphere.radius;
                 }
-                else if (col is CapsuleCollider cc)
+                else if (col.TryCast<CapsuleCollider>() is CapsuleCollider asCapsule)
                 {
                     cp.type      = PropColliderPart.ColliderType.Capsule;
-                    cp.center    = cc.center;
-                    cp.radius    = cc.radius;
-                    cp.height    = cc.height;
-                    cp.direction = cc.direction;
+                    cp.center    = asCapsule.center;
+                    cp.radius    = asCapsule.radius;
+                    cp.height    = asCapsule.height;
+                    cp.direction = asCapsule.direction;
                 }
                 else continue;
                 info.colliderParts.Add(cp);
