@@ -118,7 +118,7 @@ namespace BabyBlocks
             if (main != null) GizmoRenderer.Sync(_selection, selectedObject, currentTool, main);
             UpdateHover(overUI);
             GizmoRenderer.Draw(_hoveredAxis, currentTool);
-            GizmoRenderer.DrawOutline(_selection);
+            GizmoRenderer.DrawOutline(_selection, main);
 
             if (Input.GetMouseButton(1)) return;
 
