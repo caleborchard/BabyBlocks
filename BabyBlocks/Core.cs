@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using Il2Cpp;
 using Il2CppInterop.Runtime.Injection;
 using MelonLoader;
@@ -17,14 +17,11 @@ namespace BabyBlocks
 
         public override void OnInitializeMelon()
         {
-            // Custom MonoBehaviours must be registered before any AddComponent call.
             ClassInjector.RegisterTypeInIl2Cpp<LevelEditorObject>();
             ClassInjector.RegisterTypeInIl2Cpp<LevelEditorManager>();
             ClassInjector.RegisterTypeInIl2Cpp<GizmoHandle>();
 
             new HarmonyLib.Harmony("BabyBlocks.Patches").PatchAll();
-
-            // Scene hierarchy scanner is disabled for now.
         }
 
         public override void OnUpdate()
@@ -32,13 +29,8 @@ namespace BabyBlocks
             if (Input.GetKeyDown(KeyCode.BackQuote) && PlayerMovement.me != null)
                 ToggleEditorMode();
 
-
-            // Re-assert the loading transform on the fly cam every frame while
-            // flying.  TeleportCo resets it to the player's torso at the end of
-            // every teleport; this reclaims it within one frame so terrain keeps
-            // streaming around the fly cam rather than the hidden player.
-            // We skip only during active teleports so TeleportCo can still use
-            // its own loadingTargetTransform to pre-load the destination area.
+            // Keep terrain streaming around the fly cam rather than the hidden player.
+            // Skipped during active teleports so TeleportCo can pre-load the destination.
             if (flyCamActive && !Menu.me.teleporting)
             {
                 var player = PlayerMovement.me;
@@ -46,8 +38,7 @@ namespace BabyBlocks
                     BestRegionLoader.me.loadingTransform = player.flyCam.transform;
             }
 
-            // Right-click in cursor mode: lock the cursor while the button is held
-            // so mouse-look deltas are clean (no cursor wandering off screen).
+            // Right-click in cursor mode: lock cursor while held so mouse-look deltas are clean.
             if (flyCamActive && cursorMode)
             {
                 if (Input.GetMouseButtonDown(1))
@@ -62,12 +53,8 @@ namespace BabyBlocks
                 }
             }
 
-            // Level editor input — only runs in cursor mode.
             if (flyCamActive && cursorMode)
                 LevelEditor.Update();
-
-            // Scene hierarchy scanner — available any time the freecam is active.
-            // Scene hierarchy scanner is disabled for now.
         }
 
         public override void OnGUI()
@@ -80,8 +67,7 @@ namespace BabyBlocks
         {
             var player = PlayerMovement.me;
 
-            // flyCam.transform.parent != null means it's currently parented/inactive,
-            // so we're about to enable — same condition ToggleFlyCam uses internally.
+            // flyCam.transform.parent != null means currently parented/inactive — about to enable.
             bool activating = player.flyCam.transform.parent != null;
 
             player.ToggleFlyCam();
@@ -91,8 +77,7 @@ namespace BabyBlocks
                 flyCamActive = true;
                 cursorMode   = false;
                 Cursor.lockState = CursorLockMode.Locked;
-                // Hide the player before freezing physics so the A-pose that
-                // SwitchToDisabledMode causes is never visible.
+                // Hide player before freezing physics so the A-pose from SwitchToDisabledMode is never visible.
                 player.gameObject.SetActive(false);
                 player.pm.SwitchToDisabledMode();
                 LevelEditor.EnsureManager();
@@ -117,6 +102,7 @@ namespace BabyBlocks
             cursorMode = !cursorMode;
             Cursor.lockState = cursorMode ? CursorLockMode.None : CursorLockMode.Locked;
             Cursor.visible   = cursorMode;
+            if (!cursorMode) LevelEditor.HideGizmo();
         }
 
         static void ToggleEditorMode()
@@ -145,9 +131,7 @@ namespace BabyBlocks
             if (!Physics.Raycast(ray, out var hit, 1000f, LayerCache.PropTerrainMask))
                 return;
 
-            // Set the animator rotation to the fly cam's yaw before the teleport.
-            // TeleportCo calls FindBestFootSpots(checkPos, player.anim.transform.rotation),
-            // so this is the hook point for controlling player facing after landing.
+            // Set animator yaw before teleport so FindBestFootSpots uses the fly cam's facing.
             var player = PlayerMovement.me;
             if (player != null)
             {
@@ -157,8 +141,6 @@ namespace BabyBlocks
 
             _flyTeleportInProgress = true;
             Menu.me.Teleport(hit.point);
-
-            // Exit fly mode after the teleport completes so the player regains control.
             MelonCoroutines.Start(ExitFlyModeAfterTeleport());
         }
 
@@ -167,8 +149,7 @@ namespace BabyBlocks
             while (Menu.me.teleporting)
                 yield return null;
 
-            // One extra frame for TeleportCo's final cleanup to complete.
-            yield return null;
+            yield return null; // One extra frame for TeleportCo's final cleanup.
 
             if (flyCamActive)
                 ToggleFlyMode();
@@ -177,8 +158,7 @@ namespace BabyBlocks
         }
     }
 
-    // Replace FlyCam.Update entirely so we can add right-click look in cursor mode
-    // and keep left-click teleport in fly mode.
+    // Replaces FlyCam.Update to add right-click look in cursor mode and left-click teleport in fly mode.
     [HarmonyPatch(typeof(FlyCam), "Update")]
     class FlyCamUpdatePatch
     {
@@ -186,7 +166,6 @@ namespace BabyBlocks
         {
             if (FlyCam.locked) return false;
 
-            // Movement — identical to native FlyCam, always active.
             bool uiTyping = Core.cursorMode && LevelEditor.IsTypingInUI;
             var input = Vector3.zero;
             if (!uiTyping)
@@ -201,11 +180,7 @@ namespace BabyBlocks
                 if (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.LeftAlt)) input *= 30f;
             }
 
-            // Mouse look:
-            //   • Normal fly mode  → always active (cursor locked).
-            //   • Cursor mode      → only while right mouse button is held,
-            //                        and not while dragging a gizmo handle
-            //                        (avoids camera drift during axis drags).
+            // Cursor mode: look only while RMB held and not dragging a gizmo (avoids camera drift).
             bool doLook = !Core.cursorMode
                        || (Input.GetMouseButton(1) && !LevelEditor.isDragging);
 
@@ -222,11 +197,10 @@ namespace BabyBlocks
             __instance.transform.position +=
                 __instance.transform.rotation * (input * __instance.maxVel) * Time.unscaledDeltaTime;
 
-            // Left-click teleport: only in normal fly mode (not cursor / editor mode).
             if (!Core.cursorMode && Input.GetMouseButtonDown(0) && !Menu.me.paused)
                 Core.HandleFlyCamTeleport(__instance);
 
-            return false; // Skip original.
+            return false;
         }
     }
 }

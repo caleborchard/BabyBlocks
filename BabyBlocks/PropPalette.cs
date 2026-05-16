@@ -118,17 +118,20 @@ namespace BabyBlocks
                     bool hovered = itemRect.Contains(e.mousePosition) && !IsDragging && !invalid;
 
                     if (invalid)
-                        GUI.color = new Color(0.35f, 0.35f, 0.35f, 0.55f);
-                    else
-                        GUI.color = hovered ? new Color(1f, 1f, 1f, 0.95f) : new Color(0.6f, 0.6f, 0.6f, 0.85f);
-
-                    GUI.Box(itemRect, invalid ? prop.displayName + "\n(no mesh)" : prop.displayName, _itemStyle);
-
-
-                    if (!invalid && e.type == EventType.MouseDown && e.button == 0 && itemRect.Contains(e.mousePosition))
                     {
-                        _draggingIndex = propIdx;
-                        e.Use();
+                        GUI.color = new Color(0.45f, 0.45f, 0.45f, 0.7f);
+                        if (GUI.Button(itemRect, prop.displayName + "\n(no mesh)", _itemStyle))
+                            PropMetadataPanel.SetPaletteSelection(prop.id);
+                    }
+                    else
+                    {
+                        GUI.color = hovered ? new Color(1f, 1f, 1f, 0.95f) : new Color(0.6f, 0.6f, 0.6f, 0.85f);
+                        GUI.Box(itemRect, prop.displayName, _itemStyle);
+                        if (e.type == EventType.MouseDown && e.button == 0 && itemRect.Contains(e.mousePosition))
+                        {
+                            _draggingIndex = propIdx;
+                            e.Use();
+                        }
                     }
                 }
                 else

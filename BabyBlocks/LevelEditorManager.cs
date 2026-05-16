@@ -1,9 +1,7 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.IO;
 using Il2Cpp;
 using MelonLoader;
-using MelonLoader.Utils;
 using UnityEngine;
 
 namespace BabyBlocks
@@ -17,9 +15,6 @@ namespace BabyBlocks
         readonly List<LevelEditorObject> _objects = new();
         public IReadOnlyList<LevelEditorObject> Objects => _objects;
 
-        static string SavePath =>
-            Path.Combine(MelonEnvironment.UserDataDirectory, "FlyAndQuickSave_level.json");
-
         public void Awake()
         {
             if (Instance != null && Instance != this) { Destroy(gameObject); return; }
@@ -28,14 +23,6 @@ namespace BabyBlocks
             if (!PropLibrary.IsInitialized) PropLibrary.Init();
         }
 
-        // Spawns a game asset prop.
-        //
-        // GPUI props with a pool template (rocks, roots, trees, etc.) are spawned by
-        // cloning the pre-instantiated pool object, which preserves MicroSplatRockObject
-        // and any other component-driven rendering, giving correct materials automatically.
-        //
-        // Other props (wooden planks, beams, etc.) build child GameObjects from
-        // PropMeshPart data as before.  Each part gets its own MeshCollider.
         public LevelEditorObject SpawnFromPropInfo(PropInfo info, Vector3 position)
         {
             PropLibrary.LoadPropData(info);
@@ -45,7 +32,6 @@ namespace BabyBlocks
                 return null;
             }
 
-            // ── Mesh-part path ───────────────────────────────────────────────
             var root = new GameObject($"LEO_{info.displayName}");
             root.transform.position = position;
             root.layer = PropLayer;
@@ -80,13 +66,10 @@ namespace BabyBlocks
             return leo;
         }
 
-        // Per-source-mesh cache so the GPU readback only happens once per unique mesh.
         static readonly Dictionary<int, Mesh> _physicsMeshCache = new();
 
-        // Reads vertex positions and triangle indices from the GPU vertex/index buffers.
-        // Game meshes are shipped without Read/Write enabled, so Mesh.vertices is unavailable.
-        // GetVertexBuffer/GetIndexBuffer bypass that; position is assumed Float32×3 at byte-offset 0
-        // in stream 0 (standard Unity layout). Returns null and caches null on failure.
+        // Game meshes ship without Read/Write enabled; GetVertexBuffer/GetIndexBuffer bypass that.
+        // Position is assumed Float32×3 at byte-offset 0 in stream 0 (standard Unity layout).
         internal static Mesh BuildPhysicsMesh(Mesh source)
         {
             if (source == null) return null;
@@ -150,18 +133,17 @@ namespace BabyBlocks
             return result;
         }
 
-        // Adds PropCollider children to root based on the currently enabled MeshRenderers.
-        // For props with pre-cooked prefab colliders those are used instead.
-        // Deduplicates LOD variants by bounds so only one collider per unique mesh shape is added.
-        // applyRenderMesh controls whether the render-mesh fallback path runs.
-        // The pre-cooked collider path (HasColliderParts) always runs regardless.
         public static void ApplyColliderParts(GameObject root, PropInfo info, bool applyRenderMesh = false)
         {
             if (root == null || info == null) return;
             int layer = PropLayer;
 
-            if (info.HasColliderParts)
+            // Render mesh override takes priority when explicitly requested.
+            // Falls through to pre-cooked colliders otherwise.
+            if (!applyRenderMesh)
             {
+                if (!info.HasColliderParts) return;
+
                 for (int i = 0; i < info.colliderParts.Count; i++)
                 {
                     var cp = info.colliderParts[i];
@@ -200,9 +182,6 @@ namespace BabyBlocks
                 return;
             }
 
-            if (!applyRenderMesh) return;
-
-            // Render-mesh path: one collider per unique-bounds enabled renderer.
             var seenBounds = new HashSet<string>();
             int colIdx = 0;
             foreach (var mf in root.GetComponentsInChildren<MeshFilter>(true))
@@ -224,14 +203,10 @@ namespace BabyBlocks
 
                 var physMesh = BuildPhysicsMesh(mf.sharedMesh);
                 var mc = go.AddComponent<MeshCollider>();
-                // GPU-readback produces a clean CPU-readable mesh; fall back to assigning
-                // sharedMesh directly if readback fails — PhysX can consume non-readable
-                // meshes just as the old per-part code did.
                 mc.sharedMesh = physMesh != null ? physMesh : mf.sharedMesh;
             }
         }
 
-        // Sets the layer on a GameObject and all of its descendants.
         static void SetLayerRecursive(GameObject go, int layer)
         {
             go.layer = layer;
@@ -245,34 +220,17 @@ namespace BabyBlocks
             go.transform.position = position;
             go.name  = $"LEO_{type}";
             go.layer = PropLayer;
-            UseAccurateCollider(go);
+            var col = go.GetComponent<Collider>();
+            if (col != null) Destroy(col);
+            var mc = go.AddComponent<MeshCollider>();
+            mc.sharedMesh = go.GetComponent<MeshFilter>().sharedMesh;
             var leo = go.AddComponent<LevelEditorObject>();
             leo.objectType = type.ToString();
             _objects.Add(leo);
             return leo;
         }
 
-        // First layer in PropTerrainMask so the player collides with placed objects
-        // and fly-cam raycasts land on them.
-        static int PropLayer
-        {
-            get
-            {
-                int mask = LayerCache.PropTerrainMask;
-                for (int i = 0; i < 32; i++)
-                    if ((mask & (1 << i)) != 0) return i;
-                return 0;
-            }
-        }
-
-        // Replaces the default primitive collider with a MeshCollider for accurate hit shapes.
-        static void UseAccurateCollider(GameObject go)
-        {
-            var col = go.GetComponent<Collider>();
-            if (col != null) Destroy(col);
-            var mc = go.AddComponent<MeshCollider>();
-            mc.sharedMesh = go.GetComponent<MeshFilter>().sharedMesh;
-        }
+        const int PropLayer = 16; // "Props" layer — required for the surface Tag to work
 
         public void Remove(LevelEditorObject obj)
         {
@@ -280,20 +238,5 @@ namespace BabyBlocks
             _objects.Remove(obj);
             Destroy(obj.gameObject);
         }
-
-        [Serializable] class SaveFile { public List<ObjData> objects = new(); }
-
-        [Serializable]
-        class ObjData
-        {
-            public string type;
-            public float px, py, pz;
-            public float rx, ry, rz;
-            public float sx, sy, sz;
-        }
-        /*
-        public void Save() { ... }
-        public void Load() { ... }
-        */
     }
 }

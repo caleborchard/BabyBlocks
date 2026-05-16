@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Il2Cpp;
 using MelonLoader;
@@ -12,7 +12,6 @@ namespace BabyBlocks
         public const  int Layer = 31;
         public static readonly int Mask = 1 << Layer;
 
-        // Pivot rotations: align local +Y with each world axis.
         public static readonly Quaternion[] PivotRots =
         {
             Quaternion.Euler(  0f, 0f, -90f),  // X
@@ -27,7 +26,6 @@ namespace BabyBlocks
             Quaternion.Euler(90f, 0f,   0f),  // Z: ring in XY plane
         };
 
-        // Arrow geometry (gizmo-local units, scaled at draw time).
         static readonly Vector3 ShaftPos      = new(0f, 0.25f, 0f);
         static readonly Vector3 ShaftScale    = new(0.05f, 0.25f, 0.05f);
         static readonly Vector3 TipPos        = new(0f, 0.50f, 0f);
@@ -43,23 +41,8 @@ namespace BabyBlocks
         static Material[] _planeMats, _planeHoverMats;
         static Material _freeMat, _freeHoverMat;
 
-        // Outline system — three-pass CommandBuffer stencil pipeline (runs AfterEverything):
-        //
-        //   Pass 1 (stencil clear):  draw world-space shell, ZTest=Always, Stencil write=0, ColorMask=0.
-        //     → resets stencil inside the shell footprint so each frame starts clean.
-        //
-        //   Pass 2 (stencil mark):   draw original prop mesh, ZTest=ALWAYS, Stencil write=1, ColorMask=0.
-        //     → marks the prop's ENTIRE projected screen footprint regardless of occlusion.
-        //       Using Always (not LEqual) means stencil is written even when the prop is behind a wall,
-        //       so the outline appears as a thin ring at the silhouette edge whether the prop is visible
-        //       or completely hidden.
-        //
-        //   Pass 3 (outline):        draw world-space shell, ZTest=Always, Stencil NotEqual(1), yellow.
-        //     → paints only the ring between the shell and the prop footprint, always above everything.
-        //       No cover pass needed, so the prop renders completely normally in the main scene.
-        //
-        // The shell is built in world space (TransformPoint + TransformDirection.normalized) so
-        // the outline thickness is uniform regardless of non-uniform object scale.
+        // Stencil outline: shell cleared to 0, prop footprint marked 1 (ZTest=Always so occluded
+        // props still mark), then shell drawn only where stencil=0 — giving a ring, always on top.
         const float OutlineThickness = 0.03f;
         static Material _stencilClearMat;
         static Material _stencilMarkMat;
@@ -144,7 +127,6 @@ namespace BabyBlocks
             }
         }
 
-        // Returns the hovered GizmoHandle for a ray, or null. Free sphere (axisIndex=3) wins over arrows.
         public static GizmoHandle RaycastHandle(Ray ray)
         {
             var hits = Physics.RaycastAll(ray, 2000f, Mask);
@@ -249,8 +231,7 @@ namespace BabyBlocks
             else
                 _outlineBuffer.Clear();
 
-            // All passes use ZTest=Always — set once and leave it for the whole buffer.
-            // The final SetGlobalFloat restores LEqual so game UI is unaffected after execution.
+            // ZTest=Always on all passes; restored to LEqual at the end so game UI is unaffected.
             _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.Always);
 
             bool anyDraw = false;
@@ -279,14 +260,9 @@ namespace BabyBlocks
                     var shell = BuildShellWorldSpace(data.verts, data.tris, data.smoothNormals, t);
                     if (shell == null) continue;
 
-                    // Pass 1: clear stencil in the shell footprint (ZTest=Always already set).
                     _outlineBuffer.DrawMesh(shell, Matrix4x4.identity, _stencilClearMat);
-
-                    // Pass 2: mark entire prop footprint (ZTest=Always → ignores occlusion).
                     for (int sub = 0; sub < mesh.subMeshCount; sub++)
                         _outlineBuffer.DrawMesh(mesh, matrix, _stencilMarkMat, sub);
-
-                    // Pass 3: draw ring only outside the marked footprint (Stencil NotEqual 1).
                     _outlineBuffer.DrawMesh(shell, Matrix4x4.identity, _outlineMat);
 
                     anyDraw = true;
@@ -318,17 +294,16 @@ namespace BabyBlocks
 
             var data = new MeshData
             {
-                verts        = verts,
-                tris         = tris,
+                verts         = verts,
+                tris          = tris,
                 smoothNormals = ComputeSmoothedNormals(verts, tris),
             };
             _meshDataCache[source] = data;
             return data;
         }
 
-        // Builds the expanded shell in world space so that the outline is a uniform world-space
-        // thickness regardless of the object's local scale.  TransformDirection normalizes the
-        // world-space normal, cancelling any non-uniform scale distortion before we offset.
+        // World-space expansion so thickness is uniform under non-uniform scale.
+        // TransformDirection normalizes the normal, cancelling scale before the offset.
         static Mesh BuildShellWorldSpace(Vector3[] localVerts, int[] tris, Vector3[] smoothNormals, Transform t)
         {
             var worldVerts = new Vector3[localVerts.Length];
@@ -362,6 +337,7 @@ namespace BabyBlocks
                 indexAcc[i2] += n;
             }
 
+            // Quantize positions to merge UV-seam duplicates before averaging normals.
             const int Q = 8192;
             var posAcc = new Dictionary<(int, int, int), Vector3>(verts.Length);
             for (int i = 0; i < verts.Length; i++)
@@ -428,16 +404,15 @@ namespace BabyBlocks
             _planeHoverMats = new Material[3];
             for (int i = 0; i < 3; i++)
             {
-                _planeMats[i] = MakeGizmoMat(shader, planeColors[i], GizmoQueue);
+                _planeMats[i]      = MakeGizmoMat(shader, planeColors[i], GizmoQueue);
                 _planeHoverMats[i] = MakeGizmoMat(shader, Color.Lerp(planeColors[i], Color.white, 0.45f), GizmoQueue);
             }
 
-            // UI/Default exposes stencil control via material properties; ZTest is driven by the
-            // unity_GUIZTestMode global set in the CommandBuffer immediately before each draw.
+            // UI/Default exposes stencil control as material properties; ZTest is driven by
+            // the unity_GUIZTestMode global set in the CommandBuffer before each draw group.
             var uiShader = Shader.Find("UI/Default");
             if (uiShader != null)
             {
-                // Pass 1: clear stencil inside the shell footprint.
                 _stencilClearMat = new Material(uiShader);
                 _stencilClearMat.SetInt("_Stencil",          0);
                 _stencilClearMat.SetInt("_StencilComp",      (int)CompareFunction.Always);
@@ -446,7 +421,6 @@ namespace BabyBlocks
                 _stencilClearMat.SetInt("_StencilReadMask",  255);
                 _stencilClearMat.SetInt("_ColorMask",        0);
 
-                // Pass 2: mark the prop's full projected footprint (ZTest=Always, set per-draw).
                 _stencilMarkMat = new Material(uiShader);
                 _stencilMarkMat.SetInt("_Stencil",           1);
                 _stencilMarkMat.SetInt("_StencilComp",       (int)CompareFunction.Always);
@@ -455,7 +429,6 @@ namespace BabyBlocks
                 _stencilMarkMat.SetInt("_StencilReadMask",   255);
                 _stencilMarkMat.SetInt("_ColorMask",         0);
 
-                // Pass 3: draw the ring where stencil is 0 (outside the prop footprint).
                 var yellow  = new Color(1f, 0.85f, 0.1f, 1f);
                 _outlineMat = new Material(uiShader);
                 _outlineMat.SetColor("_Color",               yellow);
@@ -568,7 +541,6 @@ namespace BabyBlocks
             return m;
         }
 
-        // Cone: apex at (0,1,0), base circle at y=0, radius 0.5.
         static Mesh BuildConeMesh(int segments)
         {
             var verts = new Vector3[segments + 2];
@@ -599,7 +571,6 @@ namespace BabyBlocks
             return mesh;
         }
 
-        // Flat ring (annulus) in XZ plane with front and back faces.
         static Mesh BuildRingMesh(int segments, float outerRadius, float innerRadius)
         {
             var verts = new Vector3[segments * 2];
@@ -674,6 +645,5 @@ namespace BabyBlocks
 
             return hasBounds ? b.center : Vector3.zero;
         }
-
     }
 }

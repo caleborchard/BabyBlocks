@@ -69,7 +69,7 @@ namespace BabyBlocks
         static string _materialSearch = "";
         static GUIStyle _materialButtonStyle;
         static readonly List<string> _materialNames  = new();
-        static readonly List<string> _materialLabels = new(); // "name [Shader]" for display/search
+        static readonly List<string> _materialLabels = new();
         static readonly Dictionary<string, Material> _materialByName = new(StringComparer.OrdinalIgnoreCase);
         static bool _materialsLoaded;
 
@@ -77,8 +77,6 @@ namespace BabyBlocks
         static Vector2 _rendererScroll;
         static readonly List<RendererEntry> _rendererEntries = new();
 
-        // Surface types from TractionByteKeeper.GetSurfaceAt tag checks.
-        // Each string is the Unity tag the game uses to determine traction/footstep audio.
         static readonly string[] KnownSurfaceTags =
         {
             "",            // (none — don't override tag)
@@ -116,18 +114,16 @@ namespace BabyBlocks
         static Material[][] _selectedDefaultMaterials;
         static LevelEditorObject _selectedLEO;
 
-        // Runtime-generated materials, one per slice of MicroSplatConfig_diff_tarray.
-        // Kept alive in a static list so they aren't garbage-collected.
         static readonly List<Material> _microSplatLayerMats = new();
 
         static readonly Dictionary<string, PropExtraInfo> _byId = new(StringComparer.Ordinal);
         static bool _loaded;
         static int _nextIndex = 1;
         static bool _savePathLogged;
-        static bool _debugLogSaves = true;
+        static string _paletteSelectedId;
 
         static string SavePath =>
-            Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks_prop_metadata.json");
+            Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "prop_metadata.json");
 
         public static void DrawGUI(LevelEditorObject selectedObject)
         {
@@ -426,10 +422,6 @@ namespace BabyBlocks
                     }
                 }
 
-                // Inject one material per slice of the MicroSplat diffuse texture array.
-                // The individual terrain layer appearances (dirt, rock, sand, etc.) live as
-                // slices in MicroSplatConfig_diff_tarray and have no corresponding named Unity
-                // material — this is the only way to surface them as overridable materials.
                 AddMicroSplatLayerMaterials();
 
                 // Sort by label but keep names and labels in sync.
@@ -452,15 +444,6 @@ namespace BabyBlocks
             }
         }
 
-        // Clones a loaded MicroSplat material and overrides its control map textures to
-        // force 100% weight on a single terrain layer.  All normals, speculars, and
-        // triplanar mapping from the original shader are preserved.
-        //
-        // We prefer a material that has _CustomControl0-3 (MicroSplat_TerrainRockBlend style)
-        // because these are explicitly UV-sampled blend textures we can reliably override.
-        // Plain "MicroSplat" terrain chunks may blend via vertex colours baked into the chunk
-        // geometry; overriding _Control0-3 has no effect on spawned props (which have no
-        // meaningful vertex colours), so every clone would look identical.
         static void AddMicroSplatLayerMaterials()
         {
             if (_microSplatLayerMats.Count > 0) return;
@@ -468,10 +451,7 @@ namespace BabyBlocks
             {
                 var allMats = Resources.FindObjectsOfTypeAll<Material>();
 
-                // Prefer a material with _CustomControl0 (MicroSplat_TerrainRockBlend).
-                // It exposes _PerTexUVScaleRotation{N} properties which let us fix per-layer
-                // tiling at prop scale.  Plain MicroSplat/MeshTerrain packs UV scale into
-                // a PropTex texture we can't easily modify without corrupting other properties.
+                // Prefer a material with _CustomControl0 — it has reliably overridable UV-sampled blend textures.
                 Material baseMat = null;
                 for (int i = 0; i < allMats.Length && baseMat == null; i++)
                 {
@@ -488,9 +468,7 @@ namespace BabyBlocks
                 }
                 if (baseMat == null) return;
 
-                // Discover ALL control map slots the material has (up to index 7 = 32 layers).
-                // Every slot must be blanked per clone; leaving higher slots (_Control4+) with
-                // the original terrain blend data causes those layers to bleed through as patches.
+                // All slots must be blanked per clone; leaving higher slots with original terrain data bleeds through.
                 bool useCustom = baseMat.HasProperty("_CustomControl0");
                 var controlPropList = new List<string>();
                 for (int ci = 0; ci <= 7; ci++)
@@ -528,9 +506,7 @@ namespace BabyBlocks
                     MelonLogger.Msg($"[PropMetadata] _PerTexUVScaleRotation0 = ({v0.x:F4},{v0.y:F4},{v0.z:F4},{v0.w:F4})");
                 }
 
-                // Terrain layers tile at world scale (large tiles, zoomed in on small props).
-                // Multiplying the per-layer UV scale makes tiles appear more frequently.
-                const float UVScaleMultiplier = 8f;
+                const float UVScaleMultiplier = 8f; // terrain layers tile at world scale; multiply to fit props
 
                 var blankControl = new Texture2D(1, 1, TextureFormat.RGBA32, false);
                 blankControl.SetPixel(0, 0, Color.clear);
@@ -632,7 +608,7 @@ namespace BabyBlocks
             _defaultMaterialName = string.Empty;
             CacheDefaultMaterials(selectedObject);
             _excluded = false;
-            _useRenderMeshCollider = true;
+            _useRenderMeshCollider = false;
             _surfaceType = string.Empty;
             _index = -1;
             _dirty = false;
@@ -643,6 +619,9 @@ namespace BabyBlocks
             _rendererEntries.Clear();
 
             if (string.IsNullOrEmpty(id)) return;
+
+            var propLibInfo = PropLibrary.FindById(id);
+            _useRenderMeshCollider = propLibInfo == null || !propLibInfo.HasColliderParts;
 
             if (TryGet(id, out var info) && info != null)
             {
@@ -669,6 +648,7 @@ namespace BabyBlocks
 
             BuildRendererEntries(selectedObject);
             ApplyRendererVisibility();
+            EnsureMaterialList();
             ApplyPreviewMaterial(_selectedMaterialName);
             ApplySurfaceType(selectedObject, _surfaceType);
         }
@@ -789,10 +769,6 @@ namespace BabyBlocks
 
             var info = PropLibrary.FindById(_selectedLEO.addressableKey);
 
-            // Pre-cooked colliders are always present and not controlled by this toggle.
-            if (info != null && info.HasColliderParts) return;
-
-            // Collect before destroying to avoid mutating the list mid-iteration.
             var toDestroy = new System.Collections.Generic.List<GameObject>();
             foreach (var t in _selectedLEO.GetComponentsInChildren<Transform>(true))
                 if (t != null && t != _selectedLEO.transform && t.gameObject.name.StartsWith("PropCollider"))
@@ -800,16 +776,13 @@ namespace BabyBlocks
             foreach (var go in toDestroy)
                 if (go != null) UnityEngine.Object.DestroyImmediate(go);
 
-            // Clear saved disabled-state for these entries so they don't come back pre-disabled.
             var stale = new System.Collections.Generic.List<string>();
             foreach (var p in _disabledRendererPaths)
                 if (p.Contains("PropCollider")) stale.Add(p);
             foreach (var p in stale) _disabledRendererPaths.Remove(p);
 
-            if (!enable) return;
-
             if (info != null)
-                LevelEditorManager.ApplyColliderParts(_selectedLEO.gameObject, info, true);
+                LevelEditorManager.ApplyColliderParts(_selectedLEO.gameObject, info, enable);
         }
 
         static void ApplyRendererVisibility()
@@ -927,12 +900,21 @@ namespace BabyBlocks
             _dirty = false;
         }
 
+        public static void SetPaletteSelection(string propId)
+        {
+            _paletteSelectedId = propId;
+        }
+
         static string GetSelectedPropId(LevelEditorObject obj)
         {
-            if (obj == null) return null;
-            if (!string.IsNullOrEmpty(obj.addressableKey)) return obj.addressableKey;
-            if (!string.IsNullOrEmpty(obj.objectType)) return "primitive://" + obj.objectType;
-            return null;
+            if (obj != null)
+            {
+                _paletteSelectedId = null;
+                if (!string.IsNullOrEmpty(obj.addressableKey)) return obj.addressableKey;
+                if (!string.IsNullOrEmpty(obj.objectType)) return "primitive://" + obj.objectType;
+                return null;
+            }
+            return string.IsNullOrEmpty(_paletteSelectedId) ? null : _paletteSelectedId;
         }
 
         static void EnsureWindowRect()
@@ -985,8 +967,11 @@ namespace BabyBlocks
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return false;
-            // When no saved entry exists, default to ON so new props get colliders automatically.
-            if (!_byId.TryGetValue(id, out var info)) return true;
+            if (!_byId.TryGetValue(id, out var info))
+            {
+                var propInfo = PropLibrary.FindById(id);
+                return propInfo == null || !propInfo.HasColliderParts;
+            }
             return info.useRenderMeshCollider;
         }
 
@@ -998,9 +983,6 @@ namespace BabyBlocks
             return info.surfaceType ?? string.Empty;
         }
 
-        // Applies a Unity tag to the root and all collider children of a spawned prop.
-        // The game's TractionByteKeeper.GetSurfaceAt reads the tag from the collider's
-        // GameObject to determine traction and footstep audio for props on PropsMask layers.
         public static void ApplySurfaceType(LevelEditorObject leo, string surfaceTag)
         {
             if (leo == null) return;
@@ -1019,7 +1001,6 @@ namespace BabyBlocks
             }
         }
 
-        // Also usable from LevelEditorManager at spawn time without a LevelEditorObject reference.
         public static void ApplySurfaceTypeToRoot(GameObject root, string surfaceTag)
         {
             if (root == null) return;
@@ -1072,29 +1053,33 @@ namespace BabyBlocks
             if (!_byId.TryGetValue(id, out var info))
             {
                 if (!any) return null;
-                info = new PropExtraInfo
-                {
-                    id = id,
-                    index = _nextIndex++
-                };
+                info = new PropExtraInfo { id = id };
                 _byId[id] = info;
             }
-            else if (info.index <= 0)
-            {
-                info.index = _nextIndex++;
-            }
 
-            info.displayName = displayName ?? string.Empty;
-            info.category = category ?? string.Empty;
-            info.excluded = excluded;
-            info.useRenderMeshCollider = useRenderMeshCollider;
-            info.overrideMaterialId = overrideMaterialName ?? string.Empty;
-            info.surfaceType = surfaceType ?? string.Empty;
-            info.disabledRenderers = new List<string>();
-            if (disabledRenderers != null)
+            if (excluded)
             {
-                foreach (var path in disabledRenderers)
-                    info.disabledRenderers.Add(path);
+                info.displayName        = string.Empty;
+                info.category           = string.Empty;
+                info.excluded           = true;
+                info.useRenderMeshCollider = false;
+                info.overrideMaterialId = string.Empty;
+                info.surfaceType        = string.Empty;
+                info.disabledRenderers  = new List<string>();
+                info.index              = 0;
+            }
+            else
+            {
+                if (info.index <= 0) info.index = _nextIndex++;
+                info.displayName        = displayName ?? string.Empty;
+                info.category           = category ?? string.Empty;
+                info.excluded           = false;
+                info.useRenderMeshCollider = useRenderMeshCollider;
+                info.overrideMaterialId = overrideMaterialName ?? string.Empty;
+                info.surfaceType        = surfaceType ?? string.Empty;
+                info.disabledRenderers  = new List<string>();
+                if (disabledRenderers != null)
+                    foreach (var path in disabledRenderers) info.disabledRenderers.Add(path);
             }
 
             Save();
@@ -1121,7 +1106,7 @@ namespace BabyBlocks
                 foreach (var item in data.items)
                 {
                     if (item == null || string.IsNullOrEmpty(item.id)) continue;
-                    if (item.index <= 0) item.index = _nextIndex++;
+                    if (!item.excluded && item.index <= 0) item.index = _nextIndex++;
                     if (item.index > maxIndex) maxIndex = item.index;
                     _byId[item.id] = item;
                 }
@@ -1154,11 +1139,6 @@ namespace BabyBlocks
                     _savePathLogged = true;
                     MelonLogger.Msg($"[PropMetadata] Saved to {SavePath}");
                 }
-
-                if (_debugLogSaves)
-                {
-                    MelonLogger.Msg("[PropMetadata] Save content:\n" + json);
-                }
             }
             catch (Exception e)
             {
@@ -1166,22 +1146,7 @@ namespace BabyBlocks
             }
         }
 
-        static string Serialize(PropExtraInfoSave data)
-        {
-            try
-            {
-                var options = new JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    IncludeFields = true
-                };
-                return JsonSerializer.Serialize(data, options);
-            }
-            catch
-            {
-                return SerializeManual(data);
-            }
-        }
+        static string Serialize(PropExtraInfoSave data) => SerializeManual(data);
 
         static PropExtraInfoSave Deserialize(string json)
         {
@@ -1208,15 +1173,23 @@ namespace BabyBlocks
                 var item = data.items[i];
                 if (item == null) continue;
                 sb.Append("    {\n");
-                AppendJsonField(sb, "id", item.id, 6).Append(",\n");
-                AppendJsonField(sb, "displayName", item.displayName, 6).Append(",\n");
-                AppendJsonField(sb, "category", item.category, 6).Append(",\n");
-                sb.Append("      \"excluded\": ").Append(item.excluded ? "true" : "false").Append(",\n");
-                sb.Append("      \"useRenderMeshCollider\": ").Append(item.useRenderMeshCollider ? "true" : "false").Append(",\n");
-                AppendJsonField(sb, "overrideMaterialId", item.overrideMaterialId, 6).Append(",\n");
-                AppendJsonField(sb, "surfaceType", item.surfaceType, 6).Append(",\n");
-                AppendJsonArray(sb, "disabledRenderers", item.disabledRenderers, 6).Append(",\n");
-                sb.Append("      \"index\": ").Append(item.index).Append("\n");
+                if (item.excluded)
+                {
+                    AppendJsonField(sb, "id", item.id, 6).Append(",\n");
+                    sb.Append("      \"excluded\": true\n");
+                }
+                else
+                {
+                    AppendJsonField(sb, "id", item.id, 6).Append(",\n");
+                    AppendJsonField(sb, "displayName", item.displayName, 6).Append(",\n");
+                    AppendJsonField(sb, "category", item.category, 6).Append(",\n");
+                    sb.Append("      \"excluded\": false,\n");
+                    sb.Append("      \"useRenderMeshCollider\": ").Append(item.useRenderMeshCollider ? "true" : "false").Append(",\n");
+                    AppendJsonField(sb, "overrideMaterialId", item.overrideMaterialId, 6).Append(",\n");
+                    AppendJsonField(sb, "surfaceType", item.surfaceType, 6).Append(",\n");
+                    AppendJsonArray(sb, "disabledRenderers", item.disabledRenderers, 6).Append(",\n");
+                    sb.Append("      \"index\": ").Append(item.index).Append("\n");
+                }
                 sb.Append("    }");
                 if (i < data.items.Count - 1) sb.Append(",");
                 sb.Append("\n");

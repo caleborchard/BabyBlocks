@@ -24,18 +24,13 @@ namespace BabyBlocks
     {
         public enum ColliderType { Mesh, Box, Sphere, Capsule }
         public ColliderType type;
-        // Mesh
         public Mesh  mesh;
         public bool  convex;
-        // Box
         public Vector3 center;
         public Vector3 size;
-        // Sphere / Capsule
         public float radius;
-        // Capsule
         public float height;
         public int   direction;
-        // Local transform relative to prop root
         public Vector3    localPosition;
         public Quaternion localRotation;
         public Vector3    localScale;
@@ -54,8 +49,8 @@ namespace BabyBlocks
 
         public int gpuiIndex = -1;
         public bool IsGpui => gpuiIndex >= 0;
-        public string visualPath     = "";  // GPUI: addressable path to visual prefab
-        public string gpuiPrefabName = "";  // GPUI: pool prefab name for collider-only fallback
+        public string visualPath     = "";
+        public string gpuiPrefabName = "";
 
         public bool HasMesh => parts != null && parts.Count > 0;
         public bool IsPrimitive => id.StartsWith("primitive://", StringComparison.Ordinal);
@@ -74,7 +69,6 @@ namespace BabyBlocks
         static readonly Dictionary<string, PropInfo> _byId = new(StringComparer.Ordinal);
 
         static readonly string[] PrimitiveNames = { "Cube", "Sphere", "Capsule", "Cylinder", "Plane", "Quad" };
-        static bool _loggedAssetFolders;
         static Type _bestRegionType;
         static readonly HashSet<string> _gpuiScannedNames = new(StringComparer.OrdinalIgnoreCase);
 
@@ -104,7 +98,7 @@ namespace BabyBlocks
         public static IReadOnlyList<PropInfo> FilteredProps => _filtered;
 
         static string GpuiCachePath =>
-            Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks_GpuiCache.txt");
+            Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "GpuiCache.txt");
 
         static bool TryLoadGpuiCache(string catalogPath,
             out List<(string baseName, string id, string visualPath, string prefabName)> entries)
@@ -138,6 +132,7 @@ namespace BabyBlocks
         {
             try
             {
+                Directory.CreateDirectory(Path.GetDirectoryName(GpuiCachePath));
                 string mtime = File.Exists(catalogPath)
                     ? File.GetLastWriteTimeUtc(catalogPath).Ticks.ToString()
                     : "0";
@@ -221,7 +216,6 @@ namespace BabyBlocks
             int insertAt = PrimitiveNames.Length;
             int added    = 0;
 
-            // Fast path: load from cache so no catalog parsing or pool scanning needed.
             if (TryLoadGpuiCache(catalogPath, out var cached) && cached != null)
             {
                 int gi = 0;
@@ -230,11 +224,11 @@ namespace BabyBlocks
                     if (_byId.ContainsKey(id) || _gpuiScannedNames.Contains(baseName)) continue;
                     var info = new PropInfo(id, baseName)
                     {
-                        gpuiIndex     = gi++,
-                        visualPath    = visualPath,
+                        gpuiIndex      = gi++,
+                        visualPath     = visualPath,
                         gpuiPrefabName = prefabName,
-                        isLoaded      = false,
-                        isInvalid     = false,
+                        isLoaded       = false,
+                        isInvalid      = false,
                     };
                     _all.Insert(insertAt++, info);
                     _byId[id] = info;
@@ -246,7 +240,6 @@ namespace BabyBlocks
                 return;
             }
 
-            // Cold path: scan the GPUI pool and catalog (no Addressables loads here).
             var loaded = TryGetLoadedProps();
             if (loaded == null || loaded.Length == 0) return;
 
@@ -375,9 +368,8 @@ namespace BabyBlocks
 
             string json = File.ReadAllText(catalogPath);
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            ScanTextForPaths(json, seen, folders);
+            ScanTextForPaths(json, seen);
 
             int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
             if (kdIdx >= 0)
@@ -390,16 +382,14 @@ namespace BabyBlocks
                     {
                         byte[] bytes = Convert.FromBase64String(json.Substring(valStart, valEnd - valStart));
                         string decodedKeys = System.Text.Encoding.UTF8.GetString(bytes);
-                        ScanTextForPaths(decodedKeys, seen, folders);
+                        ScanTextForPaths(decodedKeys, seen);
                     }
                     catch { }
                 }
             }
-
-            LogAssetFoldersOnce(folders);
         }
 
-        static void ScanTextForPaths(string text, HashSet<string> seen, HashSet<string> folders)
+        static void ScanTextForPaths(string text, HashSet<string> seen)
         {
             int i = 0;
             while (i < text.Length)
@@ -428,8 +418,6 @@ namespace BabyBlocks
                     if (name.EndsWith("_Player", StringComparison.OrdinalIgnoreCase)) continue;
                 }
 
-                AddFolderPath(entry, folders);
-
                 if (IsExcludedPath(entry)) continue;
 
                 if (!seen.Add(entry)) continue;
@@ -437,22 +425,6 @@ namespace BabyBlocks
                 _all.Add(info);
                 _byId[entry] = info;
             }
-        }
-
-        static void AddFolderPath(string entry, HashSet<string> folders)
-        {
-            if (folders == null || string.IsNullOrEmpty(entry)) return;
-            var dir = Path.GetDirectoryName(entry);
-            if (string.IsNullOrEmpty(dir)) return;
-            dir = dir.Replace('\\', '/');
-            folders.Add(dir);
-        }
-
-        static void LogAssetFoldersOnce(HashSet<string> folders)
-        {
-            if (_loggedAssetFolders) return;
-            _loggedAssetFolders = true;
-            return;
         }
 
         static bool IsExcludedPath(string entry)
@@ -499,14 +471,12 @@ namespace BabyBlocks
                 return;
             }
 
-            // Try to clone a cached prefab from BestRegionLoader so materials remain intact.
             try
             {
                 if (TryLoadFromBestRegion(info)) return;
             }
             catch { }
 
-            // Addressable prefab fallback from Assets/ path in the catalog.
             try
             {
                 if (TryLoadAddressable(info)) return;
@@ -519,7 +489,6 @@ namespace BabyBlocks
 
         static bool TryLoadFromBestRegion(PropInfo info)
         {
-            // Use reflection to avoid a hard compile-time dependency on BestRegionLoader.
             try
             {
                 var loaded = TryGetLoadedProps();
@@ -549,7 +518,6 @@ namespace BabyBlocks
 
         static void LoadGpuiPropData(PropInfo info)
         {
-            // Try visual prefab first.
             if (!string.IsNullOrEmpty(info.visualPath))
             {
                 try
@@ -570,7 +538,6 @@ namespace BabyBlocks
                 }
             }
 
-            // Collider-mesh fallback.
             if (!info.HasMesh && !string.IsNullOrEmpty(info.gpuiPrefabName))
             {
                 try
@@ -661,7 +628,6 @@ namespace BabyBlocks
             var lower = path.ToLowerInvariant();
             if (!lower.StartsWith("assets/", StringComparison.Ordinal)) return false;
 
-            // Prefer mesh assets under Assets/Meshes/ or other root asset folders.
             bool inMeshes = lower.StartsWith("assets/meshes/", StringComparison.Ordinal);
             if (!inMeshes && !lower.StartsWith("assets/_props/", StringComparison.Ordinal)) return false;
 
@@ -845,21 +811,6 @@ namespace BabyBlocks
             return null;
         }
 
-        static object TryGetFieldOrProperty(object obj, string memberName)
-        {
-            if (obj == null) return null;
-            var t = obj.GetType();
-            var flags = System.Reflection.BindingFlags.Public |
-                        System.Reflection.BindingFlags.NonPublic |
-                        System.Reflection.BindingFlags.Instance;
-
-            var f = t.GetField(memberName, flags);
-            if (f != null) return f.GetValue(obj);
-            var p = t.GetProperty(memberName, flags);
-            if (p != null) return p.GetValue(obj, null);
-            return null;
-        }
-
         static string NormalizeIdToName(string id)
         {
             if (string.IsNullOrEmpty(id)) return string.Empty;
@@ -904,7 +855,6 @@ namespace BabyBlocks
                 AddPart(info, smr.sharedMesh, smr.sharedMaterials, smr.transform, root.transform);
             }
 
-            // Capture pre-cooked colliders from the prefab so they can be reused at spawn time.
             var rootT = root.transform;
             var rootScale = rootT.lossyScale;
             var cols = root.GetComponentsInChildren<Collider>(true);
@@ -968,7 +918,6 @@ namespace BabyBlocks
                 var go = GameObject.CreatePrimitive(pt);
                 go.transform.position = new Vector3(0f, -99999f, 0f);
 
-                // Extract a single part from the primitive
                 var mf = go.GetComponent<MeshFilter>();
                 var mr = go.GetComponent<MeshRenderer>();
                 if (mf != null && mf.sharedMesh != null)
