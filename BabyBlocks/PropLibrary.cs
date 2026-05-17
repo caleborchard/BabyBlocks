@@ -68,7 +68,7 @@ namespace BabyBlocks
         static readonly List<PropInfo> _filtered = new();
         static readonly Dictionary<string, PropInfo> _byId = new(StringComparer.Ordinal);
 
-        static readonly string[] PrimitiveNames = { "Cube", "Sphere", "Capsule", "Cylinder", "Plane", "Quad" };
+        static readonly string[] PrimitiveNames = { "Cube", "Sphere", "Capsule", "Cylinder", "Plane", "Quad", "Torus", "Cone", "Helix", "Egg" };
         static Type _bestRegionType;
         static readonly HashSet<string> _gpuiScannedNames = new(StringComparer.OrdinalIgnoreCase);
 
@@ -908,9 +908,41 @@ namespace BabyBlocks
             try
             {
                 var typeName = info.id.Substring("primitive://".Length);
+
+                Mesh proceduralMesh = typeName switch
+                {
+                    "Torus" => PrimitiveMeshGen.BuildTorus(),
+                    "Cone"  => PrimitiveMeshGen.BuildCone(),
+                    "Helix" => PrimitiveMeshGen.BuildHelix(),
+                    "Egg"   => PrimitiveMeshGen.BuildEgg(),
+                    _       => null,
+                };
+
+                if (proceduralMesh != null)
+                {
+                    // Steal a default material from a temporary Unity sphere.
+                    var tempGo  = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                    var tempMr  = tempGo.GetComponent<MeshRenderer>();
+                    var defMats = tempMr != null ? tempMr.sharedMaterials : null;
+                    UnityEngine.Object.Destroy(tempGo);
+
+                    info.parts.Add(new PropMeshPart
+                    {
+                        mesh          = proceduralMesh,
+                        materials     = defMats,
+                        localPosition = Vector3.zero,
+                        localRotation = Quaternion.identity,
+                        localScale    = Vector3.one,
+                    });
+
+                    info.isLoaded  = true;
+                    info.isInvalid = false;
+                    return;
+                }
+
                 if (!Enum.TryParse<PrimitiveType>(typeName, out var pt))
                 {
-                    info.isLoaded = true;
+                    info.isLoaded  = true;
                     info.isInvalid = true;
                     return;
                 }
@@ -924,23 +956,23 @@ namespace BabyBlocks
                 {
                     var part = new PropMeshPart
                     {
-                        mesh = mf.sharedMesh,
-                        materials = mr != null ? mr.sharedMaterials : null,
+                        mesh          = mf.sharedMesh,
+                        materials     = mr != null ? mr.sharedMaterials : null,
                         localPosition = Vector3.zero,
                         localRotation = Quaternion.identity,
-                        localScale = go.transform.localScale
+                        localScale    = go.transform.localScale,
                     };
                     info.parts.Add(part);
                 }
 
                 UnityEngine.Object.Destroy(go);
 
-                info.isLoaded = true;
+                info.isLoaded  = true;
                 info.isInvalid = !info.HasMesh;
             }
             catch
             {
-                info.isLoaded = true;
+                info.isLoaded  = true;
                 info.isInvalid = true;
             }
         }

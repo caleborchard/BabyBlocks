@@ -693,6 +693,7 @@
 		<Compile Include="LevelEditorManager.cs" />
 		<Compile Include="LevelEditor.cs" />
 		<Compile Include="SceneHierarchyScanner.cs" />
+		<Compile Include="PrimitiveMeshGen.cs" />
 	</ItemGroup>
 
 	<ItemGroup>
