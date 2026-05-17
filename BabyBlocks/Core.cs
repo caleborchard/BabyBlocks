@@ -82,6 +82,7 @@ namespace BabyBlocks
                 player.pm.SwitchToDisabledMode();
                 LevelEditor.EnsureManager();
                 PropLibrary.ScanGpuiProps();
+                PropMetadataPanel.InvalidateMaterialSources();
             }
             else
             {

@@ -76,8 +76,8 @@ namespace BabyBlocks
             for (int i = 0; i < segments; i++)
             {
                 int a = i * 2;
-                tris.Add(a); tris.Add(a + 2); tris.Add(a + 3);
-                tris.Add(a); tris.Add(a + 3); tris.Add(a + 1);
+                tris.Add(a); tris.Add(a + 3); tris.Add(a + 2);
+                tris.Add(a); tris.Add(a + 1); tris.Add(a + 3);
             }
 
             // Bottom cap
@@ -102,7 +102,7 @@ namespace BabyBlocks
                 int center = capBase;
                 int a      = capBase + 1 + i;
                 int b      = capBase + 2 + i;
-                tris.Add(center); tris.Add(b); tris.Add(a);
+                tris.Add(center); tris.Add(a); tris.Add(b);
             }
 
             return BuildFromLists(verts, norms, uvs, tris, "Cone");

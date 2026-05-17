@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 
 namespace BabyBlocks
 {
@@ -11,6 +11,7 @@ namespace BabyBlocks
 
         static GUIStyle _itemStyle;
         static GUIStyle _ghostStyle;
+        static GUIStyle _excludedXStyle;
 
         // How many slots fit on screen, clamped to a reasonable range.
         static int VisibleSlots =>
@@ -113,10 +114,12 @@ namespace BabyBlocks
 
                 if (propIdx < total)
                 {
-                    var  prop    = props[propIdx];
-                    bool invalid = prop.isLoaded && !prop.HasMesh;
-                    bool hovered = itemRect.Contains(e.mousePosition) && !IsDragging && !invalid;
+                    var  prop       = props[propIdx];
+                    bool invalid    = prop.isLoaded && !prop.HasMesh;
+                    bool isExcluded = PropMetadataPanel.IsExcluded(prop.id);
+                    bool hovered    = itemRect.Contains(e.mousePosition) && !IsDragging && !invalid && !isExcluded;
 
+                    bool hasMetadata = PropMetadataPanel.HasMetadata(prop.id);
                     if (invalid)
                     {
                         GUI.color = new Color(0.45f, 0.45f, 0.45f, 0.7f);
@@ -125,14 +128,34 @@ namespace BabyBlocks
                     }
                     else
                     {
-                        GUI.color = hovered ? new Color(1f, 1f, 1f, 0.95f) : new Color(0.6f, 0.6f, 0.6f, 0.85f);
+                        GUI.color = isExcluded
+                            ? new Color(0.35f, 0.35f, 0.35f, 0.7f)
+                            : hovered ? new Color(1f, 1f, 1f, 0.95f) : new Color(0.6f, 0.6f, 0.6f, 0.85f);
                         GUI.Box(itemRect, prop.displayName, _itemStyle);
                         if (e.type == EventType.MouseDown && e.button == 0 && itemRect.Contains(e.mousePosition))
                         {
-                            _draggingIndex = propIdx;
+                            if (isExcluded)
+                                PropMetadataPanel.SetPaletteSelection(prop.id);
+                            else
+                                _draggingIndex = propIdx;
                             e.Use();
                         }
                     }
+
+                    // Red X overlay for excluded items — drawn after the box so it sits on top.
+                    if (isExcluded)
+                    {
+                        GUI.color = new Color(1f, 0.15f, 0.15f, 0.85f);
+                        GUI.Label(itemRect, "✕", _excludedXStyle);
+                    }
+
+                    if (hasMetadata)
+                    {
+                        GUI.color = new Color(0.4f, 1f, 0.4f, 0.95f);
+                        GUI.Label(new Rect(itemRect.xMax - 16f, itemRect.y + 3f, 16f, 16f), "✓");
+                    }
+
+                    GUI.color = Color.white;
                 }
                 else
                 {
@@ -210,6 +233,17 @@ namespace BabyBlocks
             if (_ghostStyle == null)
             {
                 _ghostStyle = new GUIStyle(_itemStyle);
+            }
+
+            if (_excludedXStyle == null)
+            {
+                _excludedXStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize  = 38,
+                    fontStyle = FontStyle.Bold,
+                    alignment = TextAnchor.MiddleCenter,
+                };
+                _excludedXStyle.normal.textColor = new Color(1f, 0.15f, 0.15f, 0.9f);
             }
         }
     }

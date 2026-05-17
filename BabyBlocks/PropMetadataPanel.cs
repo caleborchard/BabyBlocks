@@ -17,6 +17,8 @@ namespace BabyBlocks
         public bool excluded;
         public bool useRenderMeshCollider;
         public string overrideMaterialId;
+        public string nativeMaterialName; // true original material, stored when first override is applied
+        public string materialSourcePropId; // prop whose asset contains the override material
         public string surfaceType;
         public int index;
         public List<string> disabledRenderers = new();
@@ -68,6 +70,7 @@ namespace BabyBlocks
         static Vector2 _mainScroll;
         static string _materialSearch = "";
         static GUIStyle _materialButtonStyle;
+        static GUIStyle _redLabelStyle;
         static readonly List<string> _materialNames  = new();
         static readonly List<string> _materialLabels = new();
         static readonly Dictionary<string, Material> _materialByName = new(StringComparer.OrdinalIgnoreCase);
@@ -109,6 +112,7 @@ namespace BabyBlocks
         static Vector2 _surfaceTypeScroll;
         static readonly HashSet<string> _disabledRendererPaths = new(StringComparer.Ordinal);
 
+        static bool _materialExplicitlyChosen;
         static float _lastChangeTime;
         static Renderer[] _selectedRenderers;
         static Material[][] _selectedDefaultMaterials;
@@ -117,6 +121,9 @@ namespace BabyBlocks
         static readonly List<Material> _microSplatLayerMats = new();
 
         static readonly Dictionary<string, PropExtraInfo> _byId = new(StringComparer.Ordinal);
+        // Maps material name → prop ID of the prop whose asset natively contains that material.
+        static readonly Dictionary<string, string> _knownMaterialSources = new(StringComparer.OrdinalIgnoreCase);
+        static bool _materialSourcesLoaded;
         static bool _loaded;
         static int _nextIndex = 1;
         static bool _savePathLogged;
@@ -191,6 +198,15 @@ namespace BabyBlocks
                 _dirty = false;
             }
             GUI.enabled = true;
+            if (GUILayout.Button("Save All"))
+            {
+                if (!string.IsNullOrEmpty(_propId))
+                {
+                    ApplyCurrent();
+                    _dirty = false;
+                }
+                Save();
+            }
             GUILayout.Space(4f);
 
             _mainScroll = GUILayout.BeginScrollView(_mainScroll, GUILayout.ExpandHeight(true));
@@ -215,13 +231,42 @@ namespace BabyBlocks
 
             GUILayout.Space(4f);
 
-            GUILayout.Label("Display name");
+            if (_redLabelStyle == null)
+            {
+                _redLabelStyle = new GUIStyle(GUI.skin.label);
+                _redLabelStyle.normal.textColor = Color.red;
+            }
+            GUILayout.Label("Display name", _redLabelStyle);
             GUI.SetNextControlName(DisplayNameField);
             var newDisplayName = GUILayout.TextField(_displayName ?? string.Empty);
             if (!string.Equals(newDisplayName, _displayName, StringComparison.Ordinal))
             {
                 _displayName = newDisplayName;
                 MarkDirty();
+            }
+
+            if (GUI.GetNameOfFocusedControl() == DisplayNameField && !string.IsNullOrEmpty(_displayName) && _displayName.Length >= 2)
+            {
+                int suggCount = 0;
+                foreach (var kvp in _byId)
+                {
+                    if (kvp.Key == _propId) continue;
+                    var dn = kvp.Value.displayName;
+                    if (string.IsNullOrEmpty(dn)) continue;
+                    if (dn.IndexOf(_displayName, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        _displayName.IndexOf(dn, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        if (suggCount == 0)
+                        {
+                            GUI.contentColor = new Color(1f, 1f, 0.5f, 1f);
+                            GUILayout.Label("Similar names:");
+                            GUI.contentColor = Color.white;
+                        }
+                        GUILayout.Label("  • " + dn);
+                        suggCount++;
+                        if (suggCount >= 5) break;
+                    }
+                }
             }
 
             GUILayout.Label("Category");
@@ -231,6 +276,30 @@ namespace BabyBlocks
             {
                 _category = newCategory;
                 MarkDirty();
+            }
+
+            if (GUI.GetNameOfFocusedControl() == CategoryField && !string.IsNullOrEmpty(_category) && _category.Length >= 2)
+            {
+                int suggCount = 0;
+                foreach (var kvp in _byId)
+                {
+                    if (kvp.Key == _propId) continue;
+                    var cat = kvp.Value.category;
+                    if (string.IsNullOrEmpty(cat)) continue;
+                    if (cat.IndexOf(_category, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        _category.IndexOf(cat, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        if (suggCount == 0)
+                        {
+                            GUI.contentColor = new Color(1f, 1f, 0.5f, 1f);
+                            GUILayout.Label("Similar categories:");
+                            GUI.contentColor = Color.white;
+                        }
+                        GUILayout.Label("  • " + cat);
+                        suggCount++;
+                        if (suggCount >= 5) break;
+                    }
+                }
             }
 
             var newExclude = GUILayout.Toggle(_excluded, "Exclude item");
@@ -310,6 +379,7 @@ namespace BabyBlocks
                     {
                         SelectMaterialByIndex(i);
                         _showMaterialDropdown = false;
+                        _materialExplicitlyChosen = true;
                         ApplyPreviewMaterial(_selectedMaterialName);
                         MarkDirty();
                     }
@@ -322,7 +392,13 @@ namespace BabyBlocks
                 _selectedMaterialName = _defaultMaterialName ?? string.Empty;
                 _overrideMaterialName = string.Empty;
                 _showMaterialDropdown = false;
-                ApplyPreviewMaterial(string.Empty);
+                _materialExplicitlyChosen = false;
+                // Prefer applying by name so we use the live Material object from _materialByName
+                // rather than _selectedDefaultMaterials, which may be contaminated by a prior override.
+                if (!string.IsNullOrEmpty(_defaultMaterialName))
+                    ApplyPreviewMaterial(_defaultMaterialName);
+                else
+                    ApplyPreviewMaterial(string.Empty);
                 MarkDirty();
             }
 
@@ -441,6 +517,181 @@ namespace BabyBlocks
             catch (Exception e)
             {
                 MelonLogger.Warning($"[PropMetadata] Material scan failed: {e.Message}");
+            }
+
+            EnsureMaterialSources();
+        }
+
+        // Registers a material source and back-fills materialSourcePropId on every saved entry that
+        // shares the same overrideMaterialId but had no source recorded yet. Returns true if any were updated.
+        static bool BackfillMaterialSource(string materialName, string sourcePropId)
+        {
+            if (string.IsNullOrEmpty(materialName) || string.IsNullOrEmpty(sourcePropId)) return false;
+            // MicroSplat layer materials are generated at runtime — they have no asset source prop.
+            if (materialName.StartsWith("[MicroSplat]", StringComparison.Ordinal)) return false;
+            _knownMaterialSources[materialName] = sourcePropId;
+
+            bool anyChanged = false;
+            foreach (var kvp in _byId)
+            {
+                var item = kvp.Value;
+                if (item.excluded) continue;
+                if (!string.Equals(item.overrideMaterialId, materialName, StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.Equals(item.materialSourcePropId, sourcePropId, StringComparison.OrdinalIgnoreCase)) continue;
+                item.materialSourcePropId = sourcePropId;
+                anyChanged = true;
+            }
+            return anyChanged;
+        }
+
+        // For each saved override whose source prop ID is known, load that prop so its asset bundle
+        // (and thus its materials) comes into memory. Runs once after the initial material list is built.
+        static void EnsureMaterialSources()
+        {
+            if (_materialSourcesLoaded) return;
+            _materialSourcesLoaded = true;
+            if (!PropLibrary.IsInitialized) return;
+
+            EnsureLoaded();
+            bool anyLoaded = false;
+            bool anyBackfilled = false;
+            foreach (var kvp in _byId)
+            {
+                var item = kvp.Value;
+                if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
+                if (_materialByName.ContainsKey(item.overrideMaterialId)) continue; // already in memory
+                if (string.IsNullOrEmpty(item.materialSourcePropId)) continue;      // no source tracked yet
+
+                var sourceInfo = PropLibrary.FindById(item.materialSourcePropId);
+                if (sourceInfo == null) continue;
+
+                try
+                {
+                    PropLibrary.LoadPropData(sourceInfo);
+                    anyLoaded = true;
+                    // Scan parts directly — GPUI materials don't reliably appear in
+                    // Resources.FindObjectsOfTypeAll after loading, but parts hold the real refs.
+                    AddPartsToMaterialList(sourceInfo);
+                    // Propagate this source to all other entries that share the same override material.
+                    if (BackfillMaterialSource(item.overrideMaterialId, item.materialSourcePropId))
+                        anyBackfilled = true;
+                }
+                catch { }
+            }
+
+            if (anyBackfilled) Save();
+            if (!anyLoaded) return;
+
+            // Re-scan Resources to pick up materials from the newly-loaded asset bundles.
+            try
+            {
+                var allMats = Resources.FindObjectsOfTypeAll<Material>();
+                if (allMats == null) return;
+                for (int i = 0; i < allMats.Length; i++)
+                {
+                    var m = allMats[i];
+                    if (m == null || string.IsNullOrEmpty(m.name)) continue;
+                    if (_materialByName.ContainsKey(m.name)) continue;
+                    string shaderName = m.shader != null ? m.shader.name : string.Empty;
+                    string label = string.IsNullOrEmpty(shaderName)
+                        ? m.name
+                        : $"{m.name}  [{shaderName}]";
+                    _materialNames.Add(m.name);
+                    _materialLabels.Add(label);
+                    _materialByName[m.name] = m;
+                }
+            }
+            catch { }
+        }
+
+        // Returns the first material name found in the prop's parts that is NOT the override.
+        // Used to recover the true native material when the live renderer is contaminated.
+        static string FindNativeFromParts(PropInfo info, string overrideMaterialName)
+        {
+            if (info == null) return string.Empty;
+            if (!info.isLoaded) PropLibrary.LoadPropData(info);
+            if (info.parts == null) return string.Empty;
+            foreach (var part in info.parts)
+            {
+                if (part?.materials == null) continue;
+                foreach (var m in part.materials)
+                {
+                    if (m == null || string.IsNullOrEmpty(m.name)) continue;
+                    if (!string.Equals(m.name, overrideMaterialName, StringComparison.OrdinalIgnoreCase))
+                        return m.name;
+                }
+            }
+            return string.Empty;
+        }
+
+        // Scans PropInfo.parts for materials and adds them to the list.
+        // Used for GPUI props (no live renderers) where AddRendererMaterialsToList yields nothing.
+        // Parts come from the loaded asset — always native materials, no contamination risk.
+        static void AddPartsToMaterialList(PropInfo info)
+        {
+            if (info?.parts == null) return;
+            foreach (var part in info.parts)
+            {
+                if (part?.materials == null) continue;
+                foreach (var mat in part.materials)
+                {
+                    if (mat == null || string.IsNullOrEmpty(mat.name)) continue;
+                    if (!string.IsNullOrEmpty(info.id))
+                    {
+                        if (BackfillMaterialSource(mat.name, info.id))
+                            Save();
+                    }
+                    if (_materialByName.ContainsKey(mat.name)) continue;
+                    string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
+                    string label = string.IsNullOrEmpty(shaderName)
+                        ? mat.name
+                        : $"{mat.name}  [{shaderName}]";
+                    _materialNames.Add(mat.name);
+                    _materialLabels.Add(label);
+                    _materialByName[mat.name] = mat;
+                }
+            }
+        }
+
+        static void AddRendererMaterialsToList()
+        {
+            if (_selectedRenderers == null) return;
+            for (int i = 0; i < _selectedRenderers.Length; i++)
+            {
+                var r = _selectedRenderers[i];
+                if (r == null) continue;
+                var mats = r.sharedMaterials;
+                if (mats == null) continue;
+                for (int m = 0; m < mats.Length; m++)
+                {
+                    var mat = mats[m];
+                    if (mat == null || string.IsNullOrEmpty(mat.name)) continue;
+                    // Track which prop this material came from and propagate to all saved entries
+                    // that use it as an override but had no source recorded yet.
+                    // Only skip if this material is the current prop's override AND the override differs
+                    // from the native material — that means the renderer may be contaminated (showing
+                    // the override rather than the native), so recording this prop as the source would
+                    // be wrong. When override == native, loading this prop does bring the material into
+                    // memory, so recording is correct.
+                    bool isUntrustedOverride =
+                        !string.IsNullOrEmpty(_overrideMaterialName)
+                        && string.Equals(mat.name, _overrideMaterialName, StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(_overrideMaterialName, _defaultMaterialName, StringComparison.OrdinalIgnoreCase);
+
+                    if (!string.IsNullOrEmpty(_propId) && !isUntrustedOverride)
+                    {
+                        if (BackfillMaterialSource(mat.name, _propId))
+                            Save();
+                    }
+                    if (_materialByName.ContainsKey(mat.name)) continue;
+                    string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
+                    string label = string.IsNullOrEmpty(shaderName)
+                        ? mat.name
+                        : $"{mat.name}  [{shaderName}]";
+                    _materialNames.Add(mat.name);
+                    _materialLabels.Add(label);
+                    _materialByName[mat.name] = mat;
+                }
             }
         }
 
@@ -567,22 +818,31 @@ namespace BabyBlocks
         {
             if (string.IsNullOrEmpty(_propId)) return;
             string overrideToSave = GetOverrideToSave();
+            _knownMaterialSources.TryGetValue(overrideToSave ?? string.Empty, out string srcPropId);
             var info = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
-                overrideToSave, _surfaceType, _disabledRendererPaths);
+                overrideToSave, _defaultMaterialName, srcPropId, _surfaceType, _disabledRendererPaths);
             if (info != null)
                 _index = info.index;
             _overrideMaterialName = overrideToSave ?? string.Empty;
+            _materialExplicitlyChosen = false;
         }
 
         static string GetOverrideToSave()
         {
             if (string.IsNullOrEmpty(_selectedMaterialName)) return string.Empty;
 
-            if (!string.IsNullOrEmpty(_defaultMaterialName)
-                && string.Equals(_selectedMaterialName, _defaultMaterialName, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_selectedMaterialName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
                 return string.Empty;
 
-            if (string.Equals(_selectedMaterialName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
+            // Only treat selected == default as "no override" when:
+            //   • the user did NOT explicitly pick it this session, AND
+            //   • it doesn't match a previously-saved override name (which would mean the renderer is
+            //     contaminated — the game persisted the override and CacheDefaultMaterials read it as
+            //     the native material).
+            if (!string.IsNullOrEmpty(_defaultMaterialName)
+                && string.Equals(_selectedMaterialName, _defaultMaterialName, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(_selectedMaterialName, _overrideMaterialName, StringComparison.OrdinalIgnoreCase)
+                && !_materialExplicitlyChosen)
                 return string.Empty;
 
             return _selectedMaterialName;
@@ -612,6 +872,7 @@ namespace BabyBlocks
             _surfaceType = string.Empty;
             _index = -1;
             _dirty = false;
+            _materialExplicitlyChosen = false;
             _showMaterialDropdown = false;
             _showRendererDropdown = false;
             _showSurfaceTypeDropdown = false;
@@ -649,6 +910,61 @@ namespace BabyBlocks
             BuildRendererEntries(selectedObject);
             ApplyRendererVisibility();
             EnsureMaterialList();
+            AddRendererMaterialsToList();
+
+            // GPUI props have no live renderers — scan their loaded parts for native materials.
+            // Load on first selection so source recording works even for old-format entries.
+            if (propLibInfo != null && propLibInfo.IsGpui)
+            {
+                if (!propLibInfo.isLoaded) PropLibrary.LoadPropData(propLibInfo);
+                if (propLibInfo.isLoaded) AddPartsToMaterialList(propLibInfo);
+            }
+
+            // If a native material name was persisted, use it to un-contaminate _defaultMaterialName.
+            // CacheDefaultMaterials reads the live renderer, which may already have the override applied.
+            if (TryGet(_propId, out var metaInfo) && metaInfo != null)
+            {
+                if (!string.IsNullOrEmpty(metaInfo.nativeMaterialName))
+                    _defaultMaterialName = metaInfo.nativeMaterialName;
+
+                // Lazy migration: old entries have overrideMaterialId but no nativeMaterialName or
+                // materialSourcePropId. Fill them in now while the renderer is fresh (after restart the
+                // renderer shows the true original material, not the override).
+                bool migrationDirty = false;
+                if (!string.IsNullOrEmpty(metaInfo.overrideMaterialId))
+                {
+                    // If the renderer shows the override material (game persisted it), the default
+                    // looks contaminated. Try to recover the true native from the prop's loaded parts.
+                    if (string.IsNullOrEmpty(metaInfo.nativeMaterialName)
+                        && string.Equals(_defaultMaterialName, metaInfo.overrideMaterialId,
+                                         StringComparison.OrdinalIgnoreCase))
+                    {
+                        string recovered = FindNativeFromParts(propLibInfo, metaInfo.overrideMaterialId);
+                        if (!string.IsNullOrEmpty(recovered))
+                            _defaultMaterialName = recovered;
+                    }
+
+                    if (string.IsNullOrEmpty(metaInfo.nativeMaterialName)
+                        && !string.IsNullOrEmpty(_defaultMaterialName)
+                        && !string.Equals(_defaultMaterialName, metaInfo.overrideMaterialId,
+                                          StringComparison.OrdinalIgnoreCase))
+                    {
+                        metaInfo.nativeMaterialName = _defaultMaterialName;
+                        migrationDirty = true;
+                    }
+
+                    if (string.IsNullOrEmpty(metaInfo.materialSourcePropId)
+                        && _knownMaterialSources.TryGetValue(metaInfo.overrideMaterialId, out string knownSrc)
+                        && !string.IsNullOrEmpty(knownSrc))
+                    {
+                        if (BackfillMaterialSource(metaInfo.overrideMaterialId, knownSrc))
+                            migrationDirty = true;
+                    }
+                }
+
+                if (migrationDirty) Save();
+            }
+
             ApplyPreviewMaterial(_selectedMaterialName);
             ApplySurfaceType(selectedObject, _surfaceType);
         }
@@ -1024,6 +1340,22 @@ namespace BabyBlocks
             try { go.tag = tag; } catch { }
         }
 
+        public static bool HasMetadata(string id)
+        {
+            EnsureLoaded();
+            return !string.IsNullOrEmpty(id) && _byId.ContainsKey(id);
+        }
+
+        public static bool IsExcluded(string id)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id)) return false;
+            return _byId.TryGetValue(id, out var info) && info.excluded;
+        }
+
+        // Called after ScanGpuiProps so EnsureMaterialSources can find GPUI prop entries.
+        public static void InvalidateMaterialSources() => _materialSourcesLoaded = false;
+
         static bool TryGet(string id, out PropExtraInfo info)
         {
             EnsureLoaded();
@@ -1037,7 +1369,7 @@ namespace BabyBlocks
 
         static PropExtraInfo Apply(string id, string displayName, string category,
             bool excluded, bool useRenderMeshCollider, string overrideMaterialName,
-            string surfaceType, HashSet<string> disabledRenderers)
+            string nativeMaterialName, string materialSourcePropId, string surfaceType, HashSet<string> disabledRenderers)
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return null;
@@ -1076,6 +1408,23 @@ namespace BabyBlocks
                 info.excluded           = false;
                 info.useRenderMeshCollider = useRenderMeshCollider;
                 info.overrideMaterialId = overrideMaterialName ?? string.Empty;
+                // Store the true original and source only once — when a non-empty override is first applied.
+                // Clear both when the override is removed so they don't linger.
+                if (!string.IsNullOrEmpty(overrideMaterialName))
+                {
+                    // Only store nativeMaterialName when it differs from the override; if they match
+                    // the renderer was contaminated and the value would be useless for un-contamination.
+                    if (string.IsNullOrEmpty(info.nativeMaterialName) && !string.IsNullOrEmpty(nativeMaterialName)
+                        && !string.Equals(nativeMaterialName, overrideMaterialName, StringComparison.OrdinalIgnoreCase))
+                        info.nativeMaterialName = nativeMaterialName;
+                    if (string.IsNullOrEmpty(info.materialSourcePropId) && !string.IsNullOrEmpty(materialSourcePropId))
+                        info.materialSourcePropId = materialSourcePropId;
+                }
+                else
+                {
+                    info.nativeMaterialName    = string.Empty;
+                    info.materialSourcePropId  = string.Empty;
+                }
                 info.surfaceType        = surfaceType ?? string.Empty;
                 info.disabledRenderers  = new List<string>();
                 if (disabledRenderers != null)
@@ -1111,6 +1460,19 @@ namespace BabyBlocks
                     _byId[item.id] = item;
                 }
                 _nextIndex = Math.Max(_nextIndex, maxIndex + 1);
+
+                // One-time cleanup: MicroSplat materials are runtime-generated so they can't have
+                // a real source prop. Clear any that were incorrectly recorded.
+                bool anyFixed = false;
+                foreach (var item in _byId.Values)
+                {
+                    if (string.IsNullOrEmpty(item.materialSourcePropId)) continue;
+                    if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
+                    if (!item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
+                    item.materialSourcePropId = string.Empty;
+                    anyFixed = true;
+                }
+                if (anyFixed) Save();
             }
             catch (Exception e)
             {
@@ -1186,6 +1548,8 @@ namespace BabyBlocks
                     sb.Append("      \"excluded\": false,\n");
                     sb.Append("      \"useRenderMeshCollider\": ").Append(item.useRenderMeshCollider ? "true" : "false").Append(",\n");
                     AppendJsonField(sb, "overrideMaterialId", item.overrideMaterialId, 6).Append(",\n");
+                    AppendJsonField(sb, "nativeMaterialName", item.nativeMaterialName, 6).Append(",\n");
+                    AppendJsonField(sb, "materialSourcePropId", item.materialSourcePropId, 6).Append(",\n");
                     AppendJsonField(sb, "surfaceType", item.surfaceType, 6).Append(",\n");
                     AppendJsonArray(sb, "disabledRenderers", item.disabledRenderers, 6).Append(",\n");
                     sb.Append("      \"index\": ").Append(item.index).Append("\n");
@@ -1276,6 +1640,8 @@ namespace BabyBlocks
                     excluded = ExtractBool(obj, "excluded"),
                     useRenderMeshCollider = ExtractBool(obj, "useRenderMeshCollider"),
                     overrideMaterialId = ExtractString(obj, "overrideMaterialId"),
+                    nativeMaterialName = ExtractString(obj, "nativeMaterialName"),
+                    materialSourcePropId = ExtractString(obj, "materialSourcePropId"),
                     surfaceType = ExtractString(obj, "surfaceType"),
                     index = ExtractInt(obj, "index", 0),
                     disabledRenderers = ExtractStringArray(obj, "disabledRenderers")
