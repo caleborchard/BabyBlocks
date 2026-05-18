@@ -119,6 +119,7 @@ namespace BabyBlocks
 
         static readonly List<string> _perSlotSelected = new();
         static readonly List<string> _perSlotDefault = new();
+        static readonly HashSet<int> _slotHasExplicitOverride = new();
         static int _maxMaterialSlots;
         static int _openSlotDropdown = -1;
         static Vector2 _slotDropdownScroll;
@@ -505,7 +506,6 @@ namespace BabyBlocks
                             _openSlotDropdown = s;
                             _slotDropdownScroll = Vector2.zero;
                         }
-                        _slotDropdownSearch = string.Empty;
                     }
 
                     if (_openSlotDropdown == s)
@@ -529,6 +529,10 @@ namespace BabyBlocks
                                 string picked = i == 0 ? string.Empty : _materialNames[i];
                                 while (_perSlotSelected.Count <= s) _perSlotSelected.Add(string.Empty);
                                 _perSlotSelected[s] = string.IsNullOrEmpty(picked) ? slotDef : picked;
+                                if (string.IsNullOrEmpty(picked))
+                                    _slotHasExplicitOverride.Remove(s);
+                                else
+                                    _slotHasExplicitOverride.Add(s);
                                 _openSlotDropdown = -1;
                                 ApplySlotMaterial(s, picked);
                                 MarkDirty();
@@ -542,6 +546,7 @@ namespace BabyBlocks
                 {
                     for (int s = 0; s < _perSlotSelected.Count; s++)
                         _perSlotSelected[s] = s < _perSlotDefault.Count ? _perSlotDefault[s] : string.Empty;
+                    _slotHasExplicitOverride.Clear();
                     _openSlotDropdown = -1;
                     RestoreDefaultMaterials();
                     MarkDirty();
@@ -996,10 +1001,7 @@ namespace BabyBlocks
                 for (int s = 0; s < effSlots; s++)
                 {
                     string sel = s < _perSlotSelected.Count ? _perSlotSelected[s] : string.Empty;
-                    string def = s < _perSlotDefault.Count ? _perSlotDefault[s] : string.Empty;
-                    bool isOverride = !string.IsNullOrEmpty(sel)
-                        && !string.Equals(sel, def, StringComparison.OrdinalIgnoreCase);
-                    perSlotToSave.Add(isOverride ? sel : string.Empty);
+                    perSlotToSave.Add(_slotHasExplicitOverride.Contains(s) ? sel : string.Empty);
                 }
                 int slotCountToSave = _multiMaterialEnabled ? _forcedMaterialSlots : 0;
                 var multiInfo = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
@@ -1073,6 +1075,7 @@ namespace BabyBlocks
             _disabledRendererPaths.Clear();
             _rendererEntries.Clear();
             _perSlotSelected.Clear();
+            _slotHasExplicitOverride.Clear();
             _openSlotDropdown = -1;
             _slotDropdownSearch = string.Empty;
             _multiMaterialEnabled = false;
@@ -1125,6 +1128,8 @@ namespace BabyBlocks
                 string saved = savedSlots != null && s < savedSlots.Count ? savedSlots[s] ?? string.Empty : string.Empty;
                 string def = s < _perSlotDefault.Count ? _perSlotDefault[s] : string.Empty;
                 _perSlotSelected.Add(string.IsNullOrEmpty(saved) ? def : saved);
+                if (!string.IsNullOrEmpty(saved))
+                    _slotHasExplicitOverride.Add(s);
             }
 
             BuildRendererEntries(selectedObject);
