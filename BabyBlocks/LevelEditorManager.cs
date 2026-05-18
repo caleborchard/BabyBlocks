@@ -59,6 +59,8 @@ namespace BabyBlocks
             if (!string.IsNullOrEmpty(surfaceTag))
                 PropMetadataPanel.ApplySurfaceTypeToRoot(root, surfaceTag);
 
+            PropMetadataPanel.ApplyMaterialOverridesToRoot(info.id, root);
+
             var leo = root.AddComponent<LevelEditorObject>();
             leo.objectType     = "Addressable";
             leo.addressableKey = info.id;
@@ -105,7 +107,7 @@ namespace BabyBlocks
                 }
 
                 var ib     = source.GetIndexBuffer();
-                int iCount = (int)source.GetIndexCount(0);
+                int iCount = ib.count;
                 int[] tris = new int[iCount];
                 if (ib.stride == 2)
                 {

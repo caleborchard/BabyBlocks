@@ -22,6 +22,8 @@ namespace BabyBlocks
         public string surfaceType;
         public int index;
         public List<string> disabledRenderers = new();
+        public List<string> perSlotMaterialOverrides;
+        public int forcedMaterialSlots; // 0 = auto-detect; >1 = manual multi-slot
     }
 
     [Serializable]
@@ -114,6 +116,16 @@ namespace BabyBlocks
 
         static bool _materialExplicitlyChosen;
         static float _lastChangeTime;
+
+        static readonly List<string> _perSlotSelected = new();
+        static readonly List<string> _perSlotDefault = new();
+        static int _maxMaterialSlots;
+        static int _openSlotDropdown = -1;
+        static Vector2 _slotDropdownScroll;
+        static string _slotDropdownSearch = "";
+        static bool _multiMaterialEnabled;
+        static int _forcedMaterialSlots = 2;
+        static string _forcedMaterialSlotsStr = "2";
         static Renderer[] _selectedRenderers;
         static Material[][] _selectedDefaultMaterials;
         static LevelEditorObject _selectedLEO;
@@ -324,9 +336,71 @@ namespace BabyBlocks
                 _dirty = false;
             }
 
+            var newMultiMat = GUILayout.Toggle(_multiMaterialEnabled, "Multiple materials");
+            if (newMultiMat != _multiMaterialEnabled)
+            {
+                _multiMaterialEnabled = newMultiMat;
+                int eff = _multiMaterialEnabled
+                    ? Math.Max(_forcedMaterialSlots, _maxMaterialSlots)
+                    : _maxMaterialSlots;
+                while (_perSlotDefault.Count < eff) _perSlotDefault.Add(string.Empty);
+                while (_perSlotSelected.Count < eff) _perSlotSelected.Add(string.Empty);
+                _openSlotDropdown = -1;
+                if (_multiMaterialEnabled)
+                {
+                    // Port an existing single-material override into slot 0 of the new setup.
+                    if (!string.IsNullOrEmpty(_overrideMaterialName) && _perSlotSelected.Count > 0
+                        && string.IsNullOrEmpty(_perSlotSelected[0]))
+                        _perSlotSelected[0] = _overrideMaterialName;
+                    ApplyAllSlotMaterials();
+                }
+                else
+                    RestoreDefaultMaterials();
+                MarkDirty();
+            }
+
+            if (_multiMaterialEnabled)
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Slots:", GUILayout.Width(40f));
+                string newSlotsStr = GUILayout.TextField(_forcedMaterialSlotsStr, GUILayout.Width(40f));
+                if (!string.Equals(newSlotsStr, _forcedMaterialSlotsStr, StringComparison.Ordinal))
+                {
+                    _forcedMaterialSlotsStr = newSlotsStr;
+                    if (int.TryParse(newSlotsStr, out int parsed) && parsed >= 2)
+                    {
+                        _forcedMaterialSlots = parsed;
+                        int eff2 = Math.Max(_forcedMaterialSlots, _maxMaterialSlots);
+                        while (_perSlotDefault.Count < eff2) _perSlotDefault.Add(string.Empty);
+                        while (_perSlotSelected.Count < eff2) _perSlotSelected.Add(string.Empty);
+                        ApplyAllSlotMaterials();
+                        MarkDirty();
+                    }
+                }
+                GUILayout.EndHorizontal();
+            }
+
             GUILayout.Space(4f);
 
-            GUILayout.Label("Current material: " + (string.IsNullOrEmpty(_defaultMaterialName) ? "(unknown)" : _defaultMaterialName));
+            int effectiveSlotCount = _multiMaterialEnabled
+                ? Math.Max(_forcedMaterialSlots, _maxMaterialSlots)
+                : _maxMaterialSlots;
+
+            if (effectiveSlotCount <= 1)
+            {
+                GUILayout.Label("Current material: " + (string.IsNullOrEmpty(_defaultMaterialName) ? "(unknown)" : _defaultMaterialName));
+            }
+            else
+            {
+                var matLabelSb = new System.Text.StringBuilder("Current materials: ");
+                for (int s = 0; s < Math.Min(_perSlotDefault.Count, effectiveSlotCount); s++)
+                {
+                    if (s > 0) matLabelSb.Append(", ");
+                    string n = _perSlotDefault[s];
+                    matLabelSb.Append(string.IsNullOrEmpty(n) ? "(none)" : n);
+                }
+                GUILayout.Label(matLabelSb.ToString());
+            }
 
             GUILayout.Label("Components");
             if (GUILayout.Button(_showRendererDropdown ? "Hide components" : "Show components"))
@@ -352,58 +426,126 @@ namespace BabyBlocks
                 GUILayout.EndScrollView();
             }
 
-            GUILayout.Label("Override material");
             EnsureMaterialList();
 
-            string overrideLabel = GetOverrideLabel();
-            GUI.SetNextControlName(OverrideField);
-            if (GUILayout.Button(overrideLabel, GUILayout.Height(22f)))
-                _showMaterialDropdown = !_showMaterialDropdown;
-
-            if (_showMaterialDropdown)
+            if (effectiveSlotCount <= 1)
             {
-                GUILayout.Label("Search");
-                _materialSearch = GUILayout.TextField(_materialSearch ?? string.Empty);
+                GUILayout.Label("Override material");
+                string overrideLabel = GetOverrideLabel();
+                GUI.SetNextControlName(OverrideField);
+                if (GUILayout.Button(overrideLabel, GUILayout.Height(22f)))
+                    _showMaterialDropdown = !_showMaterialDropdown;
 
-                _materialScroll = GUILayout.BeginScrollView(_materialScroll, GUILayout.Height(MaterialListH));
-                int selectedIndex = GetMaterialIndex(_selectedMaterialName);
-                string search = _materialSearch != null ? _materialSearch.Trim() : string.Empty;
-                bool hasSearch = !string.IsNullOrEmpty(search);
-                for (int i = 0; i < _materialLabels.Count; i++)
+                if (_showMaterialDropdown)
                 {
-                    string label = _materialLabels[i];
-                    if (hasSearch && label.IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0)
-                        continue;
+                    GUILayout.Label("Search");
+                    _materialSearch = GUILayout.TextField(_materialSearch ?? string.Empty);
 
-                    if (i == selectedIndex)
-                        label = "> " + label;
-
-                    EnsureMaterialButtonStyle();
-                    if (GUILayout.Button(label, _materialButtonStyle))
+                    _materialScroll = GUILayout.BeginScrollView(_materialScroll, GUILayout.Height(MaterialListH));
+                    int selectedIndex = GetMaterialIndex(_selectedMaterialName);
+                    string search = _materialSearch != null ? _materialSearch.Trim() : string.Empty;
+                    bool hasSearch = !string.IsNullOrEmpty(search);
+                    for (int i = 0; i < _materialLabels.Count; i++)
                     {
-                        SelectMaterialByIndex(i);
-                        _showMaterialDropdown = false;
-                        _materialExplicitlyChosen = true;
-                        ApplyPreviewMaterial(_selectedMaterialName);
-                        MarkDirty();
+                        string label = _materialLabels[i];
+                        if (hasSearch && label.IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0)
+                            continue;
+
+                        if (i == selectedIndex)
+                            label = "> " + label;
+
+                        EnsureMaterialButtonStyle();
+                        if (GUILayout.Button(label, _materialButtonStyle))
+                        {
+                            SelectMaterialByIndex(i);
+                            _showMaterialDropdown = false;
+                            _materialExplicitlyChosen = true;
+                            ApplyPreviewMaterial(_selectedMaterialName);
+                            MarkDirty();
+                        }
+                    }
+                    GUILayout.EndScrollView();
+                }
+
+                if (GUILayout.Button("Reset to default material"))
+                {
+                    _selectedMaterialName = _defaultMaterialName ?? string.Empty;
+                    _overrideMaterialName = string.Empty;
+                    _showMaterialDropdown = false;
+                    _materialExplicitlyChosen = false;
+                    // Prefer applying by name so we use the live Material object from _materialByName
+                    // rather than _selectedDefaultMaterials, which may be contaminated by a prior override.
+                    if (!string.IsNullOrEmpty(_defaultMaterialName))
+                        ApplyPreviewMaterial(_defaultMaterialName);
+                    else
+                        ApplyPreviewMaterial(string.Empty);
+                    MarkDirty();
+                }
+            }
+            else
+            {
+                GUILayout.Label("Override materials");
+                for (int s = 0; s < effectiveSlotCount; s++)
+                {
+                    string slotDef = s < _perSlotDefault.Count ? _perSlotDefault[s] : string.Empty;
+                    string slotSel = s < _perSlotSelected.Count ? _perSlotSelected[s] : slotDef;
+                    bool isOverridden = !string.IsNullOrEmpty(slotSel)
+                        && !string.Equals(slotSel, slotDef, StringComparison.OrdinalIgnoreCase);
+                    string btnLabel = isOverridden
+                        ? slotSel
+                        : (string.IsNullOrEmpty(slotDef) ? "(unknown)" : slotDef + " (default)");
+
+                    GUILayout.Label("Slot " + s + ": " + (string.IsNullOrEmpty(slotDef) ? "(unknown)" : slotDef));
+                    if (GUILayout.Button(btnLabel, GUILayout.Height(22f)))
+                    {
+                        if (_openSlotDropdown == s)
+                            _openSlotDropdown = -1;
+                        else
+                        {
+                            _openSlotDropdown = s;
+                            _slotDropdownScroll = Vector2.zero;
+                        }
+                        _slotDropdownSearch = string.Empty;
+                    }
+
+                    if (_openSlotDropdown == s)
+                    {
+                        GUILayout.Label("Search");
+                        _slotDropdownSearch = GUILayout.TextField(_slotDropdownSearch ?? string.Empty);
+                        _slotDropdownScroll = GUILayout.BeginScrollView(_slotDropdownScroll, GUILayout.Height(MaterialListH));
+                        string slotSearch = _slotDropdownSearch != null ? _slotDropdownSearch.Trim() : string.Empty;
+                        bool hasSlotSearch = !string.IsNullOrEmpty(slotSearch);
+                        for (int i = 0; i < _materialLabels.Count; i++)
+                        {
+                            string label = _materialLabels[i];
+                            if (hasSlotSearch && label.IndexOf(slotSearch, StringComparison.OrdinalIgnoreCase) < 0)
+                                continue;
+                            bool isCurrent = string.Equals(slotSel, _materialNames[i], StringComparison.OrdinalIgnoreCase)
+                                || (i == 0 && !isOverridden);
+                            if (isCurrent) label = "> " + label;
+                            EnsureMaterialButtonStyle();
+                            if (GUILayout.Button(label, _materialButtonStyle))
+                            {
+                                string picked = i == 0 ? string.Empty : _materialNames[i];
+                                while (_perSlotSelected.Count <= s) _perSlotSelected.Add(string.Empty);
+                                _perSlotSelected[s] = string.IsNullOrEmpty(picked) ? slotDef : picked;
+                                _openSlotDropdown = -1;
+                                ApplySlotMaterial(s, picked);
+                                MarkDirty();
+                            }
+                        }
+                        GUILayout.EndScrollView();
                     }
                 }
-                GUILayout.EndScrollView();
-            }
 
-            if (GUILayout.Button("Reset to default material"))
-            {
-                _selectedMaterialName = _defaultMaterialName ?? string.Empty;
-                _overrideMaterialName = string.Empty;
-                _showMaterialDropdown = false;
-                _materialExplicitlyChosen = false;
-                // Prefer applying by name so we use the live Material object from _materialByName
-                // rather than _selectedDefaultMaterials, which may be contaminated by a prior override.
-                if (!string.IsNullOrEmpty(_defaultMaterialName))
-                    ApplyPreviewMaterial(_defaultMaterialName);
-                else
-                    ApplyPreviewMaterial(string.Empty);
-                MarkDirty();
+                if (GUILayout.Button("Reset all to default materials"))
+                {
+                    for (int s = 0; s < _perSlotSelected.Count; s++)
+                        _perSlotSelected[s] = s < _perSlotDefault.Count ? _perSlotDefault[s] : string.Empty;
+                    _openSlotDropdown = -1;
+                    RestoreDefaultMaterials();
+                    MarkDirty();
+                }
             }
 
             GUILayout.Space(4f);
@@ -844,6 +986,31 @@ namespace BabyBlocks
         static void ApplyCurrent()
         {
             if (string.IsNullOrEmpty(_propId)) return;
+
+            if (_multiMaterialEnabled || _maxMaterialSlots > 1)
+            {
+                int effSlots = _multiMaterialEnabled
+                    ? Math.Max(_forcedMaterialSlots, _maxMaterialSlots)
+                    : _maxMaterialSlots;
+                var perSlotToSave = new List<string>(effSlots);
+                for (int s = 0; s < effSlots; s++)
+                {
+                    string sel = s < _perSlotSelected.Count ? _perSlotSelected[s] : string.Empty;
+                    string def = s < _perSlotDefault.Count ? _perSlotDefault[s] : string.Empty;
+                    bool isOverride = !string.IsNullOrEmpty(sel)
+                        && !string.Equals(sel, def, StringComparison.OrdinalIgnoreCase);
+                    perSlotToSave.Add(isOverride ? sel : string.Empty);
+                }
+                int slotCountToSave = _multiMaterialEnabled ? _forcedMaterialSlots : 0;
+                var multiInfo = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
+                    string.Empty, _defaultMaterialName, string.Empty, _surfaceType, _disabledRendererPaths,
+                    perSlotToSave, slotCountToSave);
+                if (multiInfo != null)
+                    _index = multiInfo.index;
+                _materialExplicitlyChosen = false;
+                return;
+            }
+
             string overrideToSave = GetOverrideToSave();
             _knownMaterialSources.TryGetValue(overrideToSave ?? string.Empty, out string srcPropId);
             var info = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
@@ -905,12 +1072,19 @@ namespace BabyBlocks
             _showSurfaceTypeDropdown = false;
             _disabledRendererPaths.Clear();
             _rendererEntries.Clear();
+            _perSlotSelected.Clear();
+            _openSlotDropdown = -1;
+            _slotDropdownSearch = string.Empty;
+            _multiMaterialEnabled = false;
+            _forcedMaterialSlots = 2;
+            _forcedMaterialSlotsStr = "2";
 
             if (string.IsNullOrEmpty(id)) return;
 
             var propLibInfo = PropLibrary.FindById(id);
             _useRenderMeshCollider = propLibInfo == null || !propLibInfo.HasColliderParts;
 
+            List<string> savedSlots = null;
             if (TryGet(id, out var info) && info != null)
             {
                 _displayName = info.displayName ?? string.Empty;
@@ -928,11 +1102,30 @@ namespace BabyBlocks
                         if (!string.IsNullOrEmpty(path)) _disabledRendererPaths.Add(path);
                     }
                 }
+                if (info.forcedMaterialSlots > 1)
+                {
+                    _multiMaterialEnabled = true;
+                    _forcedMaterialSlots = info.forcedMaterialSlots;
+                    _forcedMaterialSlotsStr = _forcedMaterialSlots.ToString();
+                }
+                savedSlots = info.perSlotMaterialOverrides;
             }
 
             _selectedMaterialName = string.IsNullOrEmpty(_overrideMaterialName)
                 ? _defaultMaterialName
                 : _overrideMaterialName;
+
+            int effectiveSlots = _multiMaterialEnabled
+                ? Math.Max(_forcedMaterialSlots, _maxMaterialSlots)
+                : _maxMaterialSlots;
+
+            while (_perSlotDefault.Count < effectiveSlots) _perSlotDefault.Add(string.Empty);
+            for (int s = 0; s < effectiveSlots; s++)
+            {
+                string saved = savedSlots != null && s < savedSlots.Count ? savedSlots[s] ?? string.Empty : string.Empty;
+                string def = s < _perSlotDefault.Count ? _perSlotDefault[s] : string.Empty;
+                _perSlotSelected.Add(string.IsNullOrEmpty(saved) ? def : saved);
+            }
 
             BuildRendererEntries(selectedObject);
             ApplyRendererVisibility();
@@ -1037,7 +1230,10 @@ namespace BabyBlocks
                 if (migrationDirty) Save();
             }
 
-            ApplyPreviewMaterial(_selectedMaterialName);
+            if (_multiMaterialEnabled || _maxMaterialSlots > 1)
+                ApplyAllSlotMaterials();
+            else
+                ApplyPreviewMaterial(_selectedMaterialName);
             ApplySurfaceType(selectedObject, _surfaceType);
         }
 
@@ -1093,6 +1289,26 @@ namespace BabyBlocks
                             }
                         }
                     }
+                }
+
+                // Compute max material slot count and per-slot default names.
+                _maxMaterialSlots = 0;
+                _perSlotDefault.Clear();
+                for (int i = 0; i < _selectedDefaultMaterials.Length; i++)
+                {
+                    var m = _selectedDefaultMaterials[i];
+                    if (m != null && m.Length > _maxMaterialSlots)
+                        _maxMaterialSlots = m.Length;
+                }
+                for (int s = 0; s < _maxMaterialSlots; s++)
+                    _perSlotDefault.Add(string.Empty);
+                for (int i = 0; i < _selectedDefaultMaterials.Length; i++)
+                {
+                    var m = _selectedDefaultMaterials[i];
+                    if (m == null || m.Length != _maxMaterialSlots) continue;
+                    for (int s = 0; s < _maxMaterialSlots; s++)
+                        _perSlotDefault[s] = m[s] != null ? m[s].name ?? string.Empty : string.Empty;
+                    break;
                 }
             }
             catch { }
@@ -1273,6 +1489,49 @@ namespace BabyBlocks
             }
         }
 
+        static void ApplySlotMaterial(int slot, string materialName)
+        {
+            if (_selectedRenderers == null) return;
+            bool restore = string.IsNullOrEmpty(materialName)
+                || string.Equals(materialName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase)
+                || (slot < _perSlotDefault.Count && string.Equals(materialName, _perSlotDefault[slot], StringComparison.OrdinalIgnoreCase));
+
+            for (int i = 0; i < _selectedRenderers.Length; i++)
+            {
+                var r = _selectedRenderers[i];
+                if (r == null) continue;
+                var mats = r.sharedMaterials;
+                if (mats == null) mats = new Material[0];
+
+                // Expand the array if the slot exceeds what the renderer currently has.
+                if (slot >= mats.Length)
+                {
+                    if (restore) continue; // nothing to restore for a slot that doesn't exist yet
+                    var expanded = new Material[slot + 1];
+                    for (int m = 0; m < mats.Length; m++) expanded[m] = mats[m];
+                    mats = expanded;
+                }
+
+                if (restore)
+                {
+                    var defaults = _selectedDefaultMaterials?[i];
+                    mats[slot] = defaults != null && slot < defaults.Length ? defaults[slot] : null;
+                }
+                else
+                {
+                    if (!_materialByName.TryGetValue(materialName, out var mat) || mat == null) continue;
+                    mats[slot] = mat;
+                }
+                r.sharedMaterials = mats;
+            }
+        }
+
+        static void ApplyAllSlotMaterials()
+        {
+            for (int s = 0; s < _perSlotSelected.Count; s++)
+                ApplySlotMaterial(s, _perSlotSelected[s]);
+        }
+
         static void MarkDirty()
         {
             _dirty = true;
@@ -1412,6 +1671,47 @@ namespace BabyBlocks
             try { go.tag = tag; } catch { }
         }
 
+        public static void ApplyMaterialOverridesToRoot(string propId, GameObject root)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(propId) || root == null) return;
+            if (!_byId.TryGetValue(propId, out var info)) return;
+
+            var overrides = info.perSlotMaterialOverrides;
+            if (overrides == null || overrides.Count == 0) return;
+
+            var renderers = root.GetComponentsInChildren<Renderer>(true);
+            if (renderers == null || renderers.Length == 0) return;
+
+            for (int s = 0; s < overrides.Count; s++)
+            {
+                string matName = overrides[s];
+                if (string.IsNullOrEmpty(matName)
+                    || string.Equals(matName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!_materialByName.TryGetValue(matName, out var mat) || mat == null) continue;
+
+                for (int i = 0; i < renderers.Length; i++)
+                {
+                    var r = renderers[i];
+                    if (r == null) continue;
+                    var mats = r.sharedMaterials;
+                    if (mats == null) mats = new Material[0];
+
+                    if (s >= mats.Length)
+                    {
+                        var expanded = new Material[s + 1];
+                        for (int m = 0; m < mats.Length; m++) expanded[m] = mats[m];
+                        mats = expanded;
+                    }
+
+                    mats[s] = mat;
+                    r.sharedMaterials = mats;
+                }
+            }
+        }
+
         public static bool HasMetadata(string id)
         {
             EnsureLoaded();
@@ -1473,9 +1773,18 @@ namespace BabyBlocks
             return _byId.TryGetValue(id, out info);
         }
 
+        static bool HasNonEmptySlot(List<string> list)
+        {
+            if (list == null) return false;
+            for (int i = 0; i < list.Count; i++)
+                if (!string.IsNullOrEmpty(list[i])) return true;
+            return false;
+        }
+
         static PropExtraInfo Apply(string id, string displayName, string category,
             bool excluded, bool useRenderMeshCollider, string overrideMaterialName,
-            string nativeMaterialName, string materialSourcePropId, string surfaceType, HashSet<string> disabledRenderers)
+            string nativeMaterialName, string materialSourcePropId, string surfaceType,
+            HashSet<string> disabledRenderers, List<string> perSlotOverrides = null, int forcedMaterialSlots = 0)
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return null;
@@ -1486,7 +1795,9 @@ namespace BabyBlocks
                     || useRenderMeshCollider
                     || !string.IsNullOrEmpty(overrideMaterialName)
                     || !string.IsNullOrEmpty(surfaceType)
-                    || (disabledRenderers != null && disabledRenderers.Count > 0);
+                    || (disabledRenderers != null && disabledRenderers.Count > 0)
+                    || HasNonEmptySlot(perSlotOverrides)
+                    || forcedMaterialSlots > 1;
 
             if (!_byId.TryGetValue(id, out var info))
             {
@@ -1501,10 +1812,12 @@ namespace BabyBlocks
                 info.category           = string.Empty;
                 info.excluded           = true;
                 info.useRenderMeshCollider = false;
-                info.overrideMaterialId = string.Empty;
-                info.surfaceType        = string.Empty;
-                info.disabledRenderers  = new List<string>();
-                info.index              = 0;
+                info.overrideMaterialId       = string.Empty;
+                info.surfaceType              = string.Empty;
+                info.disabledRenderers        = new List<string>();
+                info.perSlotMaterialOverrides = null;
+                info.forcedMaterialSlots      = 0;
+                info.index                    = 0;
             }
             else
             {
@@ -1535,6 +1848,8 @@ namespace BabyBlocks
                 info.disabledRenderers  = new List<string>();
                 if (disabledRenderers != null)
                     foreach (var path in disabledRenderers) info.disabledRenderers.Add(path);
+                info.perSlotMaterialOverrides = HasNonEmptySlot(perSlotOverrides) ? perSlotOverrides : null;
+                info.forcedMaterialSlots = forcedMaterialSlots;
             }
 
             Save();
@@ -1658,6 +1973,10 @@ namespace BabyBlocks
                     AppendJsonField(sb, "materialSourcePropId", item.materialSourcePropId, 6).Append(",\n");
                     AppendJsonField(sb, "surfaceType", item.surfaceType, 6).Append(",\n");
                     AppendJsonArray(sb, "disabledRenderers", item.disabledRenderers, 6).Append(",\n");
+                    if (HasNonEmptySlot(item.perSlotMaterialOverrides))
+                        AppendJsonArray(sb, "perSlotMaterialOverrides", item.perSlotMaterialOverrides, 6).Append(",\n");
+                    if (item.forcedMaterialSlots > 1)
+                        sb.Append("      \"forcedMaterialSlots\": ").Append(item.forcedMaterialSlots).Append(",\n");
                     sb.Append("      \"index\": ").Append(item.index).Append("\n");
                 }
                 sb.Append("    }");
@@ -1750,7 +2069,9 @@ namespace BabyBlocks
                     materialSourcePropId = ExtractString(obj, "materialSourcePropId"),
                     surfaceType = ExtractString(obj, "surfaceType"),
                     index = ExtractInt(obj, "index", 0),
-                    disabledRenderers = ExtractStringArray(obj, "disabledRenderers")
+                    disabledRenderers = ExtractStringArray(obj, "disabledRenderers"),
+                    perSlotMaterialOverrides = ExtractStringArray(obj, "perSlotMaterialOverrides"),
+                    forcedMaterialSlots = ExtractInt(obj, "forcedMaterialSlots", 0)
                 };
                 if (!string.IsNullOrEmpty(item.id))
                     data.items.Add(item);

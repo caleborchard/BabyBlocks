@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using MelonLoader;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using System.Collections;
 using UnityEngine.AddressableAssets;
 using UnityEngine.ResourceManagement.AsyncOperations;
@@ -71,6 +72,7 @@ namespace BabyBlocks
         static readonly string[] PrimitiveNames = { "Cube", "Sphere", "Capsule", "Cylinder", "Plane", "Quad", "Torus", "Cone", "Helix", "Egg" };
         static Type _bestRegionType;
         static readonly HashSet<string> _gpuiScannedNames = new(StringComparer.OrdinalIgnoreCase);
+        static Dictionary<string, string> _gpuiPlayerPaths; // prefabName → full catalog path
 
         static readonly string[] ExcludedAssetPrefixes =
         {
@@ -361,6 +363,95 @@ namespace BabyBlocks
             }
         }
 
+        static void LogCatalogBundleHint(string propId)
+        {
+            try
+            {
+                string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
+                if (!File.Exists(catalogPath)) return;
+
+                string fileName = Path.GetFileName(propId); // e.g. "Spruce_Norway_Desktop_Stump_Var2.prefab"
+                if (string.IsNullOrEmpty(fileName)) return;
+
+                string json = File.ReadAllText(catalogPath);
+
+                // Also check the decoded key data.
+                string decoded = "";
+                int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
+                if (kdIdx >= 0)
+                {
+                    int vs = json.IndexOf('"', kdIdx + 17) + 1;
+                    int ve = json.IndexOf('"', vs);
+                    if (vs > 0 && ve > vs)
+                    {
+                        try { decoded = Encoding.UTF8.GetString(Convert.FromBase64String(json.Substring(vs, ve - vs))); }
+                        catch { }
+                    }
+                }
+
+                var bundles  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var scenes   = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var text in new[] { json, decoded })
+                {
+                    if (string.IsNullOrEmpty(text)) continue;
+
+                    // Find all occurrences of the prop filename in this text block.
+                    int searchFrom = 0;
+                    while (searchFrom < text.Length)
+                    {
+                        int hit = text.IndexOf(fileName, searchFrom, StringComparison.OrdinalIgnoreCase);
+                        if (hit < 0) break;
+                        searchFrom = hit + 1;
+
+                        // Scan a ±2 KB window around the hit for bundle/scene references.
+                        int wStart = Math.Max(0, hit - 2048);
+                        int wEnd   = Math.Min(text.Length, hit + 2048);
+                        string window = text.Substring(wStart, wEnd - wStart);
+
+                        // Collect *.bundle names.
+                        int bi = 0;
+                        while (bi < window.Length)
+                        {
+                            int bHit = window.IndexOf(".bundle", bi, StringComparison.OrdinalIgnoreCase);
+                            if (bHit < 0) break;
+                            // Walk backwards to the start of the token.
+                            int bStart = bHit;
+                            while (bStart > 0 && window[bStart - 1] != '"' && window[bStart - 1] != '/'
+                                              && window[bStart - 1] != '\\'&& window[bStart - 1] > ' ')
+                                bStart--;
+                            bundles.Add(window.Substring(bStart, bHit - bStart + 7));
+                            bi = bHit + 7;
+                        }
+
+                        // Collect *.unity scene paths in the window.
+                        int si = 0;
+                        while (si < window.Length)
+                        {
+                            int sHit = window.IndexOf(".unity", si, StringComparison.OrdinalIgnoreCase);
+                            if (sHit < 0) break;
+                            int sStart = sHit;
+                            while (sStart > 0 && window[sStart - 1] != '"' && window[sStart - 1] > ' ')
+                                sStart--;
+                            scenes.Add(window.Substring(sStart, sHit - sStart + 6));
+                            si = sHit + 6;
+                        }
+                    }
+                }
+
+                if (scenes.Count > 0)
+                    MelonLogger.Msg($"[PropLibrary] Catalog hint for \"{fileName}\": scenes → {string.Join(", ", scenes)}");
+                else if (bundles.Count > 0)
+                    MelonLogger.Msg($"[PropLibrary] Catalog hint for \"{fileName}\": bundles → {string.Join(", ", System.Linq.Enumerable.Take(bundles, 5))} {(bundles.Count > 5 ? $"(+{bundles.Count - 5} more)" : "")}");
+                else
+                    MelonLogger.Msg($"[PropLibrary] Catalog hint: \"{fileName}\" not found in catalog text.");
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[PropLibrary] LogCatalogBundleHint failed: {e.Message}");
+            }
+        }
+
         static void EnumerateFromCatalog()
         {
             string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
@@ -457,7 +548,22 @@ namespace BabyBlocks
 
         public static void LoadPropData(PropInfo info)
         {
-            if (info == null || info.isLoaded) return;
+            if (info == null) return;
+
+            if (info.isLoaded)
+            {
+                if (info.HasMesh && info.parts[0].mesh != null)
+                    return; // Valid cached data — nothing to do.
+
+                // Either no mesh was ever extracted, or the mesh was destroyed when a scene unloaded.
+                // Reset so every method below gets a fresh attempt.
+                if (info.HasMesh)
+                    MelonLogger.Warning($"[PropLibrary] Mesh for \"{info.displayName}\" was destroyed — retrying.");
+                info.parts.Clear();
+                info.colliderParts.Clear();
+                info.isLoaded  = false;
+                info.isInvalid = false;
+            }
 
             if (info.IsPrimitive)
             {
@@ -475,16 +581,17 @@ namespace BabyBlocks
             {
                 if (TryLoadFromBestRegion(info)) return;
             }
-            catch { }
+            catch (Exception e) { MelonLogger.Warning($"[PropLibrary] BestRegion failed for \"{info.displayName}\": {e.Message}"); }
 
             try
             {
                 if (TryLoadAddressable(info)) return;
             }
-            catch { }
+            catch (Exception e) { MelonLogger.Warning($"[PropLibrary] Addressable failed for \"{info.displayName}\": {e.Message}"); }
 
-            info.isLoaded = true;
-            info.isInvalid = true;
+            // All methods failed — prop asset not available (wrong area, rare prop, etc.).
+            MelonLogger.Warning($"[PropLibrary] All load methods failed for \"{info.displayName}\" (id: {info.id}).");
+            LogCatalogBundleHint(info.id);
         }
 
         static bool TryLoadFromBestRegion(PropInfo info)
@@ -507,17 +614,154 @@ namespace BabyBlocks
                     try { ExtractPartsFromInstance(instance, info); }
                     finally { UnityEngine.Object.Destroy(instance); }
 
-                    info.isLoaded = true;
-                    info.isInvalid = !info.HasMesh;
-                    return info.HasMesh;
+                    if (info.HasMesh)
+                    {
+                        info.isLoaded  = true;
+                        info.isInvalid = false;
+                        return true;
+                    }
+                    // Found the GO but got no mesh — don't stamp isLoaded; let other methods try.
+                    MelonLogger.Warning($"[PropLibrary] BestRegion found \"{go.name}\" but extracted no mesh.");
+                    return false;
                 }
             }
             catch { }
             return false;
         }
 
+        static bool TryLoadFromLoadedScenes(PropInfo info)
+        {
+            string target = NormalizePropName(NormalizeIdToName(info.id));
+            int sceneCount = SceneManager.sceneCount;
+
+            MelonLogger.Msg($"[PropLibrary] Scene scan for \"{target}\": {sceneCount} scene(s) loaded.");
+
+            for (int s = 0; s < sceneCount; s++)
+            {
+                Scene scene;
+                try { scene = SceneManager.GetSceneAt(s); }
+                catch (Exception e) { MelonLogger.Warning($"[PropLibrary] GetSceneAt({s}) threw: {e.Message}"); continue; }
+
+                if (!scene.isLoaded) { MelonLogger.Msg($"[PropLibrary]   Scene[{s}] \"{scene.name}\" not loaded, skipping."); continue; }
+
+                GameObject[] roots;
+                try { roots = scene.GetRootGameObjects(); }
+                catch (Exception e) { MelonLogger.Warning($"[PropLibrary]   GetRootGameObjects threw for \"{scene.name}\": {e.Message}"); continue; }
+
+                MelonLogger.Msg($"[PropLibrary]   Scene[{s}] \"{scene.name}\": {roots.Length} root(s).");
+
+                foreach (var root in roots)
+                {
+                    if (root == null) continue;
+
+                    if (string.Equals(NormalizePropName(root.name), target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        ExtractPartsFromInstance(root, info);
+                        if (info.HasMesh)
+                        {
+                            info.isLoaded  = true;
+                            info.isInvalid = false;
+                            MelonLogger.Msg($"[PropLibrary] Found \"{info.displayName}\" in scene \"{scene.name}\" (root).");
+                            return true;
+                        }
+                        info.parts.Clear();
+                        info.colliderParts.Clear();
+                        continue;
+                    }
+
+                    Transform[] transforms;
+                    try { transforms = root.GetComponentsInChildren<Transform>(true); }
+                    catch { continue; }
+
+                    foreach (var t in transforms)
+                    {
+                        if (t == null || t.gameObject == null) continue;
+                        if (!string.Equals(NormalizePropName(t.gameObject.name), target, StringComparison.OrdinalIgnoreCase)) continue;
+
+                        ExtractPartsFromInstance(t.gameObject, info);
+                        if (info.HasMesh)
+                        {
+                            info.isLoaded  = true;
+                            info.isInvalid = false;
+                            MelonLogger.Msg($"[PropLibrary] Found \"{info.displayName}\" in scene \"{scene.name}\" (child of \"{root.name}\").");
+                            return true;
+                        }
+                        info.parts.Clear();
+                        info.colliderParts.Clear();
+                    }
+                }
+            }
+
+            MelonLogger.Msg($"[PropLibrary] Scene scan: \"{target}\" not found in any loaded scene.");
+            return false;
+        }
+
+        static Dictionary<string, string> GetGpuiPlayerPaths()
+        {
+            if (_gpuiPlayerPaths != null) return _gpuiPlayerPaths;
+            _gpuiPlayerPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
+                if (!File.Exists(catalogPath)) return _gpuiPlayerPaths;
+                string json = File.ReadAllText(catalogPath);
+
+                AddPlayerPathsToLookup(json, _gpuiPlayerPaths);
+
+                int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
+                if (kdIdx >= 0)
+                {
+                    int vs = json.IndexOf('"', kdIdx + 17) + 1;
+                    int ve = json.IndexOf('"', vs);
+                    if (vs > 0 && ve > vs)
+                    {
+                        try
+                        {
+                            string decoded = Encoding.UTF8.GetString(
+                                Convert.FromBase64String(json.Substring(vs, ve - vs)));
+                            AddPlayerPathsToLookup(decoded, _gpuiPlayerPaths);
+                        }
+                        catch { }
+                    }
+                }
+
+                MelonLogger.Msg($"[PropLibrary] Built GPUI player-path lookup: {_gpuiPlayerPaths.Count} entries.");
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[PropLibrary] GetGpuiPlayerPaths failed: {e.Message}");
+            }
+            return _gpuiPlayerPaths;
+        }
+
+        static void AddPlayerPathsToLookup(string text, Dictionary<string, string> lookup)
+        {
+            int i = 0;
+            while (i < text.Length)
+            {
+                int start = text.IndexOf("Assets/_Props/", i, StringComparison.Ordinal);
+                if (start < 0) break;
+                int end = start;
+                while (end < text.Length)
+                {
+                    char c = text[end];
+                    if (c == '"' || c == '\0' || c < ' ') break;
+                    end++;
+                }
+                i = end + 1;
+                string path = text.Substring(start, end - start);
+                if (!path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)) continue;
+                string name = Path.GetFileNameWithoutExtension(path);
+                if (!name.EndsWith("_player", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!lookup.ContainsKey(name))
+                    lookup[name] = path;
+            }
+        }
+
         static void LoadGpuiPropData(PropInfo info)
         {
+            MelonLogger.Msg($"[PropLibrary] GPUI \"{info.displayName}\": visualPath=\"{info.visualPath}\" prefabName=\"{info.gpuiPrefabName}\"");
+
             if (!string.IsNullOrEmpty(info.visualPath))
             {
                 try
@@ -530,12 +774,21 @@ namespace BabyBlocks
                             visualGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
                         try   { ExtractPartsFromInstance(instance, info); }
                         finally { UnityEngine.Object.Destroy(instance); }
+                        MelonLogger.Msg($"[PropLibrary] GPUI \"{info.displayName}\" visual: extracted {info.parts.Count} part(s).");
+                    }
+                    else
+                    {
+                        MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" visual load returned null (path: {info.visualPath}).");
                     }
                 }
                 catch (Exception e)
                 {
-                    MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" visual load failed: {e.Message}");
+                    MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" visual load threw: {e.Message}");
                 }
+            }
+            else
+            {
+                MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" has no visualPath — cannot load visual.");
             }
 
             if (!info.HasMesh && !string.IsNullOrEmpty(info.gpuiPrefabName))
@@ -546,27 +799,71 @@ namespace BabyBlocks
                     if (loaded != null)
                     {
                         string target = NormalizePropName(info.gpuiPrefabName);
+                        bool found = false;
                         for (int i = 0; i < loaded.Length; i++)
                         {
                             var go = loaded[i];
                             if (go == null) continue;
                             if (!string.Equals(NormalizePropName(go.name), target,
                                     StringComparison.OrdinalIgnoreCase)) continue;
+                            found = true;
                             var instance = UnityEngine.Object.Instantiate(
                                 go, new Vector3(0f, -99999f, 0f), Quaternion.identity);
                             try   { ExtractPartsFromColliders(instance, info); }
                             catch { }
                             UnityEngine.Object.Destroy(instance);
+                            MelonLogger.Msg($"[PropLibrary] GPUI \"{info.displayName}\" collider fallback: extracted {info.parts.Count} part(s).");
                             break;
                         }
+                        if (!found)
+                            MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" collider fallback: \"{target}\" not found in loadedProps ({loaded.Length} entries).");
+                    }
+                    else
+                    {
+                        MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" collider fallback: loadedProps unavailable.");
                     }
                 }
                 catch (Exception e)
                 {
-                    MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" collider load failed: {e.Message}");
+                    MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" collider load threw: {e.Message}");
                 }
             }
 
+            // Addressable fallback: load the _player prefab directly when it's not in loadedProps.
+            if (!info.HasMesh && !string.IsNullOrEmpty(info.gpuiPrefabName))
+            {
+                var playerPaths = GetGpuiPlayerPaths();
+                if (playerPaths.TryGetValue(info.gpuiPrefabName, out string playerPath))
+                {
+                    try
+                    {
+                        var handle  = Addressables.LoadAssetAsync<GameObject>(playerPath);
+                        var prefab  = handle.WaitForCompletion();
+                        if (prefab != null)
+                        {
+                            var inst = UnityEngine.Object.Instantiate(prefab, new Vector3(0f, -99999f, 0f), Quaternion.identity);
+                            try   { ExtractPartsFromColliders(inst, info); }
+                            catch { }
+                            UnityEngine.Object.Destroy(inst);
+                            MelonLogger.Msg($"[PropLibrary] GPUI \"{info.displayName}\" addressable player: {info.parts.Count} part(s) from {playerPath}");
+                        }
+                        else
+                        {
+                            MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" addressable player returned null ({playerPath}).");
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" addressable player failed: {e.Message}");
+                    }
+                }
+                else
+                {
+                    MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\": player prefab \"{info.gpuiPrefabName}\" not found in catalog.");
+                }
+            }
+
+            MelonLogger.Msg($"[PropLibrary] GPUI \"{info.displayName}\" done: HasMesh={info.HasMesh}");
             info.isLoaded  = true;
             info.isInvalid = !info.HasMesh;
         }
@@ -581,11 +878,7 @@ namespace BabyBlocks
             AsyncOperationHandle<GameObject> handle = Addressables.LoadAssetAsync<GameObject>(info.id);
             var prefab = handle.WaitForCompletion();
             if (prefab == null)
-            {
-                info.isLoaded = true;
-                info.isInvalid = true;
-                return true;
-            }
+                return false; // asset not available; let caller retry later
 
             var instance = UnityEngine.Object.Instantiate(prefab, new Vector3(0f, -99999f, 0f), Quaternion.identity);
             try { ExtractPartsFromInstance(instance, info); }
@@ -601,11 +894,7 @@ namespace BabyBlocks
             AsyncOperationHandle<Mesh> handle = Addressables.LoadAssetAsync<Mesh>(info.id);
             var mesh = handle.WaitForCompletion();
             if (mesh == null)
-            {
-                info.isLoaded = true;
-                info.isInvalid = true;
-                return true;
-            }
+                return false; // asset not available; let caller retry later
 
             var mat = TryFindMaterialForMesh(mesh);
             info.parts.Add(new PropMeshPart
