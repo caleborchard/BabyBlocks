@@ -12,6 +12,7 @@ namespace BabyBlocks
         static GUIStyle _itemStyle;
         static GUIStyle _ghostStyle;
         static GUIStyle _excludedXStyle;
+        static GUIStyle _warningStyle;
 
         // How many slots fit on screen, clamped to a reasonable range.
         static int VisibleSlots =>
@@ -149,6 +150,12 @@ namespace BabyBlocks
                         GUI.Label(itemRect, "✕", _excludedXStyle);
                     }
 
+                    if (PropMetadataPanel.IsPartiallyFilled(prop.id))
+                    {
+                        GUI.color = new Color(1f, 0.85f, 0f, 0.85f);
+                        GUI.Label(itemRect, "!", _warningStyle);
+                    }
+
                     if (hasMetadata)
                     {
                         GUI.color = new Color(0.4f, 1f, 0.4f, 0.95f);
@@ -244,6 +251,17 @@ namespace BabyBlocks
                     alignment = TextAnchor.MiddleCenter,
                 };
                 _excludedXStyle.normal.textColor = new Color(1f, 0.15f, 0.15f, 0.9f);
+            }
+
+            if (_warningStyle == null)
+            {
+                _warningStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize  = 38,
+                    fontStyle = FontStyle.Bold,
+                    alignment = TextAnchor.MiddleCenter,
+                };
+                _warningStyle.normal.textColor = new Color(1f, 0.85f, 0f, 0.9f);
             }
         }
     }

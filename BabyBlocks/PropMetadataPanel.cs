@@ -236,7 +236,9 @@ namespace BabyBlocks
                 _redLabelStyle = new GUIStyle(GUI.skin.label);
                 _redLabelStyle.normal.textColor = Color.red;
             }
-            GUILayout.Label("Display name", _redLabelStyle);
+            bool isDuplicateName = !string.IsNullOrEmpty(_displayName)
+                && HasDuplicateDisplayName(_displayName, _propId);
+            GUILayout.Label("Display name", isDuplicateName ? _redLabelStyle : GUI.skin.label);
             GUI.SetNextControlName(DisplayNameField);
             var newDisplayName = GUILayout.TextField(_displayName ?? string.Empty);
             if (!string.Equals(newDisplayName, _displayName, StringComparison.Ordinal))
@@ -281,6 +283,7 @@ namespace BabyBlocks
             if (GUI.GetNameOfFocusedControl() == CategoryField && !string.IsNullOrEmpty(_category) && _category.Length >= 2)
             {
                 int suggCount = 0;
+                var seenCats = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var kvp in _byId)
                 {
                     if (kvp.Key == _propId) continue;
@@ -289,6 +292,7 @@ namespace BabyBlocks
                     if (cat.IndexOf(_category, StringComparison.OrdinalIgnoreCase) >= 0 ||
                         _category.IndexOf(cat, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
+                        if (!seenCats.Add(cat)) continue;
                         if (suggCount == 0)
                         {
                             GUI.contentColor = new Color(1f, 1f, 0.5f, 1f);
@@ -1390,6 +1394,32 @@ namespace BabyBlocks
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return false;
             return _byId.TryGetValue(id, out var info) && info.excluded;
+        }
+
+        // Returns true if the prop has been indexed but is only partially filled:
+        // it has at least one but not all of displayName, category, surfaceType.
+        public static bool IsPartiallyFilled(string id)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id)) return false;
+            if (!_byId.TryGetValue(id, out var info)) return false;
+            if (info.excluded || info.index <= 0) return false;
+            int count = 0;
+            if (!string.IsNullOrEmpty(info.displayName)) count++;
+            if (!string.IsNullOrEmpty(info.category)) count++;
+            if (!string.IsNullOrEmpty(info.surfaceType)) count++;
+            return count > 0 && count < 3;
+        }
+
+        static bool HasDuplicateDisplayName(string name, string excludeId)
+        {
+            foreach (var kvp in _byId)
+            {
+                if (string.Equals(kvp.Key, excludeId, StringComparison.Ordinal)) continue;
+                if (string.Equals(kvp.Value.displayName, name, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
         }
 
         // Called after ScanGpuiProps so EnsureMaterialSources can find GPUI prop entries.
