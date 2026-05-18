@@ -16,7 +16,7 @@ namespace BabyBlocks
 
         // How many slots fit on screen, clamped to a reasonable range.
         static int VisibleSlots =>
-            Mathf.Clamp(Mathf.FloorToInt((Screen.height - 100f) / (ItemH + Pad)), 4, 15);
+            Mathf.Clamp(Mathf.FloorToInt((Screen.height - 50f) / (ItemH + Pad)), 4, 15);
 
         static int   _scrollOffset    = 0;
         static int   _draggingIndex   = -1; // index into PropLibrary.FilteredProps

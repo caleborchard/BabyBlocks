@@ -947,6 +947,35 @@ namespace BabyBlocks
                 if (propLibInfo.isLoaded) AddPartsToMaterialList(propLibInfo);
             }
 
+            // If the saved override is still not in the material list, do a fresh Resources scan.
+            // GPUI loads material instances lazily as the player moves around the world, so the
+            // material may have entered memory after the initial EnsureMaterialSources scan ran.
+            // This is intentionally cheap to skip when not needed (guard on ContainsKey).
+            if (!string.IsNullOrEmpty(_overrideMaterialName) && !_materialByName.ContainsKey(_overrideMaterialName))
+            {
+                try
+                {
+                    var allMats = Resources.FindObjectsOfTypeAll<Material>();
+                    if (allMats != null)
+                    {
+                        for (int i = 0; i < allMats.Length; i++)
+                        {
+                            var m = allMats[i];
+                            if (m == null || string.IsNullOrEmpty(m.name)) continue;
+                            if (_materialByName.ContainsKey(m.name)) continue;
+                            string shaderName = m.shader != null ? m.shader.name : string.Empty;
+                            string label = string.IsNullOrEmpty(shaderName)
+                                ? m.name
+                                : $"{m.name}  [{shaderName}]";
+                            _materialNames.Add(m.name);
+                            _materialLabels.Add(label);
+                            _materialByName[m.name] = m;
+                        }
+                    }
+                }
+                catch { }
+            }
+
             // If a native material name was persisted, use it to un-contaminate _defaultMaterialName.
             // CacheDefaultMaterials reads the live renderer, which may already have the override applied.
             if (TryGet(_propId, out var metaInfo) && metaInfo != null)
