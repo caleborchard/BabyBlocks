@@ -580,6 +580,29 @@ namespace BabyBlocks
             }
 
             if (anyBackfilled) Save();
+
+            // Self-discovery pass: GPUI entries with a saved override but no recorded source.
+            // Try loading the prop itself — it may natively contain its own override material.
+            foreach (var kvp in _byId)
+            {
+                var item = kvp.Value;
+                if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
+                if (_materialByName.ContainsKey(item.overrideMaterialId)) continue;
+                if (!string.IsNullOrEmpty(item.materialSourcePropId)) continue;
+                if (item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
+
+                var selfInfo = PropLibrary.FindById(item.id);
+                if (selfInfo == null || !selfInfo.IsGpui) continue;
+
+                try
+                {
+                    PropLibrary.LoadPropData(selfInfo);
+                    AddPartsToMaterialList(selfInfo); // sets materialSourcePropId + calls Save() if found
+                    anyLoaded = true;
+                }
+                catch { }
+            }
+
             if (!anyLoaded) return;
 
             // Re-scan Resources to pick up materials from the newly-loaded asset bundles.
@@ -924,7 +947,13 @@ namespace BabyBlocks
             // CacheDefaultMaterials reads the live renderer, which may already have the override applied.
             if (TryGet(_propId, out var metaInfo) && metaInfo != null)
             {
-                if (!string.IsNullOrEmpty(metaInfo.nativeMaterialName))
+                // Only trust nativeMaterialName when it differs from the override. If they match, the
+                // value was stored when the renderer was contaminated (override already applied) and
+                // using it would make ApplyPreviewMaterial treat the override as "restoring to default",
+                // which either does nothing or restores a null material for GPUI props.
+                if (!string.IsNullOrEmpty(metaInfo.nativeMaterialName)
+                    && !string.Equals(metaInfo.nativeMaterialName, metaInfo.overrideMaterialId,
+                                      StringComparison.OrdinalIgnoreCase))
                     _defaultMaterialName = metaInfo.nativeMaterialName;
 
                 // Lazy migration: old entries have overrideMaterialId but no nativeMaterialName or
@@ -933,6 +962,16 @@ namespace BabyBlocks
                 bool migrationDirty = false;
                 if (!string.IsNullOrEmpty(metaInfo.overrideMaterialId))
                 {
+                    // Clean up stale nativeMaterialName == overrideMaterialId (stored when renderer was
+                    // contaminated — useless and causes ApplyPreviewMaterial to misbehave).
+                    if (!string.IsNullOrEmpty(metaInfo.nativeMaterialName)
+                        && string.Equals(metaInfo.nativeMaterialName, metaInfo.overrideMaterialId,
+                                         StringComparison.OrdinalIgnoreCase))
+                    {
+                        metaInfo.nativeMaterialName = string.Empty;
+                        migrationDirty = true;
+                    }
+
                     // If the renderer shows the override material (game persisted it), the default
                     // looks contaminated. Try to recover the true native from the prop's loaded parts.
                     if (string.IsNullOrEmpty(metaInfo.nativeMaterialName)
@@ -1354,7 +1393,15 @@ namespace BabyBlocks
         }
 
         // Called after ScanGpuiProps so EnsureMaterialSources can find GPUI prop entries.
-        public static void InvalidateMaterialSources() => _materialSourcesLoaded = false;
+        // If the material list is already built, re-run source discovery immediately with the
+        // now-populated PropLibrary. If not built yet, the reset flag is picked up when
+        // EnsureMaterialList eventually calls EnsureMaterialSources.
+        public static void InvalidateMaterialSources()
+        {
+            _materialSourcesLoaded = false;
+            if (_materialsLoaded)
+                EnsureMaterialSources();
+        }
 
         static bool TryGet(string id, out PropExtraInfo info)
         {
