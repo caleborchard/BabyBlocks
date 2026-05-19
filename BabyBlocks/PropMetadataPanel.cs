@@ -634,6 +634,23 @@ namespace BabyBlocks
             return 0;
         }
 
+        static bool ShouldHideMaterial(string name) =>
+            name.IndexOf("Imposter", StringComparison.OrdinalIgnoreCase) >= 0;
+
+        static void SortMaterialList()
+        {
+            if (_materialNames.Count <= 2) return;
+            var pairs = new List<(string name, string label)>(_materialNames.Count - 1);
+            for (int i = 1; i < _materialNames.Count; i++)
+                pairs.Add((_materialNames[i], _materialLabels[i]));
+            pairs.Sort((a, b) => string.Compare(a.label, b.label, StringComparison.OrdinalIgnoreCase));
+            for (int i = 0; i < pairs.Count; i++)
+            {
+                _materialNames[i + 1] = pairs[i].name;
+                _materialLabels[i + 1] = pairs[i].label;
+            }
+        }
+
         static void EnsureMaterialList()
         {
             if (_materialsLoaded) return;
@@ -655,6 +672,7 @@ namespace BabyBlocks
                         var m = mats[i];
                         if (m == null || string.IsNullOrEmpty(m.name)) continue;
                         if (!seen.Add(m.name)) continue;
+                        if (ShouldHideMaterial(m.name)) continue;
                         string shaderName = m.shader != null ? m.shader.name : string.Empty;
                         string label = string.IsNullOrEmpty(shaderName)
                             ? m.name
@@ -820,28 +838,51 @@ namespace BabyBlocks
                 catch { }
             }
 
-            if (!anyLoaded) return;
-
-            // Re-scan Resources to pick up materials from the newly-loaded asset bundles.
-            try
+            if (anyLoaded)
             {
-                var allMats = Resources.FindObjectsOfTypeAll<Material>();
-                if (allMats == null) return;
-                for (int i = 0; i < allMats.Length; i++)
+                // Re-scan Resources to pick up materials from the newly-loaded asset bundles.
+                try
                 {
-                    var m = allMats[i];
-                    if (m == null || string.IsNullOrEmpty(m.name)) continue;
-                    if (_materialByName.ContainsKey(m.name)) continue;
-                    string shaderName = m.shader != null ? m.shader.name : string.Empty;
-                    string label = string.IsNullOrEmpty(shaderName)
-                        ? m.name
-                        : $"{m.name}  [{shaderName}]";
-                    _materialNames.Add(m.name);
-                    _materialLabels.Add(label);
-                    _materialByName[m.name] = m;
+                    var allMats = Resources.FindObjectsOfTypeAll<Material>();
+                    if (allMats != null)
+                    {
+                        for (int i = 0; i < allMats.Length; i++)
+                        {
+                            var m = allMats[i];
+                            if (m == null || string.IsNullOrEmpty(m.name)) continue;
+                            if (ShouldHideMaterial(m.name)) continue;
+                            if (_materialByName.ContainsKey(m.name)) continue;
+                            string shaderName = m.shader != null ? m.shader.name : string.Empty;
+                            string label = string.IsNullOrEmpty(shaderName)
+                                ? m.name
+                                : $"{m.name}  [{shaderName}]";
+                            _materialNames.Add(m.name);
+                            _materialLabels.Add(label);
+                            _materialByName[m.name] = m;
+                        }
+                    }
                 }
+                catch { }
             }
-            catch { }
+
+            // Full catalog index: add every material name from the catalog so the search list
+            // is complete regardless of which asset bundles are currently loaded. Actual Material
+            // objects are lazy-loaded on first use (see ApplyPreviewMaterial / ApplySlotMaterial).
+            // IndexAllCatalogMaterials is a no-op on subsequent sessions (sentinel in cache).
+            PropLibrary.IndexAllCatalogMaterials();
+            var alreadyListed = new HashSet<string>(_materialNames, StringComparer.OrdinalIgnoreCase);
+            bool anyCatalogAdded = false;
+            foreach (var kvp in PropLibrary.MaterialCatalogPaths)
+            {
+                string name = kvp.Key;
+                if (name == "__IDX__") continue;
+                if (ShouldHideMaterial(name)) continue;
+                if (!alreadyListed.Add(name)) continue;
+                _materialNames.Add(name);
+                _materialLabels.Add(name); // shader label unknown until the material is actually loaded
+                anyCatalogAdded = true;
+            }
+            if (anyCatalogAdded) SortMaterialList();
         }
 
         // Returns the first material name found in the prop's parts that is NOT the override.
@@ -876,6 +917,7 @@ namespace BabyBlocks
                 foreach (var mat in part.materials)
                 {
                     if (mat == null || string.IsNullOrEmpty(mat.name)) continue;
+                    if (ShouldHideMaterial(mat.name)) continue;
                     if (!string.IsNullOrEmpty(info.id))
                     {
                         if (BackfillMaterialSource(mat.name, info.id))
@@ -906,6 +948,7 @@ namespace BabyBlocks
                 {
                     var mat = mats[m];
                     if (mat == null || string.IsNullOrEmpty(mat.name)) continue;
+                    if (ShouldHideMaterial(mat.name)) continue;
                     // Track which prop this material came from and propagate to all saved entries
                     // that use it as an override but had no source recorded yet.
                     // Only skip if this material is the current prop's override AND the override differs
@@ -1598,9 +1641,16 @@ namespace BabyBlocks
 
             if (!_materialByName.TryGetValue(materialName, out var mat) || mat == null)
             {
-                RestoreDefaultMaterials();
-                return;
+                mat = PropLibrary.TryLoadMaterialByName(materialName);
+                if (mat != null)
+                {
+                    if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
+                    if (!string.Equals(mat.name, materialName, StringComparison.OrdinalIgnoreCase)
+                        && !_materialByName.ContainsKey(materialName))
+                        _materialByName[materialName] = mat;
+                }
             }
+            if (mat == null) { RestoreDefaultMaterials(); return; }
             for (int i = 0; i < _selectedRenderers.Length; i++)
             {
                 var r = _selectedRenderers[i];
@@ -1660,7 +1710,18 @@ namespace BabyBlocks
                 }
                 else
                 {
-                    if (!_materialByName.TryGetValue(materialName, out var mat) || mat == null) continue;
+                    if (!_materialByName.TryGetValue(materialName, out var mat) || mat == null)
+                    {
+                        mat = PropLibrary.TryLoadMaterialByName(materialName);
+                        if (mat != null)
+                        {
+                            if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
+                            if (!string.Equals(mat.name, materialName, StringComparison.OrdinalIgnoreCase)
+                                && !_materialByName.ContainsKey(materialName))
+                                _materialByName[materialName] = mat;
+                        }
+                    }
+                    if (mat == null) continue;
                     mats[slot] = mat;
                 }
                 r.sharedMaterials = mats;

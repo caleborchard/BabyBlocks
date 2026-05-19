@@ -78,6 +78,9 @@ namespace BabyBlocks
         static readonly HashSet<string> _gpuiScannedNames = new(StringComparer.OrdinalIgnoreCase);
         static Dictionary<string, string> _gpuiPlayerPaths; // prefabName → full catalog path
         static readonly Dictionary<string, string> _materialCatalogPaths = new(StringComparer.OrdinalIgnoreCase); // materialName → full catalog path
+        static bool _catalogIndexed; // true once IndexAllCatalogMaterials has run (or cache proves it already did)
+
+        public static IReadOnlyDictionary<string, string> MaterialCatalogPaths => _materialCatalogPaths;
 
         static readonly Dictionary<string, int>   _refCounts    = new(StringComparer.Ordinal); // propId → live instance count
         static readonly Dictionary<string, float> _zeroRefTime  = new(StringComparer.Ordinal); // propId → Time.realtimeSinceStartup when count hit 0
@@ -138,7 +141,10 @@ namespace BabyBlocks
                     {
                         var p = line.Substring(4).Split('|');
                         if (p.Length >= 2 && !string.IsNullOrEmpty(p[0]) && !string.IsNullOrEmpty(p[1]))
+                        {
                             _materialCatalogPaths[p[0]] = p[1];
+                            if (p[0] == "__IDX__") _catalogIndexed = true; // full index was built in a previous session
+                        }
                     }
                 }
                 return true;
@@ -932,8 +938,115 @@ namespace BabyBlocks
             }
         }
 
+        // Scans the Addressables catalog for ALL material assets (.mat files and FBX/prefab
+        // sub-assets) and populates _materialCatalogPaths with name → key entries. Returns the
+        // list of newly discovered names. On subsequent calls (or when the cache already contains
+        // the full index) this is a no-op and returns an empty list — callers should iterate
+        // MaterialCatalogPaths directly to get all known names.
+        public static IReadOnlyList<string> IndexAllCatalogMaterials()
+        {
+            if (_catalogIndexed) return Array.Empty<string>();
+            _catalogIndexed = true;
+
+            var names = new List<string>();
+            try
+            {
+                string catalogFile = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
+                if (!File.Exists(catalogFile)) return names;
+                string json = File.ReadAllText(catalogFile);
+
+                IndexMaterialPathsInText(json, names);
+
+                int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
+                if (kdIdx >= 0)
+                {
+                    int vs = json.IndexOf('"', kdIdx + 17) + 1;
+                    int ve = json.IndexOf('"', vs);
+                    if (vs > 0 && ve > vs)
+                    {
+                        string decoded = Encoding.UTF8.GetString(Convert.FromBase64String(json.Substring(vs, ve - vs)));
+                        IndexMaterialPathsInText(decoded, names);
+                    }
+                }
+
+                // Sentinel so the next session's cache load can skip this scan.
+                _materialCatalogPaths["__IDX__"] = "1";
+                SaveMaterialPathCache();
+                MelonLogger.Msg($"[PropLibrary] Full catalog material index built: {names.Count} material(s) found.");
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[PropLibrary] IndexAllCatalogMaterials failed: {e.Message}");
+            }
+            return names;
+        }
+
+        static void IndexMaterialPathsInText(string text, List<string> result)
+        {
+            int len = text.Length;
+
+            // Pass 1: standalone .mat assets — e.g. Assets/Materials/SomeMaterial.mat
+            const string MatExt = ".mat";
+            for (int i = 0; i < len; )
+            {
+                int pos = text.IndexOf(MatExt, i, StringComparison.OrdinalIgnoreCase);
+                if (pos < 0) break;
+                int end = pos + MatExt.Length;
+                // Skip if .mat is the start of a longer extension (e.g. ".material").
+                if (end < len && char.IsLetterOrDigit(text[end])) { i = end; continue; }
+
+                int start = pos;
+                while (start > 0 && text[start - 1] != '"' && text[start - 1] != '\0' && text[start - 1] >= ' ')
+                    start--;
+
+                string path = text.Substring(start, end - start);
+                if (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                {
+                    int slash = path.LastIndexOf('/');
+                    if (slash >= 0)
+                    {
+                        string name = path.Substring(slash + 1, path.Length - slash - 1 - MatExt.Length);
+                        if (name.Length > 0 && !_materialCatalogPaths.ContainsKey(name))
+                        {
+                            _materialCatalogPaths[name] = path;
+                            result.Add(name);
+                        }
+                    }
+                }
+                i = end;
+            }
+
+            // Pass 2: FBX/prefab sub-assets — e.g. Assets/Meshes/File.fbx[MaterialName]
+            for (int j = 0; j < len; )
+            {
+                int open = text.IndexOf('[', j);
+                if (open < 0) break;
+                int close = text.IndexOf(']', open + 1);
+                if (close < 0) break;
+
+                string name = text.Substring(open + 1, close - open - 1);
+                if (name.Length >= 2 && name.Length <= 100
+                    && name.IndexOf('/') < 0 && name.IndexOf('\\') < 0)
+                {
+                    int start = open;
+                    while (start > 0 && text[start - 1] != '"' && text[start - 1] != '\0' && text[start - 1] >= ' ')
+                        start--;
+
+                    string path = text.Substring(start, close - start + 1);
+                    if (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)
+                        && !_materialCatalogPaths.ContainsKey(name))
+                    {
+                        _materialCatalogPaths[name] = path;
+                        result.Add(name);
+                    }
+                }
+                j = close + 1;
+            }
+        }
+
         static string FindMaterialPath(string text, string materialName)
         {
+            // Pass 1: standalone .mat asset — e.g. Assets/Materials/Foo.mat
             string suffix = "/" + materialName + ".mat";
             int i = 0;
             while (i < text.Length)
@@ -941,7 +1054,6 @@ namespace BabyBlocks
                 int idx = text.IndexOf(suffix, i, StringComparison.OrdinalIgnoreCase);
                 if (idx < 0) break;
                 int end = idx + suffix.Length;
-                // Walk backward to find the start of this asset path (Assets/...)
                 int start = idx;
                 while (start > 0 && text[start - 1] != '"' && text[start - 1] != '\0' && text[start - 1] >= ' ')
                     start--;
@@ -950,6 +1062,25 @@ namespace BabyBlocks
                     return path;
                 i = end;
             }
+
+            // Pass 2: FBX sub-asset — e.g. Assets/Meshes/File.fbx[MaterialName]
+            // Unity embeds materials inside FBX files; their Addressables key uses bracket notation.
+            string subSuffix = "[" + materialName + "]";
+            int j = 0;
+            while (j < text.Length)
+            {
+                int idx = text.IndexOf(subSuffix, j, StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) break;
+                int end = idx + subSuffix.Length;
+                int start = idx;
+                while (start > 0 && text[start - 1] != '"' && text[start - 1] != '\0' && text[start - 1] >= ' ')
+                    start--;
+                string path = text.Substring(start, end - start);
+                if (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                    return path;
+                j = end;
+            }
+
             return null;
         }
 
