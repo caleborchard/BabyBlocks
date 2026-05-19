@@ -68,6 +68,7 @@ namespace BabyBlocks
                 _selection.Add(obj);
                 selectedObject = obj;
                 if (!GizmoRenderer.IsReady) GizmoRenderer.Init();
+                GizmoRenderer.LogSelectionBoundsInfo(obj);
             }
             else
             {
@@ -370,6 +371,8 @@ namespace BabyBlocks
                 else if (selectedObject != null)
                 {
                     selectedObject.transform.rotation = deltaRot * _dragStartRot;
+                    var rel = _dragStartPos - _dragPivot;
+                    selectedObject.transform.position = _dragPivot + deltaRot * rel;
                 }
                 return;
             }

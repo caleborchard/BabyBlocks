@@ -49,7 +49,10 @@ namespace BabyBlocks
         static Material _outlineMat;
         static CommandBuffer _outlineBuffer;
         static Camera _outlineCameraTarget;
-        static readonly List<Mesh> _pendingShellDestroy = new(); // shell meshes drawn last frame, safe to destroy now
+        static readonly List<Mesh>  _pendingShellDestroy = new(); // shell meshes drawn last frame, safe to destroy now
+        static readonly List<float> _boundsX = new();
+        static readonly List<float> _boundsY = new();
+        static readonly List<float> _boundsZ = new();
 
         struct MeshData { public Vector3[] verts; public int[] tris; public Vector3[] smoothNormals; }
         static readonly Dictionary<Mesh, MeshData> _meshDataCache = new();
@@ -627,48 +630,89 @@ namespace BabyBlocks
             return mesh;
         }
 
+        // Props whose Renderer.bounds exceed this size on any axis have broken export data
+        // (e.g. geometry authored far from the mesh origin). Skip them and fall back to
+        // transform.position so the gizmo stays at the object's intended pivot.
+        const float MaxPlausibleBoundsExtent = 100f;
+
         public static Vector3 GetSelectionBoundsCenter(IReadOnlyList<LevelEditorObject> selection)
         {
             if (selection == null || selection.Count == 0) return Vector3.zero;
-            bool hasBounds = false;
-            Bounds b = new Bounds(Vector3.zero, Vector3.zero);
+
+            var sum = Vector3.zero;
+            int count = 0;
 
             for (int s = 0; s < selection.Count; s++)
             {
-                var selected = selection[s];
-                if (selected == null) continue;
-                var renderers = selected.GetComponentsInChildren<Renderer>();
-                if (renderers == null || renderers.Length == 0)
+                var sel = selection[s];
+                if (sel == null) continue;
+
+                // Average enabled-renderer centers, skipping any with implausibly large bounds
+                // (bad mesh export). Fall back to transform.position if none pass.
+                var renderers = sel.GetComponentsInChildren<Renderer>();
+                Vector3 rendSum = Vector3.zero;
+                int rendCount = 0;
+                if (renderers != null)
                 {
-                    if (!hasBounds)
+                    for (int i = 0; i < renderers.Length; i++)
                     {
-                        b = new Bounds(selected.transform.position, Vector3.zero);
-                        hasBounds = true;
+                        var r = renderers[i];
+                        if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
+                        var bs = r.bounds.size;
+                        if (bs.x > MaxPlausibleBoundsExtent || bs.y > MaxPlausibleBoundsExtent || bs.z > MaxPlausibleBoundsExtent) continue;
+                        rendSum += r.bounds.center;
+                        rendCount++;
                     }
-                    else
-                    {
-                        b.Encapsulate(selected.transform.position);
-                    }
-                    continue;
                 }
 
+                sum += rendCount > 0 ? rendSum / rendCount : sel.transform.position;
+                count++;
+            }
+
+            return count > 0 ? sum / count : Vector3.zero;
+        }
+
+        public static void LogSelectionBoundsInfo(LevelEditorObject obj)
+        {
+            if (obj == null) { MelonLogger.Msg("[BoundsLog] obj is null"); return; }
+
+            MelonLogger.Msg($"[BoundsLog] === {obj.gameObject.name} ===");
+            MelonLogger.Msg($"[BoundsLog]   transform.position = {obj.transform.position}");
+
+            var renderers = obj.GetComponentsInChildren<Renderer>(true);
+            MelonLogger.Msg($"[BoundsLog]   Renderers (includeInactive=true): {(renderers == null ? 0 : renderers.Length)}");
+            if (renderers != null)
+            {
                 for (int i = 0; i < renderers.Length; i++)
                 {
                     var r = renderers[i];
-                    if (r == null) continue;
-                    if (!hasBounds)
-                    {
-                        b = r.bounds;
-                        hasBounds = true;
-                    }
-                    else
-                    {
-                        b.Encapsulate(r.bounds);
-                    }
+                    if (r == null) { MelonLogger.Msg($"[BoundsLog]     [{i}] null"); continue; }
+                    MelonLogger.Msg($"[BoundsLog]     [{i}] GO={r.gameObject.name}  activeInHierarchy={r.gameObject.activeInHierarchy}  renderer.enabled={r.enabled}  bounds.center={r.bounds.center}  bounds.size={r.bounds.size}");
                 }
             }
 
-            return hasBounds ? b.center : Vector3.zero;
+            var mfs = obj.GetComponentsInChildren<MeshFilter>(true);
+            MelonLogger.Msg($"[BoundsLog]   MeshFilters (includeInactive=true): {(mfs == null ? 0 : mfs.Length)}");
+            if (mfs != null)
+            {
+                for (int i = 0; i < mfs.Length; i++)
+                {
+                    var mf = mfs[i];
+                    if (mf == null) { MelonLogger.Msg($"[BoundsLog]     [{i}] null"); continue; }
+                    var mr = mf.GetComponent<MeshRenderer>();
+                    string meshName = mf.sharedMesh != null ? mf.sharedMesh.name : "NO MESH";
+                    Vector3 worldCenter = mf.sharedMesh != null
+                        ? mf.transform.TransformPoint(mf.sharedMesh.bounds.center)
+                        : mf.transform.position;
+                    MelonLogger.Msg($"[BoundsLog]     [{i}] GO={mf.gameObject.name}  activeInHierarchy={mf.gameObject.activeInHierarchy}  mr.enabled={mr?.enabled.ToString() ?? "no MR"}  mesh={meshName}  worldCenter={worldCenter}");
+                }
+            }
+
+            // What does GetSelectionBoundsCenter actually return?
+            var fakeSel = new List<LevelEditorObject> { obj };
+            var computed = GetSelectionBoundsCenter(fakeSel);
+            MelonLogger.Msg($"[BoundsLog]   GetSelectionBoundsCenter result = {computed}");
+            MelonLogger.Msg($"[BoundsLog] ===");
         }
     }
 }
