@@ -49,6 +49,9 @@ namespace BabyBlocks
         const float SnapStep = 0.1f;
         const float RotateSnapMultiplier = 100f;
 
+        static float _lastUnloadCheck;
+        const float UnloadCheckInterval = 15f;
+
         public static void EnsureManager()
         {
             if (LevelEditorManager.Instance != null) return;
@@ -97,6 +100,13 @@ namespace BabyBlocks
 
         public static void Update()
         {
+            float now = Time.realtimeSinceStartup;
+            if (now - _lastUnloadCheck >= UnloadCheckInterval)
+            {
+                _lastUnloadCheck = now;
+                PropLibrary.ProcessUnloadQueue();
+            }
+
             bool blockShortcuts = IsTypingInUI;
             bool overUI = IsPointerOverUI();
 
@@ -114,6 +124,7 @@ namespace BabyBlocks
             if (!blockShortcuts)
                 PropPalette.HandleScrollInput();
 
+            GizmoRenderer.EnsureCamera();
             var main = Camera.main;
             if (main != null) GizmoRenderer.Sync(_selection, selectedObject, currentTool, main);
             UpdateHover(overUI);

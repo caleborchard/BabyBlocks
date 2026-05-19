@@ -65,10 +65,36 @@ namespace BabyBlocks
             leo.objectType     = "Addressable";
             leo.addressableKey = info.id;
             _objects.Add(leo);
+            PropLibrary.AddRef(info.id);
             return leo;
         }
 
-        static readonly Dictionary<int, Mesh> _physicsMeshCache = new();
+        internal static readonly Dictionary<int, Mesh> _physicsMeshCache = new();
+
+        internal static void ReleasePhysicsMeshes(PropInfo info)
+        {
+            if (info == null) return;
+            foreach (var part in info.parts)
+            {
+                if (part?.mesh == null) continue;
+                int id = part.mesh.GetInstanceID();
+                if (_physicsMeshCache.TryGetValue(id, out var phys))
+                {
+                    _physicsMeshCache.Remove(id);
+                    if (phys != null) Destroy(phys);
+                }
+            }
+            foreach (var cp in info.colliderParts)
+            {
+                if (cp?.mesh == null) continue;
+                int id = cp.mesh.GetInstanceID();
+                if (_physicsMeshCache.TryGetValue(id, out var phys))
+                {
+                    _physicsMeshCache.Remove(id);
+                    if (phys != null) Destroy(phys);
+                }
+            }
+        }
 
         // Game meshes ship without Read/Write enabled; GetVertexBuffer/GetIndexBuffer bypass that.
         // Position is assumed Float32×3 at byte-offset 0 in stream 0 (standard Unity layout).
@@ -238,6 +264,8 @@ namespace BabyBlocks
         {
             if (obj == null) return;
             _objects.Remove(obj);
+            if (!string.IsNullOrEmpty(obj.addressableKey))
+                PropLibrary.RemoveRef(obj.addressableKey);
             Destroy(obj.gameObject);
         }
     }

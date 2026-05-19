@@ -49,6 +49,7 @@ namespace BabyBlocks
         static Material _outlineMat;
         static CommandBuffer _outlineBuffer;
         static Camera _outlineCameraTarget;
+        static readonly List<Mesh> _pendingShellDestroy = new(); // shell meshes drawn last frame, safe to destroy now
 
         struct MeshData { public Vector3[] verts; public int[] tris; public Vector3[] smoothNormals; }
         static readonly Dictionary<Mesh, MeshData> _meshDataCache = new();
@@ -59,7 +60,7 @@ namespace BabyBlocks
         static bool _pivotOverrideActive;
         static Vector3 _pivotOverride;
 
-        public static bool IsReady => _root != null;
+        public static bool IsReady => _root != null && _overlayCam != null;
         public static Vector3 PivotPosition => _pivotPos;
 
         public static void SetPivotOverride(Vector3 pivot)
@@ -111,6 +112,12 @@ namespace BabyBlocks
             }
         }
 
+        public static void EnsureCamera()
+        {
+            if (_root != null && _overlayCam == null)
+                _overlayCam = BuildCam(100f, 500000f, CameraClearFlags.Depth);
+        }
+
         public static void SetActive(bool on)
         {
             if (_root       != null) _root.SetActive(on);
@@ -120,6 +127,11 @@ namespace BabyBlocks
 
         static void DetachOutlineBuffer()
         {
+            // Previous frame's rendering is done — safe to destroy the shell meshes that were drawn.
+            for (int i = 0; i < _pendingShellDestroy.Count; i++)
+                if (_pendingShellDestroy[i] != null) UnityEngine.Object.Destroy(_pendingShellDestroy[i]);
+            _pendingShellDestroy.Clear();
+
             if (_outlineCameraTarget != null && _outlineBuffer != null)
             {
                 _outlineCameraTarget.RemoveCommandBuffer(CameraEvent.AfterEverything, _outlineBuffer);
@@ -259,6 +271,7 @@ namespace BabyBlocks
 
                     var shell = BuildShellWorldSpace(data.verts, data.tris, data.smoothNormals, t);
                     if (shell == null) continue;
+                    _pendingShellDestroy.Add(shell); // destroy after this frame renders
 
                     _outlineBuffer.DrawMesh(shell, Matrix4x4.identity, _stencilClearMat);
                     for (int sub = 0; sub < mesh.subMeshCount; sub++)

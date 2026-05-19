@@ -56,6 +56,10 @@ namespace BabyBlocks
         public bool HasMesh => parts != null && parts.Count > 0;
         public bool IsPrimitive => id.StartsWith("primitive://", StringComparison.Ordinal);
 
+        // Holds the Addressables-loaded asset (Mesh or GameObject prefab) so it can be
+        // properly released when the prop is unloaded. Null for BestRegion-sourced props.
+        internal UnityEngine.Object _addressableAsset;
+
         public PropInfo(string key, string name = null)
         {
             id = key;
@@ -74,6 +78,10 @@ namespace BabyBlocks
         static readonly HashSet<string> _gpuiScannedNames = new(StringComparer.OrdinalIgnoreCase);
         static Dictionary<string, string> _gpuiPlayerPaths; // prefabName → full catalog path
         static readonly Dictionary<string, string> _materialCatalogPaths = new(StringComparer.OrdinalIgnoreCase); // materialName → full catalog path
+
+        static readonly Dictionary<string, int>   _refCounts    = new(StringComparer.Ordinal); // propId → live instance count
+        static readonly Dictionary<string, float> _zeroRefTime  = new(StringComparer.Ordinal); // propId → Time.realtimeSinceStartup when count hit 0
+        const float UnloadDelay = 30f; // seconds after last instance removed before mesh data is freed
 
         static readonly string[] ExcludedAssetPrefixes =
         {
@@ -219,6 +227,68 @@ namespace BabyBlocks
                     || p.id.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0)
                     _filtered.Add(p);
             }
+        }
+
+        public static void AddRef(string propId)
+        {
+            if (string.IsNullOrEmpty(propId)) return;
+            _zeroRefTime.Remove(propId); // cancel any pending unload
+            _refCounts[propId] = _refCounts.TryGetValue(propId, out int n) ? n + 1 : 1;
+        }
+
+        public static void RemoveRef(string propId)
+        {
+            if (string.IsNullOrEmpty(propId)) return;
+            if (!_refCounts.TryGetValue(propId, out int n)) return;
+            n--;
+            if (n <= 0)
+            {
+                _refCounts.Remove(propId);
+                _zeroRefTime[propId] = Time.realtimeSinceStartup;
+            }
+            else
+            {
+                _refCounts[propId] = n;
+            }
+        }
+
+        public static void ProcessUnloadQueue()
+        {
+            if (_zeroRefTime.Count == 0) return;
+            float now = Time.realtimeSinceStartup;
+            List<string> toUnload = null;
+            foreach (var kvp in _zeroRefTime)
+            {
+                if (now - kvp.Value >= UnloadDelay)
+                    (toUnload ??= new List<string>()).Add(kvp.Key);
+            }
+            if (toUnload == null) return;
+            foreach (var id in toUnload)
+            {
+                _zeroRefTime.Remove(id);
+                if (_byId.TryGetValue(id, out var info))
+                    UnloadPropData(info);
+            }
+            System.GC.Collect();
+        }
+
+        static void UnloadPropData(PropInfo info)
+        {
+            if (!info.isLoaded && !info.HasMesh && info._addressableAsset == null) return;
+            MelonLogger.Msg($"[PropLibrary] Unloading \"{info.displayName}\" — no live instances.");
+
+            LevelEditorManager.ReleasePhysicsMeshes(info);
+
+            if (info._addressableAsset != null)
+            {
+                try { Addressables.Release(info._addressableAsset); } catch { }
+                info._addressableAsset = null;
+            }
+
+            info.parts.Clear();
+            info.colliderParts.Clear();
+            info.isLoaded  = false;
+            info.isInvalid = false;
         }
 
         public static void ScanGpuiProps()
@@ -879,6 +949,7 @@ namespace BabyBlocks
                     var visualGO = handle.WaitForCompletion();
                     if (visualGO != null)
                     {
+                        info._addressableAsset = visualGO;
                         var instance = UnityEngine.Object.Instantiate(
                             visualGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
                         try   { ExtractPartsFromInstance(instance, info); }
@@ -950,6 +1021,7 @@ namespace BabyBlocks
                         var prefab  = handle.WaitForCompletion();
                         if (prefab != null)
                         {
+                            if (info._addressableAsset == null) info._addressableAsset = prefab;
                             var inst = UnityEngine.Object.Instantiate(prefab, new Vector3(0f, -99999f, 0f), Quaternion.identity);
                             try   { ExtractPartsFromColliders(inst, info); }
                             catch { }
@@ -989,6 +1061,7 @@ namespace BabyBlocks
             if (prefab == null)
                 return false; // asset not available; let caller retry later
 
+            info._addressableAsset = prefab;
             var instance = UnityEngine.Object.Instantiate(prefab, new Vector3(0f, -99999f, 0f), Quaternion.identity);
             try { ExtractPartsFromInstance(instance, info); }
             finally { UnityEngine.Object.Destroy(instance); }
@@ -1005,6 +1078,7 @@ namespace BabyBlocks
             if (mesh == null)
                 return false; // asset not available; let caller retry later
 
+            info._addressableAsset = mesh;
             var mat = TryFindMaterialForMesh(mesh);
             info.parts.Add(new PropMeshPart
             {
