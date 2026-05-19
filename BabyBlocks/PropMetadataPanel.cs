@@ -732,7 +732,7 @@ namespace BabyBlocks
 
             if (anyBackfilled) Save();
 
-            // Self-discovery pass: GPUI entries with a saved override but no recorded source.
+            // Self-discovery pass: entries with a saved override but no recorded source.
             // Try loading the prop itself — it may natively contain its own override material.
             foreach (var kvp in _byId)
             {
@@ -743,12 +743,40 @@ namespace BabyBlocks
                 if (item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
 
                 var selfInfo = PropLibrary.FindById(item.id);
-                if (selfInfo == null || !selfInfo.IsGpui) continue;
+                if (selfInfo == null) continue;
 
                 try
                 {
                     PropLibrary.LoadPropData(selfInfo);
                     AddPartsToMaterialList(selfInfo); // sets materialSourcePropId + calls Save() if found
+                    anyLoaded = true;
+                }
+                catch { }
+            }
+
+            // Catalog material pass: for any override material still not in memory, search the
+            // Addressables catalog for its .mat file and load it directly. This handles materials
+            // whose source prop couldn't be determined (e.g. mesh-only FBX props where the material
+            // name doesn't match the mesh filename).
+            foreach (var kvp in _byId)
+            {
+                var item = kvp.Value;
+                if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
+                if (_materialByName.ContainsKey(item.overrideMaterialId)) continue;
+                if (item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
+
+                try
+                {
+                    var mat = PropLibrary.TryLoadMaterialByName(item.overrideMaterialId);
+                    if (mat == null) continue;
+                    if (!_materialByName.ContainsKey(mat.name))
+                    {
+                        string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
+                        string label = string.IsNullOrEmpty(shaderName) ? mat.name : $"{mat.name}  [{shaderName}]";
+                        _materialNames.Add(mat.name);
+                        _materialLabels.Add(label);
+                        _materialByName[mat.name] = mat;
+                    }
                     anyLoaded = true;
                 }
                 catch { }
@@ -849,6 +877,7 @@ namespace BabyBlocks
                     // memory, so recording is correct.
                     bool isUntrustedOverride =
                         !string.IsNullOrEmpty(_overrideMaterialName)
+                        && !string.IsNullOrEmpty(_defaultMaterialName)
                         && string.Equals(mat.name, _overrideMaterialName, StringComparison.OrdinalIgnoreCase)
                         && !string.Equals(_overrideMaterialName, _defaultMaterialName, StringComparison.OrdinalIgnoreCase);
 

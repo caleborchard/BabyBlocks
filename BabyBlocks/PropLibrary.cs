@@ -73,6 +73,7 @@ namespace BabyBlocks
         static Type _bestRegionType;
         static readonly HashSet<string> _gpuiScannedNames = new(StringComparer.OrdinalIgnoreCase);
         static Dictionary<string, string> _gpuiPlayerPaths; // prefabName → full catalog path
+        static readonly Dictionary<string, string> _materialCatalogPaths = new(StringComparer.OrdinalIgnoreCase); // materialName → full catalog path
 
         static readonly string[] ExcludedAssetPrefixes =
         {
@@ -120,9 +121,17 @@ namespace BabyBlocks
                 for (int i = 1; i < lines.Length; i++)
                 {
                     var line = lines[i];
-                    if (!line.StartsWith("PROP|")) continue;
-                    var p = line.Substring(5).Split('|');
-                    if (p.Length >= 4) entries.Add((p[0], p[1], p[2], p[3]));
+                    if (line.StartsWith("PROP|"))
+                    {
+                        var p = line.Substring(5).Split('|');
+                        if (p.Length >= 4) entries.Add((p[0], p[1], p[2], p[3]));
+                    }
+                    else if (line.StartsWith("MAT|"))
+                    {
+                        var p = line.Substring(4).Split('|');
+                        if (p.Length >= 2 && !string.IsNullOrEmpty(p[0]) && !string.IsNullOrEmpty(p[1]))
+                            _materialCatalogPaths[p[0]] = p[1];
+                    }
                 }
                 return true;
             }
@@ -143,6 +152,8 @@ namespace BabyBlocks
                 foreach (var (baseName, id, visualPath, prefabName) in entries)
                     sb.Append("PROP|").Append(baseName).Append('|').Append(id).Append('|')
                       .Append(visualPath).Append('|').AppendLine(prefabName);
+                foreach (var kvp in _materialCatalogPaths)
+                    sb.Append("MAT|").Append(kvp.Key).Append('|').AppendLine(kvp.Value);
                 File.WriteAllText(GpuiCachePath, sb.ToString());
             }
             catch (Exception e)
@@ -756,6 +767,104 @@ namespace BabyBlocks
                 if (!lookup.ContainsKey(name))
                     lookup[name] = path;
             }
+        }
+
+        // Searches the Addressables catalog for a .mat file whose filename matches materialName,
+        // loads it, and returns it. Returns null if not found or load fails.
+        // The resolved catalog path is cached in GpuiCache.txt so catalog scanning is skipped on future launches.
+        public static Material TryLoadMaterialByName(string materialName)
+        {
+            if (string.IsNullOrEmpty(materialName)) return null;
+            try
+            {
+                // Check in-memory cache first (populated from GpuiCache.txt on startup).
+                if (!_materialCatalogPaths.TryGetValue(materialName, out string matPath))
+                {
+                    string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
+                    if (!File.Exists(catalogPath)) return null;
+                    string json = File.ReadAllText(catalogPath);
+
+                    matPath = FindMaterialPath(json, materialName);
+                    if (matPath == null)
+                    {
+                        int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
+                        if (kdIdx >= 0)
+                        {
+                            int vs = json.IndexOf('"', kdIdx + 17) + 1;
+                            int ve = json.IndexOf('"', vs);
+                            if (vs > 0 && ve > vs)
+                            {
+                                string decoded = Encoding.UTF8.GetString(Convert.FromBase64String(json.Substring(vs, ve - vs)));
+                                matPath = FindMaterialPath(decoded, materialName);
+                            }
+                        }
+                    }
+
+                    if (matPath == null)
+                    {
+                        MelonLogger.Warning($"[PropLibrary] TryLoadMaterialByName: no catalog path found for \"{materialName}\"");
+                        return null;
+                    }
+
+                    // Persist the resolved path so future launches skip the catalog scan.
+                    _materialCatalogPaths[materialName] = matPath;
+                    SaveMaterialPathCache();
+                }
+
+                var handle = Addressables.LoadAssetAsync<Material>(matPath);
+                var mat = handle.WaitForCompletion();
+                if (mat != null)
+                    MelonLogger.Msg($"[PropLibrary] Loaded material \"{materialName}\" from catalog: {matPath}");
+                else
+                    MelonLogger.Warning($"[PropLibrary] Catalog path found but load returned null for \"{materialName}\": {matPath}");
+                return mat;
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[PropLibrary] TryLoadMaterialByName failed for \"{materialName}\": {e.Message}");
+                return null;
+            }
+        }
+
+        // Rewrites GpuiCache.txt preserving GPUI prop entries and adding the current material paths.
+        static void SaveMaterialPathCache()
+        {
+            try
+            {
+                string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
+                var gpuiEntries = new List<(string, string, string, string)>();
+                foreach (var info in _all)
+                {
+                    if (!info.IsGpui) continue;
+                    gpuiEntries.Add((info.displayName, info.id, info.visualPath ?? "", info.gpuiPrefabName ?? ""));
+                }
+                SaveGpuiCache(catalogPath, gpuiEntries);
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[PropLibrary] SaveMaterialPathCache failed: {e.Message}");
+            }
+        }
+
+        static string FindMaterialPath(string text, string materialName)
+        {
+            string suffix = "/" + materialName + ".mat";
+            int i = 0;
+            while (i < text.Length)
+            {
+                int idx = text.IndexOf(suffix, i, StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) break;
+                int end = idx + suffix.Length;
+                // Walk backward to find the start of this asset path (Assets/...)
+                int start = idx;
+                while (start > 0 && text[start - 1] != '"' && text[start - 1] != '\0' && text[start - 1] >= ' ')
+                    start--;
+                string path = text.Substring(start, end - start);
+                if (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                    return path;
+                i = end;
+            }
+            return null;
         }
 
         static void LoadGpuiPropData(PropInfo info)
