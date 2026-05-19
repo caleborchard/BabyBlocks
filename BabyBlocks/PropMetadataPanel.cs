@@ -370,10 +370,26 @@ namespace BabyBlocks
                     _forcedMaterialSlotsStr = newSlotsStr;
                     if (int.TryParse(newSlotsStr, out int parsed) && parsed >= 2)
                     {
+                        int oldEff = Math.Max(_forcedMaterialSlots, _maxMaterialSlots);
                         _forcedMaterialSlots = parsed;
-                        int eff2 = Math.Max(_forcedMaterialSlots, _maxMaterialSlots);
-                        while (_perSlotDefault.Count < eff2) _perSlotDefault.Add(string.Empty);
-                        while (_perSlotSelected.Count < eff2) _perSlotSelected.Add(string.Empty);
+                        int newEff = Math.Max(_forcedMaterialSlots, _maxMaterialSlots);
+
+                        if (newEff < oldEff)
+                        {
+                            // Drop overrides and explicit-override tracking for removed slots.
+                            for (int s = newEff; s < oldEff; s++)
+                                _slotHasExplicitOverride.Remove(s);
+                            while (_perSlotSelected.Count > newEff)
+                                _perSlotSelected.RemoveAt(_perSlotSelected.Count - 1);
+
+                            // Restore all renderers to their default material arrays first
+                            // (collapses any over-extended arrays back to natural length),
+                            // then re-apply only the remaining slots below.
+                            RestoreDefaultMaterials();
+                        }
+
+                        while (_perSlotDefault.Count < newEff) _perSlotDefault.Add(string.Empty);
+                        while (_perSlotSelected.Count < newEff) _perSlotSelected.Add(string.Empty);
                         ApplyAllSlotMaterials();
                         MarkDirty();
                     }
@@ -754,21 +770,38 @@ namespace BabyBlocks
                 catch { }
             }
 
-            // Catalog material pass: for any override material still not in memory, search the
-            // Addressables catalog for its .mat file and load it directly. This handles materials
-            // whose source prop couldn't be determined (e.g. mesh-only FBX props where the material
-            // name doesn't match the mesh filename).
+            // Catalog material pass: collect every unique override material name from both the
+            // single-slot overrideMaterialId and any perSlotMaterialOverrides entries, then load
+            // any that aren't yet in memory via the Addressables catalog. This handles materials
+            // whose source prop couldn't be determined (e.g. multi-slot props like Araucaria where
+            // only some slot materials match the mesh filename heuristic).
+            var catalogCandidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var kvp in _byId)
             {
                 var item = kvp.Value;
-                if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
-                if (_materialByName.ContainsKey(item.overrideMaterialId)) continue;
-                if (item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
+                if (!string.IsNullOrEmpty(item.overrideMaterialId)
+                    && !item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal))
+                    catalogCandidates.Add(item.overrideMaterialId);
 
+                if (item.perSlotMaterialOverrides != null)
+                {
+                    foreach (var slotMat in item.perSlotMaterialOverrides)
+                    {
+                        if (string.IsNullOrEmpty(slotMat)) continue;
+                        if (slotMat.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
+                        catalogCandidates.Add(slotMat);
+                    }
+                }
+            }
+
+            foreach (var matName in catalogCandidates)
+            {
+                if (_materialByName.ContainsKey(matName)) continue;
                 try
                 {
-                    var mat = PropLibrary.TryLoadMaterialByName(item.overrideMaterialId);
+                    var mat = PropLibrary.TryLoadMaterialByName(matName);
                     if (mat == null) continue;
+                    // Register under the real asset name (e.g. "Art_Concrete_Triplanar").
                     if (!_materialByName.ContainsKey(mat.name))
                     {
                         string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
@@ -777,6 +810,11 @@ namespace BabyBlocks
                         _materialLabels.Add(label);
                         _materialByName[mat.name] = mat;
                     }
+                    // Also register under the saved name if it differs (e.g. "Art_Concrete_Triplanar (Instance) (Instance)")
+                    // so that lookups using the stored override name find the material.
+                    if (!string.Equals(mat.name, matName, StringComparison.OrdinalIgnoreCase)
+                        && !_materialByName.ContainsKey(matName))
+                        _materialByName[matName] = mat;
                     anyLoaded = true;
                 }
                 catch { }
@@ -1174,11 +1212,23 @@ namespace BabyBlocks
                 if (propLibInfo.isLoaded) AddPartsToMaterialList(propLibInfo);
             }
 
-            // If the saved override is still not in the material list, do a fresh Resources scan.
-            // GPUI loads material instances lazily as the player moves around the world, so the
-            // material may have entered memory after the initial EnsureMaterialSources scan ran.
-            // This is intentionally cheap to skip when not needed (guard on ContainsKey).
-            if (!string.IsNullOrEmpty(_overrideMaterialName) && !_materialByName.ContainsKey(_overrideMaterialName))
+            // If any saved override material (single-slot or per-slot) is still not in the list,
+            // do a fresh Resources scan — GPUI loads material instances lazily as the player moves,
+            // so a material may have entered memory after EnsureMaterialSources ran at startup.
+            // Also try the catalog path for any per-slot override still absent after the scan.
+            bool needsFreshScan = (!string.IsNullOrEmpty(_overrideMaterialName)
+                                   && !_materialByName.ContainsKey(_overrideMaterialName));
+            if (!needsFreshScan)
+            {
+                foreach (var s in _slotHasExplicitOverride)
+                {
+                    string slotMat = s < _perSlotSelected.Count ? _perSlotSelected[s] : string.Empty;
+                    if (!string.IsNullOrEmpty(slotMat) && !_materialByName.ContainsKey(slotMat))
+                    { needsFreshScan = true; break; }
+                }
+            }
+
+            if (needsFreshScan)
             {
                 try
                 {
@@ -1201,6 +1251,63 @@ namespace BabyBlocks
                     }
                 }
                 catch { }
+
+                // Single-slot: if the override is still absent after the Resources scan, try the
+                // catalog. This handles saved names with "(Instance)" suffixes where the scan
+                // added the material under the clean name but the saved name still has no entry.
+                if (!string.IsNullOrEmpty(_overrideMaterialName) && !_materialByName.ContainsKey(_overrideMaterialName)
+                    && !_overrideMaterialName.StartsWith("[MicroSplat]", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        var mat = PropLibrary.TryLoadMaterialByName(_overrideMaterialName);
+                        if (mat != null)
+                        {
+                            if (!_materialByName.ContainsKey(mat.name))
+                            {
+                                string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
+                                string label = string.IsNullOrEmpty(shaderName) ? mat.name : $"{mat.name}  [{shaderName}]";
+                                _materialNames.Add(mat.name);
+                                _materialLabels.Add(label);
+                                _materialByName[mat.name] = mat;
+                            }
+                            if (!string.Equals(mat.name, _overrideMaterialName, StringComparison.OrdinalIgnoreCase)
+                                && !_materialByName.ContainsKey(_overrideMaterialName))
+                                _materialByName[_overrideMaterialName] = mat;
+                        }
+                    }
+                    catch { }
+                }
+
+                // Anything still missing after the Resources scan: try the catalog (covers
+                // per-slot materials like Araucaria_Pine_SharedMat that are only in memory
+                // near their native world area but are always findable via the catalog path).
+                // Also handles saved names with "(Instance)" suffixes — TryLoadMaterialByName
+                // strips those before searching, so we register the result under both names.
+                foreach (var s in _slotHasExplicitOverride)
+                {
+                    string slotMat = s < _perSlotSelected.Count ? _perSlotSelected[s] : string.Empty;
+                    if (string.IsNullOrEmpty(slotMat) || _materialByName.ContainsKey(slotMat)) continue;
+                    if (slotMat.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
+                    try
+                    {
+                        var mat = PropLibrary.TryLoadMaterialByName(slotMat);
+                        if (mat == null) continue;
+                        if (!_materialByName.ContainsKey(mat.name))
+                        {
+                            string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
+                            string label = string.IsNullOrEmpty(shaderName) ? mat.name : $"{mat.name}  [{shaderName}]";
+                            _materialNames.Add(mat.name);
+                            _materialLabels.Add(label);
+                            _materialByName[mat.name] = mat;
+                        }
+                        // Alias so lookups using the saved "(Instance)"-suffixed name also resolve.
+                        if (!string.Equals(mat.name, slotMat, StringComparison.OrdinalIgnoreCase)
+                            && !_materialByName.ContainsKey(slotMat))
+                            _materialByName[slotMat] = mat;
+                    }
+                    catch { }
+                }
             }
 
             // If a native material name was persisted, use it to un-contaminate _defaultMaterialName.

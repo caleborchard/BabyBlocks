@@ -112,11 +112,23 @@ namespace BabyBlocks
             }
         }
 
+        // -----------------------------------------------------------------------
+        // WARNING: Camera recovery — modify with caution.
+        // In the past, attempting to rebuild or reconfigure the overlay camera
+        // inside Sync() (called every frame) caused erratic behaviour when
+        // teleporting long distances: native objects stopped loading in and the
+        // player was flung far away. The safe pattern is:
+        //   • Only rebuild when _overlayCam is actually null (destroyed externally).
+        //   • Do NOT touch cullingMask, depth, or farClipPlane every frame.
+        //   • Keep this call outside of Sync() — LevelEditor.Update() calls it
+        //     once per frame before Sync() runs.
+        // -----------------------------------------------------------------------
         public static void EnsureCamera()
         {
             if (_root != null && _overlayCam == null)
                 _overlayCam = BuildCam(100f, 500000f, CameraClearFlags.Depth);
         }
+        // -----------------------------------------------------------------------
 
         public static void SetActive(bool on)
         {

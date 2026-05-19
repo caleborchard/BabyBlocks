@@ -269,7 +269,9 @@ namespace BabyBlocks
                 if (_byId.TryGetValue(id, out var info))
                     UnloadPropData(info);
             }
-            System.GC.Collect();
+            // Do not force GC.Collect() here — a full collection pause can swallow input events
+            // (e.g. teleport clicks) if it fires at the wrong moment. Addressables.Release already
+            // frees the native/GPU memory; the managed heap is collected on its own schedule.
         }
 
         static void UnloadPropData(PropInfo info)
@@ -847,14 +849,24 @@ namespace BabyBlocks
             if (string.IsNullOrEmpty(materialName)) return null;
             try
             {
-                // Check in-memory cache first (populated from GpuiCache.txt on startup).
-                if (!_materialCatalogPaths.TryGetValue(materialName, out string matPath))
+                // Unity appends " (Instance)" to a material's name every time renderer.material
+                // (not sharedMaterial) is accessed — the actual catalog .mat asset never contains
+                // that suffix. Strip all trailing occurrences before searching.
+                const string InstanceSuffix = " (Instance)";
+                string cleanName = materialName;
+                while (cleanName.EndsWith(InstanceSuffix, StringComparison.Ordinal))
+                    cleanName = cleanName.Substring(0, cleanName.Length - InstanceSuffix.Length);
+
+                // Check in-memory cache first under both the original and clean name.
+                if (!_materialCatalogPaths.TryGetValue(materialName, out string matPath)
+                    && !_materialCatalogPaths.TryGetValue(cleanName, out matPath))
                 {
                     string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
                     if (!File.Exists(catalogPath)) return null;
                     string json = File.ReadAllText(catalogPath);
 
-                    matPath = FindMaterialPath(json, materialName);
+                    // Search using the clean name (no "(Instance)" suffix).
+                    matPath = FindMaterialPath(json, cleanName);
                     if (matPath == null)
                     {
                         int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
@@ -865,28 +877,32 @@ namespace BabyBlocks
                             if (vs > 0 && ve > vs)
                             {
                                 string decoded = Encoding.UTF8.GetString(Convert.FromBase64String(json.Substring(vs, ve - vs)));
-                                matPath = FindMaterialPath(decoded, materialName);
+                                matPath = FindMaterialPath(decoded, cleanName);
                             }
                         }
                     }
 
                     if (matPath == null)
                     {
-                        MelonLogger.Warning($"[PropLibrary] TryLoadMaterialByName: no catalog path found for \"{materialName}\"");
+                        MelonLogger.Warning($"[PropLibrary] TryLoadMaterialByName: no catalog path found for \"{cleanName}\"" +
+                            (!string.Equals(cleanName, materialName, StringComparison.Ordinal) ? $" (saved as \"{materialName}\")" : ""));
                         return null;
                     }
 
-                    // Persist the resolved path so future launches skip the catalog scan.
-                    _materialCatalogPaths[materialName] = matPath;
+                    // Cache under both the clean name and the original saved name so either
+                    // lookup hits the cache on the next call.
+                    _materialCatalogPaths[cleanName] = matPath;
+                    if (!string.Equals(cleanName, materialName, StringComparison.Ordinal))
+                        _materialCatalogPaths[materialName] = matPath;
                     SaveMaterialPathCache();
                 }
 
                 var handle = Addressables.LoadAssetAsync<Material>(matPath);
                 var mat = handle.WaitForCompletion();
                 if (mat != null)
-                    MelonLogger.Msg($"[PropLibrary] Loaded material \"{materialName}\" from catalog: {matPath}");
+                    MelonLogger.Msg($"[PropLibrary] Loaded material \"{cleanName}\" from catalog: {matPath}");
                 else
-                    MelonLogger.Warning($"[PropLibrary] Catalog path found but load returned null for \"{materialName}\": {matPath}");
+                    MelonLogger.Warning($"[PropLibrary] Catalog path found but load returned null for \"{cleanName}\": {matPath}");
                 return mat;
             }
             catch (Exception e)

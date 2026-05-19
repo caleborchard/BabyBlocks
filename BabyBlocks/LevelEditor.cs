@@ -124,6 +124,10 @@ namespace BabyBlocks
             if (!blockShortcuts)
                 PropPalette.HandleScrollInput();
 
+            // WARNING: EnsureCamera must be called here (once per frame, before Sync),
+            // NOT inside Sync() itself. Past attempts to rebuild/reconfigure the overlay
+            // camera inside Sync caused broken world streaming and player flings on long
+            // teleports. See GizmoRenderer.EnsureCamera for the full explanation.
             GizmoRenderer.EnsureCamera();
             var main = Camera.main;
             if (main != null) GizmoRenderer.Sync(_selection, selectedObject, currentTool, main);
