@@ -788,56 +788,11 @@ namespace BabyBlocks
                 catch { }
             }
 
-            // Catalog material pass: collect every unique override material name from both the
-            // single-slot overrideMaterialId and any perSlotMaterialOverrides entries, then load
-            // any that aren't yet in memory via the Addressables catalog. This handles materials
-            // whose source prop couldn't be determined (e.g. multi-slot props like Araucaria where
-            // only some slot materials match the mesh filename heuristic).
-            var catalogCandidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var kvp in _byId)
-            {
-                var item = kvp.Value;
-                if (!string.IsNullOrEmpty(item.overrideMaterialId)
-                    && !item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal))
-                    catalogCandidates.Add(item.overrideMaterialId);
-
-                if (item.perSlotMaterialOverrides != null)
-                {
-                    foreach (var slotMat in item.perSlotMaterialOverrides)
-                    {
-                        if (string.IsNullOrEmpty(slotMat)) continue;
-                        if (slotMat.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
-                        catalogCandidates.Add(slotMat);
-                    }
-                }
-            }
-
-            foreach (var matName in catalogCandidates)
-            {
-                if (_materialByName.ContainsKey(matName)) continue;
-                try
-                {
-                    var mat = PropLibrary.TryLoadMaterialByName(matName);
-                    if (mat == null) continue;
-                    // Register under the real asset name (e.g. "Art_Concrete_Triplanar").
-                    if (!_materialByName.ContainsKey(mat.name))
-                    {
-                        string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
-                        string label = string.IsNullOrEmpty(shaderName) ? mat.name : $"{mat.name}  [{shaderName}]";
-                        _materialNames.Add(mat.name);
-                        _materialLabels.Add(label);
-                        _materialByName[mat.name] = mat;
-                    }
-                    // Also register under the saved name if it differs (e.g. "Art_Concrete_Triplanar (Instance) (Instance)")
-                    // so that lookups using the stored override name find the material.
-                    if (!string.Equals(mat.name, matName, StringComparison.OrdinalIgnoreCase)
-                        && !_materialByName.ContainsKey(matName))
-                        _materialByName[matName] = mat;
-                    anyLoaded = true;
-                }
-                catch { }
-            }
-
+            // NOTE: Bulk pre-loading of all saved override materials via TryLoadMaterialByName was
+            // removed here. Each WaitForCompletion() call can trigger game asset-management
+            // callbacks (streaming, bundle eviction) that intermittently destroyed physics
+            // colliders on previously placed props. Materials are now lazy-loaded on first use
+            // in ApplyPreviewMaterial, ApplySlotMaterial, and ApplyMaterialOverridesToRoot.
             if (anyLoaded)
             {
                 // Re-scan Resources to pick up materials from the newly-loaded asset bundles.
@@ -1892,7 +1847,18 @@ namespace BabyBlocks
                     || string.Equals(matName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                if (!_materialByName.TryGetValue(matName, out var mat) || mat == null) continue;
+                if (!_materialByName.TryGetValue(matName, out var mat) || mat == null)
+                {
+                    mat = PropLibrary.TryLoadMaterialByName(matName);
+                    if (mat != null)
+                    {
+                        if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
+                        if (!string.Equals(mat.name, matName, StringComparison.OrdinalIgnoreCase)
+                            && !_materialByName.ContainsKey(matName))
+                            _materialByName[matName] = mat;
+                    }
+                }
+                if (mat == null) continue;
 
                 for (int i = 0; i < renderers.Length; i++)
                 {
