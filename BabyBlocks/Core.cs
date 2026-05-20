@@ -1,5 +1,6 @@
 using HarmonyLib;
 using Il2Cpp;
+using Il2CppCinemachine;
 using Il2CppInterop.Runtime.Injection;
 using MelonLoader;
 using UnityEngine;
@@ -15,6 +16,7 @@ namespace BabyBlocks
         public static bool cursorMode;
         public static bool DebugMode = false; // For categorizing props in the library, not for general debug logging.
         static bool _flyTeleportInProgress;
+        static float _flyCamNoiseAmplitude = -1f;
 
         static MelonPreferences_Category _prefs;
         static MelonPreferences_Entry<string> _lastSavePath;
@@ -105,6 +107,13 @@ namespace BabyBlocks
                 LevelEditor.EnsureManager();
                 PropLibrary.ScanGpuiProps();
                 PropMetadataPanel.InvalidateMaterialSources();
+
+                var noise = player.flyCam.GetComponentInChildren<CinemachineBasicMultiChannelPerlin>();
+                if (noise != null)
+                {
+                    if (_flyCamNoiseAmplitude < 0f) _flyCamNoiseAmplitude = noise.m_AmplitudeGain;
+                    noise.m_AmplitudeGain = 0f;
+                }
             }
             else
             {
@@ -117,6 +126,12 @@ namespace BabyBlocks
                 player.gameObject.SetActive(true);
                 player.OnStandUp();
                 LevelEditor.HideGizmo();
+
+                if (_flyCamNoiseAmplitude >= 0f)
+                {
+                    var noise = player.flyCam.GetComponentInChildren<CinemachineBasicMultiChannelPerlin>();
+                    if (noise != null) noise.m_AmplitudeGain = _flyCamNoiseAmplitude;
+                }
             }
         }
 
