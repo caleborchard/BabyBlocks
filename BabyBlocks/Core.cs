@@ -13,10 +13,28 @@ namespace BabyBlocks
     {
         public static bool flyCamActive;
         public static bool cursorMode;
+        public static bool DebugMode = false; // For categorizing props in the library, not for general debug logging.
         static bool _flyTeleportInProgress;
+
+        static MelonPreferences_Category _prefs;
+        static MelonPreferences_Entry<string> _lastSavePath;
+
+        public static string LastSavePath
+        {
+            get => _lastSavePath?.Value ?? "";
+            set
+            {
+                if (_lastSavePath == null) return;
+                _lastSavePath.Value = value;
+                _prefs.SaveToFile();
+            }
+        }
 
         public override void OnInitializeMelon()
         {
+            _prefs = MelonPreferences.CreateCategory("BabyBlocks");
+            _lastSavePath = _prefs.CreateEntry("LastSavePath", "");
+
             ClassInjector.RegisterTypeInIl2Cpp<LevelEditorObject>();
             ClassInjector.RegisterTypeInIl2Cpp<LevelEditorManager>();
             ClassInjector.RegisterTypeInIl2Cpp<GizmoHandle>();
@@ -52,6 +70,10 @@ namespace BabyBlocks
                     Cursor.visible   = true;
                 }
             }
+
+            if (flyCamActive && cursorMode && !LevelEditor.IsTypingInUI
+                && Input.GetKey(KeyCode.LeftControl) && Input.GetKeyDown(KeyCode.S))
+                SaveLoadWindow.TriggerSave();
 
             if (flyCamActive && cursorMode)
                 LevelEditor.Update();

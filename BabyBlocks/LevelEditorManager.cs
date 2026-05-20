@@ -60,6 +60,7 @@ namespace BabyBlocks
                 PropMetadataPanel.ApplySurfaceTypeToRoot(root, surfaceTag);
 
             PropMetadataPanel.ApplyMaterialOverridesToRoot(info.id, root);
+            PropMetadataPanel.ApplyDisabledRenderersToRoot(info.id, root);
 
             var leo = root.AddComponent<LevelEditorObject>();
             leo.objectType     = "Addressable";
@@ -267,6 +268,12 @@ namespace BabyBlocks
             if (!string.IsNullOrEmpty(obj.addressableKey))
                 PropLibrary.RemoveRef(obj.addressableKey);
             Destroy(obj.gameObject);
+        }
+
+        public void RemoveAll()
+        {
+            while (_objects.Count > 0)
+                Remove(_objects[_objects.Count - 1]);
         }
     }
 }

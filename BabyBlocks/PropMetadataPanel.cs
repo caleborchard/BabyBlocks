@@ -147,7 +147,7 @@ namespace BabyBlocks
 
         public static void DrawGUI(LevelEditorObject selectedObject)
         {
-            if (!Enabled)
+            if (!Enabled || !Core.DebugMode)
             {
                 IsTypingInUI = false;
                 IsPointerOverUI = false;
@@ -936,7 +936,18 @@ namespace BabyBlocks
 
         static void AddMicroSplatLayerMaterials()
         {
-            if (_microSplatLayerMats.Count > 0) return;
+            if (_microSplatLayerMats.Count > 0)
+            {
+                // Already built — just re-register in case _materialByName was cleared by EnsureMaterialList.
+                foreach (var mat in _microSplatLayerMats)
+                {
+                    if (mat == null || _materialByName.ContainsKey(mat.name)) continue;
+                    _materialNames.Add(mat.name);
+                    _materialLabels.Add(mat.name);
+                    _materialByName[mat.name] = mat;
+                }
+                return;
+            }
             try
             {
                 var allMats = Resources.FindObjectsOfTypeAll<Material>();
@@ -1828,56 +1839,119 @@ namespace BabyBlocks
             try { go.tag = tag; } catch { }
         }
 
+        public static void ApplyDisabledRenderersToRoot(string propId, GameObject root)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(propId) || root == null) return;
+            if (!_byId.TryGetValue(propId, out var info)) return;
+            if (info.disabledRenderers == null || info.disabledRenderers.Count == 0) return;
+
+            foreach (var path in info.disabledRenderers)
+            {
+                if (string.IsNullOrEmpty(path)) continue;
+                // Path format: "RootName/Child" — strip the leading root-name segment.
+                int slashIdx = path.IndexOf('/');
+                string subPath = slashIdx >= 0 ? path.Substring(slashIdx + 1) : path;
+                if (string.IsNullOrEmpty(subPath)) continue;
+                var t = root.transform.Find(subPath);
+                if (t == null) continue;
+                var r = t.GetComponent<Renderer>();
+                if (r != null) r.enabled = false;
+            }
+        }
+
         public static void ApplyMaterialOverridesToRoot(string propId, GameObject root)
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(propId) || root == null) return;
             if (!_byId.TryGetValue(propId, out var info)) return;
 
+            // MicroSplat materials are runtime-generated; ensure they're in _materialByName even
+            // when the metadata panel UI has never been shown (e.g. non-debug mode or first launch).
+            AddMicroSplatLayerMaterials();
+
+            // --- Per-slot overrides ---
             var overrides = info.perSlotMaterialOverrides;
-            if (overrides == null || overrides.Count == 0) return;
-
-            var renderers = root.GetComponentsInChildren<Renderer>(true);
-            if (renderers == null || renderers.Length == 0) return;
-
-            for (int s = 0; s < overrides.Count; s++)
+            if (overrides != null && overrides.Count > 0)
             {
-                string matName = overrides[s];
-                if (string.IsNullOrEmpty(matName)
-                    || string.Equals(matName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
-                    continue;
+                var renderers = root.GetComponentsInChildren<Renderer>(true);
+                if (renderers == null || renderers.Length == 0) return;
 
-                if (!_materialByName.TryGetValue(matName, out var mat) || mat == null)
+                for (int s = 0; s < overrides.Count; s++)
                 {
-                    mat = PropLibrary.TryLoadMaterialByName(matName);
-                    if (mat != null)
+                    string matName = overrides[s];
+                    if (string.IsNullOrEmpty(matName)
+                        || string.Equals(matName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var mat = ResolveMaterial(matName);
+                    if (mat == null) continue;
+
+                    for (int i = 0; i < renderers.Length; i++)
                     {
-                        if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
-                        if (!string.Equals(mat.name, matName, StringComparison.OrdinalIgnoreCase)
-                            && !_materialByName.ContainsKey(matName))
-                            _materialByName[matName] = mat;
+                        var r = renderers[i];
+                        if (r == null) continue;
+                        var mats = r.sharedMaterials;
+                        if (mats == null) mats = new Material[0];
+                        if (s >= mats.Length)
+                        {
+                            var expanded = new Material[s + 1];
+                            for (int m = 0; m < mats.Length; m++) expanded[m] = mats[m];
+                            mats = expanded;
+                        }
+                        mats[s] = mat;
+                        r.sharedMaterials = mats;
                     }
                 }
-                if (mat == null) continue;
+                return;
+            }
+
+            // --- Single-slot override (overrideMaterialId) ---
+            // This is the common case for props with one material slot: the override is stored
+            // in overrideMaterialId, not perSlotMaterialOverrides. ApplyPreviewMaterial applies
+            // the same material to every slot of every renderer, so we mirror that here.
+            string singleOverride = info.overrideMaterialId;
+            if (string.IsNullOrEmpty(singleOverride)
+                || string.Equals(singleOverride, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            {
+                var singleMat = ResolveMaterial(singleOverride);
+                if (singleMat == null) return;
+
+                var renderers = root.GetComponentsInChildren<Renderer>(true);
+                if (renderers == null || renderers.Length == 0) return;
 
                 for (int i = 0; i < renderers.Length; i++)
                 {
                     var r = renderers[i];
                     if (r == null) continue;
-                    var mats = r.sharedMaterials;
-                    if (mats == null) mats = new Material[0];
-
-                    if (s >= mats.Length)
-                    {
-                        var expanded = new Material[s + 1];
-                        for (int m = 0; m < mats.Length; m++) expanded[m] = mats[m];
-                        mats = expanded;
-                    }
-
-                    mats[s] = mat;
+                    int count = 1;
+                    var existing = r.sharedMaterials;
+                    if (existing != null && existing.Length > 0) count = existing.Length;
+                    var mats = new Material[count];
+                    for (int m = 0; m < count; m++) mats[m] = singleMat;
                     r.sharedMaterials = mats;
                 }
             }
+        }
+
+        // Looks up a material by name in the in-memory cache, falling back to a catalog load.
+        // Caches the result so subsequent spawns of the same prop don't re-hit the catalog.
+        static Material ResolveMaterial(string matName)
+        {
+            if (string.IsNullOrEmpty(matName)) return null;
+            if (_materialByName.TryGetValue(matName, out var mat) && mat != null) return mat;
+
+            mat = PropLibrary.TryLoadMaterialByName(matName);
+            if (mat == null) return null;
+
+            if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
+            // Also cache under the original saved name in case it differs (e.g. "(Instance)" suffix).
+            if (!string.Equals(mat.name, matName, StringComparison.OrdinalIgnoreCase)
+                && !_materialByName.ContainsKey(matName))
+                _materialByName[matName] = mat;
+            return mat;
         }
 
         public static bool HasMetadata(string id)
@@ -2383,6 +2457,53 @@ namespace BabyBlocks
                 pos = nextQuote + 1;
             }
             return result;
+        }
+
+        public static int GetMetaIndex(string id)
+        {
+            EnsureLoaded();
+            return _byId.TryGetValue(id, out var info) ? info.index : 0;
+        }
+
+        public static string FindIdByIndex(int index)
+        {
+            EnsureLoaded();
+            if (index <= 0) return null;
+            foreach (var kvp in _byId)
+                if (kvp.Value.index == index) return kvp.Key;
+            return null;
+        }
+
+        public static string GetDisplayName(string id)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id)) return null;
+            return _byId.TryGetValue(id, out var info) && !string.IsNullOrEmpty(info.displayName)
+                ? info.displayName : null;
+        }
+
+        public static string GetCategory(string id)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id)) return "";
+            return _byId.TryGetValue(id, out var info) ? (info.category ?? "") : "";
+        }
+
+        public static bool HasCategory(string id)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id)) return false;
+            return _byId.TryGetValue(id, out var info) && !string.IsNullOrEmpty(info.category);
+        }
+
+        public static List<string> GetAllCategories()
+        {
+            EnsureLoaded();
+            var cats = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kvp in _byId)
+                if (!string.IsNullOrEmpty(kvp.Value.category))
+                    cats.Add(kvp.Value.category);
+            return new List<string>(cats);
         }
     }
 }

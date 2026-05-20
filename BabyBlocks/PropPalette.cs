@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace BabyBlocks
@@ -9,10 +10,15 @@ namespace BabyBlocks
         const float PanelW = 110f;
         const float ItemW  = PanelW - Pad * 2f; // 94
 
+        // Category panel (non-debug mode only)
+        const float CatPad   = 6f;
+        const float CatItemH = 26f;
+
         static GUIStyle _itemStyle;
         static GUIStyle _ghostStyle;
         static GUIStyle _excludedXStyle;
         static GUIStyle _warningStyle;
+        static GUIStyle _catStyle;
 
         // How many slots fit on screen, clamped to a reasonable range.
         static int VisibleSlots =>
@@ -27,6 +33,14 @@ namespace BabyBlocks
 
         const float ScrollInitialDelay  = 0.35f;
         const float ScrollRepeatInterval = 0.08f;
+
+        // Exposed so PropLibrary.BuildFiltered can read the selected category.
+        public static string SelectedCategory = null;
+
+        // Category list cached in non-debug mode; null when stale.
+        static List<string> _cachedCategories;
+
+        public static void InvalidateCategories() => _cachedCategories = null;
 
         public static Rect PanelRect { get; private set; }
 
@@ -120,11 +134,15 @@ namespace BabyBlocks
                     bool isExcluded = PropMetadataPanel.IsExcluded(prop.id);
                     bool hovered    = itemRect.Contains(e.mousePosition) && !IsDragging && !invalid && !isExcluded;
 
-                    bool hasMetadata = PropMetadataPanel.HasMetadata(prop.id);
+                    // In non-debug mode use the metadata display name; debug mode uses raw name.
+                    string label = Core.DebugMode
+                        ? prop.displayName
+                        : (PropMetadataPanel.GetDisplayName(prop.id) ?? prop.displayName);
+
                     if (invalid)
                     {
                         GUI.color = new Color(0.45f, 0.45f, 0.45f, 0.7f);
-                        if (GUI.Button(itemRect, prop.displayName + "\n(no mesh)", _itemStyle))
+                        if (GUI.Button(itemRect, label + "\n(no mesh)", _itemStyle))
                             PropMetadataPanel.SetPaletteSelection(prop.id);
                     }
                     else
@@ -132,7 +150,7 @@ namespace BabyBlocks
                         GUI.color = isExcluded
                             ? new Color(0.35f, 0.35f, 0.35f, 0.7f)
                             : hovered ? new Color(1f, 1f, 1f, 0.95f) : new Color(0.6f, 0.6f, 0.6f, 0.85f);
-                        GUI.Box(itemRect, prop.displayName, _itemStyle);
+                        GUI.Box(itemRect, label, _itemStyle);
                         if (e.type == EventType.MouseDown && e.button == 0 && itemRect.Contains(e.mousePosition))
                         {
                             if (isExcluded)
@@ -143,23 +161,26 @@ namespace BabyBlocks
                         }
                     }
 
-                    // Red X overlay for excluded items — drawn after the box so it sits on top.
-                    if (isExcluded)
+                    if (Core.DebugMode)
                     {
-                        GUI.color = new Color(1f, 0.15f, 0.15f, 0.85f);
-                        GUI.Label(itemRect, "✕", _excludedXStyle);
-                    }
+                        // Red X overlay for excluded items — drawn after the box so it sits on top.
+                        if (isExcluded)
+                        {
+                            GUI.color = new Color(1f, 0.15f, 0.15f, 0.85f);
+                            GUI.Label(itemRect, "✕", _excludedXStyle);
+                        }
 
-                    if (PropMetadataPanel.IsPartiallyFilled(prop.id))
-                    {
-                        GUI.color = new Color(1f, 0.85f, 0f, 0.85f);
-                        GUI.Label(itemRect, "!", _warningStyle);
-                    }
+                        if (PropMetadataPanel.IsPartiallyFilled(prop.id))
+                        {
+                            GUI.color = new Color(1f, 0.85f, 0f, 0.85f);
+                            GUI.Label(itemRect, "!", _warningStyle);
+                        }
 
-                    if (hasMetadata)
-                    {
-                        GUI.color = new Color(0.4f, 1f, 0.4f, 0.95f);
-                        GUI.Label(new Rect(itemRect.xMax - 16f, itemRect.y + 3f, 16f, 16f), "✓");
+                        if (PropMetadataPanel.HasMetadata(prop.id))
+                        {
+                            GUI.color = new Color(0.4f, 1f, 0.4f, 0.95f);
+                            GUI.Label(new Rect(itemRect.xMax - 16f, itemRect.y + 3f, 16f, 16f), "✓");
+                        }
                     }
 
                     GUI.color = Color.white;
@@ -199,13 +220,15 @@ namespace BabyBlocks
             }
 
             // Page label at bottom of panel.
-            int pageCount   = total > 0 ? Mathf.CeilToInt(total / (float)visible) : 0;
-            int currentPage = total > 0 ? (_scrollOffset / visible) + 1 : 0;
-            GUI.color = new Color(0.75f, 0.75f, 0.75f, 1f);
-            GUI.Label(
-                new Rect(10f + Pad, 10f + Pad + visible * (ItemH + Pad) + 2f, ItemW, 18f),
-                $"{currentPage}/{pageCount}");
-            GUI.color = Color.white;
+            {
+                int pageCount   = total > 0 ? Mathf.CeilToInt(total / (float)visible) : 0;
+                int currentPage = total > 0 ? (_scrollOffset / visible) + 1 : 0;
+                GUI.color = new Color(0.75f, 0.75f, 0.75f, 1f);
+                GUI.Label(
+                    new Rect(10f + Pad, 10f + Pad + visible * (ItemH + Pad) + 2f, ItemW, 18f),
+                    $"{currentPage}/{pageCount}");
+                GUI.color = Color.white;
+            }
 
             // Ghost label following cursor while dragging.
             if (IsDragging)
@@ -215,6 +238,52 @@ namespace BabyBlocks
                     new Rect(e.mousePosition.x + 12f, e.mousePosition.y + 12f,
                              ItemW * 0.75f, ItemH * 0.75f),
                     DraggingProp.displayName, _ghostStyle);
+                GUI.color = Color.white;
+            }
+
+            // Category panel — only in non-debug mode.
+            if (!Core.DebugMode)
+                DrawCategoryPanel(e, panelRect);
+        }
+
+        static void DrawCategoryPanel(Event e, Rect mainPanelRect)
+        {
+            if (_cachedCategories == null)
+                _cachedCategories = PropMetadataPanel.GetAllCategories();
+
+            var cats = _cachedCategories;
+            // +1 for the "(All)" entry at the top.
+            int count = cats.Count + 1;
+
+            float catPanelX = mainPanelRect.xMax + 10f;
+            float catItemW  = PanelW - CatPad * 2f;
+            float catPanelH = CatPad + count * (CatItemH + CatPad);
+            var   catPanel  = new Rect(catPanelX, 10f, PanelW, catPanelH);
+
+            GUI.color = new Color(0f, 0f, 0f, 0.65f);
+            GUI.Box(catPanel, "");
+            GUI.color = Color.white;
+
+            for (int i = 0; i < count; i++)
+            {
+                string cat     = i == 0 ? null : cats[i - 1];
+                string label   = cat ?? "(All)";
+                bool   sel     = (cat == null && SelectedCategory == null)
+                              || (cat != null && string.Equals(cat, SelectedCategory, StringComparison.OrdinalIgnoreCase));
+                float  iy      = 10f + CatPad + i * (CatItemH + CatPad);
+                var    itemR   = new Rect(catPanelX + CatPad, iy, catItemW, CatItemH);
+
+                GUI.color = sel
+                    ? new Color(1f, 0.85f, 0.3f, 0.95f)
+                    : new Color(0.6f, 0.6f, 0.6f, 0.85f);
+
+                if (GUI.Button(itemR, label, _catStyle) && !sel)
+                {
+                    SelectedCategory = cat;
+                    PropLibrary.RebuildFiltered();
+                    e.Use();
+                }
+
                 GUI.color = Color.white;
             }
         }
@@ -262,6 +331,19 @@ namespace BabyBlocks
                     alignment = TextAnchor.MiddleCenter,
                 };
                 _warningStyle.normal.textColor = new Color(1f, 0.85f, 0f, 0.9f);
+            }
+
+            if (_catStyle == null)
+            {
+                var padding = new RectOffset { left = 4, right = 4, top = 2, bottom = 2 };
+                _catStyle = new GUIStyle(GUI.skin.button)
+                {
+                    wordWrap  = false,
+                    alignment = TextAnchor.MiddleCenter,
+                    clipping  = TextClipping.Clip,
+                    padding   = padding,
+                    fontSize  = 11,
+                };
             }
         }
     }

@@ -219,20 +219,49 @@ namespace BabyBlocks
             BuildFiltered();
         }
 
+        public static void RebuildFiltered() => BuildFiltered();
+
         static void BuildFiltered()
         {
             _filtered.Clear();
-            if (string.IsNullOrEmpty(SearchText))
+
+            if (Core.DebugMode)
             {
-                foreach (var p in _all) _filtered.Add(p);
+                if (string.IsNullOrEmpty(SearchText))
+                {
+                    foreach (var p in _all) _filtered.Add(p);
+                    return;
+                }
+                foreach (var p in _all)
+                {
+                    if (p.displayName.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0
+                        || p.id.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0)
+                        _filtered.Add(p);
+                }
                 return;
             }
+
+            // Non-debug: only props that have a category in metadata, filtered by selected category.
+            string selectedCategory = PropPalette.SelectedCategory;
             foreach (var p in _all)
             {
-                if (p.displayName.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0
-                    || p.id.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0)
-                    _filtered.Add(p);
+                if (!PropMetadataPanel.HasCategory(p.id)) continue;
+                if (selectedCategory != null)
+                {
+                    string cat = PropMetadataPanel.GetCategory(p.id);
+                    if (!string.Equals(cat, selectedCategory, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                }
+                _filtered.Add(p);
             }
+
+            // Sort alphabetically by metadata displayName within the filtered set.
+            _filtered.Sort((a, b) =>
+            {
+                string nameA = PropMetadataPanel.GetDisplayName(a.id) ?? a.displayName;
+                string nameB = PropMetadataPanel.GetDisplayName(b.id) ?? b.displayName;
+                return string.Compare(nameA, nameB, StringComparison.OrdinalIgnoreCase);
+            });
         }
 
         public static void AddRef(string propId)

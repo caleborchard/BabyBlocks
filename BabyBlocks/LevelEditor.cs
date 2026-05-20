@@ -190,6 +190,7 @@ namespace BabyBlocks
         {
             PropPalette.DrawGUI(Event.current);
             PropMetadataPanel.DrawGUI(selectedObject);
+            SaveLoadWindow.DrawGUI(Event.current);
 
             string tool = currentTool == ToolMode.Translate ? "MOVE"
                         : currentTool == ToolMode.Scale     ? "SCALE" : "ROTATE";
@@ -222,6 +223,7 @@ namespace BabyBlocks
             var mouse = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
             if (PropPalette.PanelRect.Contains(mouse)) return true;
             if (PropMetadataPanel.ContainsPoint(mouse)) return true;
+            if (SaveLoadWindow.ContainsPoint(mouse)) return true;
             return false;
         }
 

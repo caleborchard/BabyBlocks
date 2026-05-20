@@ -694,6 +694,7 @@
 		<Compile Include="LevelEditor.cs" />
 		<Compile Include="SceneHierarchyScanner.cs" />
 		<Compile Include="PrimitiveMeshGen.cs" />
+		<Compile Include="SaveLoadWindow.cs" />
 	</ItemGroup>
 
 	<ItemGroup>
