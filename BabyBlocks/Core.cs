@@ -14,7 +14,7 @@ namespace BabyBlocks
     {
         public static bool flyCamActive;
         public static bool cursorMode;
-        public static bool DebugMode = false; // For categorizing props in the library, not for general debug logging.
+        public static bool DebugMode = true; // For categorizing props in the library, not for general debug logging.
         static bool _flyTeleportInProgress;
         static float _flyCamNoiseAmplitude = -1f;
 
