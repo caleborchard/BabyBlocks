@@ -70,7 +70,7 @@ namespace BabyBlocks
             return leo;
         }
 
-        internal static readonly Dictionary<int, Mesh> _physicsMeshCache = new();
+        internal static readonly Dictionary<int, Dictionary<string, Mesh>> _physicsMeshCache = new();
 
         internal static void ReleasePhysicsMeshes(PropInfo info)
         {
@@ -79,31 +79,42 @@ namespace BabyBlocks
             {
                 if (part?.mesh == null) continue;
                 int id = part.mesh.GetInstanceID();
-                if (_physicsMeshCache.TryGetValue(id, out var phys))
+                if (_physicsMeshCache.TryGetValue(id, out var physMap))
                 {
                     _physicsMeshCache.Remove(id);
-                    if (phys != null) Destroy(phys);
+                    foreach (var phys in physMap.Values)
+                    {
+                        if (phys != null) Destroy(phys);
+                    }
                 }
             }
             foreach (var cp in info.colliderParts)
             {
                 if (cp?.mesh == null) continue;
                 int id = cp.mesh.GetInstanceID();
-                if (_physicsMeshCache.TryGetValue(id, out var phys))
+                if (_physicsMeshCache.TryGetValue(id, out var physMap))
                 {
                     _physicsMeshCache.Remove(id);
-                    if (phys != null) Destroy(phys);
+                    foreach (var phys in physMap.Values)
+                    {
+                        if (phys != null) Destroy(phys);
+                    }
                 }
             }
         }
 
         // Game meshes ship without Read/Write enabled; GetVertexBuffer/GetIndexBuffer bypass that.
         // Position is assumed Float32×3 at byte-offset 0 in stream 0 (standard Unity layout).
-        internal static Mesh BuildPhysicsMesh(Mesh source)
+        internal static Mesh BuildPhysicsMesh(Mesh source, HashSet<int> ignoredSubmeshes = null)
         {
             if (source == null) return null;
             int id = source.GetInstanceID();
-            if (_physicsMeshCache.TryGetValue(id, out var hit)) return hit;
+            string cacheKey = ignoredSubmeshes == null || ignoredSubmeshes.Count == 0
+                ? string.Empty
+                : string.Join(",", ignoredSubmeshes.OrderBy(v => v));
+            if (_physicsMeshCache.TryGetValue(id, out var physMap)
+                && physMap.TryGetValue(cacheKey, out var hit))
+                return hit;
 
             Mesh result = null;
             try
@@ -148,17 +159,44 @@ namespace BabyBlocks
                     ib.GetData(idxBuf.Cast<Il2CppSystem.Array>());
                     for (int i = 0; i < iCount; i++) tris[i] = idxBuf[i];
                 }
+
+                int[] filteredTris = tris;
+                if (ignoredSubmeshes != null && ignoredSubmeshes.Count > 0 && source.subMeshCount > 0)
+                {
+                    var combined = new List<int>();
+                    for (int sub = 0; sub < source.subMeshCount; sub++)
+                    {
+                        if (ignoredSubmeshes.Contains(sub)) continue;
+
+                        var sm = source.GetSubMesh(sub);
+                        int start = sm.indexStart;
+                        int count = sm.indexCount;
+                        if (start < 0 || count <= 0 || start + count > tris.Length) continue;
+
+                        for (int i = start; i < start + count; i++)
+                            combined.Add(tris[i]);
+                    }
+
+                    if (combined.Count > 0)
+                        filteredTris = combined.ToArray();
+                }
+
                 ib.Release();
 
                 result = new Mesh { name = source.name + "_phys" };
                 result.vertices  = positions;
-                result.triangles = tris;
+                result.triangles = filteredTris;
                 result.RecalculateNormals();
                 result.RecalculateBounds();
+
+                if (!_physicsMeshCache.TryGetValue(id, out physMap))
+                {
+                    physMap = new Dictionary<string, Mesh>();
+                    _physicsMeshCache[id] = physMap;
+                }
+                physMap[cacheKey] = result;
             }
             catch { result = null; }
-
-            _physicsMeshCache[id] = result;
             return result;
         }
 
@@ -230,9 +268,15 @@ namespace BabyBlocks
                 go.transform.localScale    = mf.transform.localScale;
                 go.layer = layer;
 
-                var physMesh = BuildPhysicsMesh(mf.sharedMesh);
+                var ignoredSubs = PropMetadataPanel.GetColliderIgnoredSubmeshes(info.id);
+                var physMesh = BuildPhysicsMesh(mf.sharedMesh, ignoredSubs);
                 var mc = go.AddComponent<MeshCollider>();
-                mc.sharedMesh = physMesh != null ? physMesh : mf.sharedMesh;
+                if (physMesh != null)
+                    mc.sharedMesh = physMesh;
+                else if (ignoredSubs == null || ignoredSubs.Count == 0)
+                    mc.sharedMesh = mf.sharedMesh;
+                else
+                    UnityEngine.Object.Destroy(go);
             }
         }
 

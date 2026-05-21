@@ -16,6 +16,7 @@ namespace BabyBlocks
         public string category;
         public bool excluded;
         public bool useRenderMeshCollider;
+        public string colliderIgnoredSubmeshes;
         public string overrideMaterialId;
         public string nativeMaterialName; // true original material, stored when first override is applied
         public string materialSourcePropId; // prop whose asset contains the override material
@@ -61,6 +62,7 @@ namespace BabyBlocks
         static string _category = "";
         static bool _excluded;
         static bool _useRenderMeshCollider;
+        static string _colliderIgnoredSubmeshes = "";
         static string _overrideMaterialName = "";
         static string _selectedMaterialName = "";
         static string _defaultMaterialName = "";
@@ -336,6 +338,16 @@ namespace BabyBlocks
                 ApplyCurrent();
                 _dirty = false;
             }
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Ignore collider submeshes (0-based):", GUILayout.Width(230f));
+            string newIgnored = GUILayout.TextField(_colliderIgnoredSubmeshes ?? string.Empty);
+            if (!string.Equals(newIgnored, _colliderIgnoredSubmeshes, StringComparison.Ordinal))
+            {
+                _colliderIgnoredSubmeshes = newIgnored;
+                MarkDirty();
+            }
+            GUILayout.EndHorizontal();
 
             var newMultiMat = GUILayout.Toggle(_multiMaterialEnabled, "Multiple materials");
             if (newMultiMat != _multiMaterialEnabled)
@@ -1082,7 +1094,7 @@ namespace BabyBlocks
                 int slotCountToSave = _multiMaterialEnabled ? _forcedMaterialSlots : 0;
                 var multiInfo = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
                     string.Empty, _defaultMaterialName, string.Empty, _surfaceType, _disabledRendererPaths,
-                    perSlotToSave, slotCountToSave);
+                    _colliderIgnoredSubmeshes, perSlotToSave, slotCountToSave);
                 if (multiInfo != null)
                     _index = multiInfo.index;
                 _materialExplicitlyChosen = false;
@@ -1092,7 +1104,8 @@ namespace BabyBlocks
             string overrideToSave = GetOverrideToSave();
             _knownMaterialSources.TryGetValue(overrideToSave ?? string.Empty, out string srcPropId);
             var info = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
-                overrideToSave, _defaultMaterialName, srcPropId, _surfaceType, _disabledRendererPaths);
+                overrideToSave, _defaultMaterialName, srcPropId, _surfaceType, _disabledRendererPaths,
+                _colliderIgnoredSubmeshes);
             if (info != null)
                 _index = info.index;
             _overrideMaterialName = overrideToSave ?? string.Empty;
@@ -1141,6 +1154,7 @@ namespace BabyBlocks
             CacheDefaultMaterials(selectedObject);
             _excluded = false;
             _useRenderMeshCollider = false;
+            _colliderIgnoredSubmeshes = string.Empty;
             _surfaceType = string.Empty;
             _index = -1;
             _dirty = false;
@@ -1172,6 +1186,7 @@ namespace BabyBlocks
                 _surfaceType = info.surfaceType ?? string.Empty;
                 _excluded = info.excluded;
                 _useRenderMeshCollider = info.useRenderMeshCollider;
+                _colliderIgnoredSubmeshes = info.colliderIgnoredSubmeshes ?? string.Empty;
                 _index = info.index;
                 if (info.disabledRenderers != null)
                 {
@@ -1242,21 +1257,18 @@ namespace BabyBlocks
                 try
                 {
                     var allMats = Resources.FindObjectsOfTypeAll<Material>();
-                    if (allMats != null)
+                    for (int i = 0; i < allMats.Length; i++)
                     {
-                        for (int i = 0; i < allMats.Length; i++)
-                        {
-                            var m = allMats[i];
-                            if (m == null || string.IsNullOrEmpty(m.name)) continue;
-                            if (_materialByName.ContainsKey(m.name)) continue;
-                            string shaderName = m.shader != null ? m.shader.name : string.Empty;
-                            string label = string.IsNullOrEmpty(shaderName)
-                                ? m.name
-                                : $"{m.name}  [{shaderName}]";
-                            _materialNames.Add(m.name);
-                            _materialLabels.Add(label);
-                            _materialByName[m.name] = m;
-                        }
+                        var m = allMats[i];
+                        if (m == null || string.IsNullOrEmpty(m.name)) continue;
+                        if (_materialByName.ContainsKey(m.name)) continue;
+                        string shaderName = m.shader != null ? m.shader.name : string.Empty;
+                        string label = string.IsNullOrEmpty(shaderName)
+                            ? m.name
+                            : $"{m.name}  [{shaderName}]";
+                        _materialNames.Add(m.name);
+                        _materialLabels.Add(label);
+                        _materialByName[m.name] = m;
                     }
                 }
                 catch { }
@@ -1790,6 +1802,14 @@ namespace BabyBlocks
             return info.useRenderMeshCollider;
         }
 
+        public static HashSet<int> GetColliderIgnoredSubmeshes(string id)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id)) return null;
+            if (!_byId.TryGetValue(id, out var info)) return null;
+            return ParseIntSet(info.colliderIgnoredSubmeshes);
+        }
+
         public static string GetSurfaceType(string id)
         {
             EnsureLoaded();
@@ -2026,7 +2046,8 @@ namespace BabyBlocks
         static PropExtraInfo Apply(string id, string displayName, string category,
             bool excluded, bool useRenderMeshCollider, string overrideMaterialName,
             string nativeMaterialName, string materialSourcePropId, string surfaceType,
-            HashSet<string> disabledRenderers, List<string> perSlotOverrides = null, int forcedMaterialSlots = 0)
+            HashSet<string> disabledRenderers, string colliderIgnoredSubmeshes,
+            List<string> perSlotOverrides = null, int forcedMaterialSlots = 0)
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return null;
@@ -2038,6 +2059,7 @@ namespace BabyBlocks
                     || !string.IsNullOrEmpty(overrideMaterialName)
                     || !string.IsNullOrEmpty(surfaceType)
                     || (disabledRenderers != null && disabledRenderers.Count > 0)
+                    || !string.IsNullOrEmpty(colliderIgnoredSubmeshes)
                     || HasNonEmptySlot(perSlotOverrides)
                     || forcedMaterialSlots > 1;
 
@@ -2054,6 +2076,7 @@ namespace BabyBlocks
                 info.category           = string.Empty;
                 info.excluded           = true;
                 info.useRenderMeshCollider = false;
+                info.colliderIgnoredSubmeshes = string.Empty;
                 info.overrideMaterialId       = string.Empty;
                 info.surfaceType              = string.Empty;
                 info.disabledRenderers        = new List<string>();
@@ -2068,6 +2091,7 @@ namespace BabyBlocks
                 info.category           = category ?? string.Empty;
                 info.excluded           = false;
                 info.useRenderMeshCollider = useRenderMeshCollider;
+                info.colliderIgnoredSubmeshes = colliderIgnoredSubmeshes ?? string.Empty;
                 info.overrideMaterialId = overrideMaterialName ?? string.Empty;
                 // Store the true original and source only once — when a non-empty override is first applied.
                 // Clear both when the override is removed so they don't linger.
@@ -2210,6 +2234,7 @@ namespace BabyBlocks
                     AppendJsonField(sb, "category", item.category, 6).Append(",\n");
                     sb.Append("      \"excluded\": false,\n");
                     sb.Append("      \"useRenderMeshCollider\": ").Append(item.useRenderMeshCollider ? "true" : "false").Append(",\n");
+                    AppendJsonField(sb, "colliderIgnoredSubmeshes", item.colliderIgnoredSubmeshes, 6).Append(",\n");
                     AppendJsonField(sb, "overrideMaterialId", item.overrideMaterialId, 6).Append(",\n");
                     AppendJsonField(sb, "nativeMaterialName", item.nativeMaterialName, 6).Append(",\n");
                     AppendJsonField(sb, "materialSourcePropId", item.materialSourcePropId, 6).Append(",\n");
@@ -2306,6 +2331,7 @@ namespace BabyBlocks
                     category = ExtractString(obj, "category"),
                     excluded = ExtractBool(obj, "excluded"),
                     useRenderMeshCollider = ExtractBool(obj, "useRenderMeshCollider"),
+                    colliderIgnoredSubmeshes = ExtractString(obj, "colliderIgnoredSubmeshes"),
                     overrideMaterialId = ExtractString(obj, "overrideMaterialId"),
                     nativeMaterialName = ExtractString(obj, "nativeMaterialName"),
                     materialSourcePropId = ExtractString(obj, "materialSourcePropId"),
@@ -2340,6 +2366,19 @@ namespace BabyBlocks
                 }
             }
             return -1;
+        }
+
+        static HashSet<int> ParseIntSet(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            var set = new HashSet<int>();
+            var parts = text.Split(new[] { ',', ';', ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < parts.Length; i++)
+            {
+                if (int.TryParse(parts[i], out int value) && value >= 0)
+                    set.Add(value);
+            }
+            return set.Count > 0 ? set : null;
         }
 
         static void SkipWhitespace(string text, ref int index)
