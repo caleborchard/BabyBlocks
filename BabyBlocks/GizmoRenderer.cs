@@ -53,14 +53,24 @@ namespace BabyBlocks
         static Material _outlineMat;
         static CommandBuffer _outlineBuffer;
         static Camera _outlineCameraTarget;
-        static readonly List<Mesh>  _pendingShellDestroy = new(); // shell meshes drawn last frame, safe to destroy now
-        static readonly List<float> _boundsX = new();
-        static readonly List<float> _boundsY = new();
-        static readonly List<float> _boundsZ = new();
 
         struct MeshData { public Vector3[] verts; public int[] tris; public Vector3[] smoothNormals; }
+        struct OutlineShellData
+        {
+            public int meshId;
+            public Vector3 position;
+            public Quaternion rotation;
+            public Vector3 scale;
+            public Vector3[] worldVerts;
+            public int[] tris;
+            public Mesh mesh;
+        }
         static readonly Dictionary<Mesh, MeshData> _meshDataCache = new();
-
+        static readonly Dictionary<int, OutlineShellData> _outlineShellCache = new();
+        static Mesh _combinedOutlineShell;
+        static int _combinedOutlineSignature;
+        static readonly List<CombineInstance> _combinedOutlineCombines = new();
+        static readonly List<(Mesh mesh, Matrix4x4 matrix, int subMeshCount)> _outlineMarks = new();
         static GameObject _root, _arrowHandles, _ringHandles;
         static Camera _overlayCam;
         static Vector3 _pivotPos;
@@ -193,11 +203,6 @@ namespace BabyBlocks
 
         static void DetachOutlineBuffer()
         {
-            // Previous frame's rendering is done — safe to destroy the shell meshes that were drawn.
-            for (int i = 0; i < _pendingShellDestroy.Count; i++)
-                if (_pendingShellDestroy[i] != null) UnityEngine.Object.Destroy(_pendingShellDestroy[i]);
-            _pendingShellDestroy.Clear();
-
             if (_outlineCameraTarget != null && _outlineBuffer != null)
             {
                 _outlineCameraTarget.RemoveCommandBuffer(CameraEvent.AfterEverything, _outlineBuffer);
@@ -325,7 +330,10 @@ namespace BabyBlocks
             // ZTest=Always on all passes; restored to LEqual at the end so game UI is unaffected.
             _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.Always);
 
-            bool anyDraw = false;
+            _combinedOutlineCombines.Clear();
+            _outlineMarks.Clear();
+            int outlineSignature = 17;
+
             for (int s = 0; s < selection.Count; s++)
             {
                 var sel = selection[s];
@@ -334,6 +342,8 @@ namespace BabyBlocks
                 var mfs = sel.GetComponentsInChildren<MeshFilter>();
                 if (mfs == null) continue;
 
+                outlineSignature = unchecked(outlineSignature * 31 + sel.GetInstanceID());
+
                 for (int i = 0; i < mfs.Length; i++)
                 {
                     var mf = mfs[i];
@@ -341,29 +351,54 @@ namespace BabyBlocks
                     var mr = mf.GetComponent<MeshRenderer>();
                     if (mr == null || !mr.enabled) continue;
 
-                    var mesh   = mf.sharedMesh;
-                    var t      = mf.transform;
-                    var matrix = t.localToWorldMatrix;
+                    var mesh = mf.sharedMesh;
+                    var t = mf.transform;
+                    var shell = GetOrBuildOutlineShell(mesh, t);
+                    if (shell.mesh == null) continue;
 
-                    var data = GetOrBuildMeshData(mesh);
-                    if (data.verts == null) continue;
+                    outlineSignature = unchecked(outlineSignature * 31 + mf.GetInstanceID());
+                    outlineSignature = unchecked(outlineSignature * 31 + mesh.GetInstanceID());
+                    outlineSignature = unchecked(outlineSignature * 31 + t.position.GetHashCode());
+                    outlineSignature = unchecked(outlineSignature * 31 + t.rotation.GetHashCode());
+                    outlineSignature = unchecked(outlineSignature * 31 + t.localScale.GetHashCode());
 
-                    var shell = BuildShellWorldSpace(data.verts, data.tris, data.smoothNormals, t);
-                    if (shell == null) continue;
-                    _pendingShellDestroy.Add(shell); // destroy after this frame renders
+                    _combinedOutlineCombines.Add(new CombineInstance
+                    {
+                        mesh = shell.mesh,
+                        transform = Matrix4x4.identity,
+                    });
 
-                    _outlineBuffer.DrawMesh(shell, Matrix4x4.identity, _stencilClearMat);
-                    for (int sub = 0; sub < mesh.subMeshCount; sub++)
-                        _outlineBuffer.DrawMesh(mesh, matrix, _stencilMarkMat, sub);
-                    _outlineBuffer.DrawMesh(shell, Matrix4x4.identity, _outlineMat);
-
-                    anyDraw = true;
+                    _outlineMarks.Add((mesh, t.localToWorldMatrix, mesh.subMeshCount));
                 }
             }
 
-            _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
+            if (_combinedOutlineCombines.Count == 0)
+            {
+                _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
+                return;
+            }
 
-            if (!anyDraw) return;
+            if (_combinedOutlineShell == null)
+                _combinedOutlineShell = new Mesh { name = "PropOutlineCombinedShell" };
+
+            if (_combinedOutlineSignature != outlineSignature)
+            {
+                _combinedOutlineSignature = outlineSignature;
+                _combinedOutlineShell.Clear(false);
+                _combinedOutlineShell.CombineMeshes(_combinedOutlineCombines.ToArray(), true, false, false);
+                _combinedOutlineShell.RecalculateBounds();
+            }
+
+            _outlineBuffer.DrawMesh(_combinedOutlineShell, Matrix4x4.identity, _stencilClearMat);
+            for (int i = 0; i < _outlineMarks.Count; i++)
+            {
+                var mark = _outlineMarks[i];
+                for (int sub = 0; sub < mark.subMeshCount; sub++)
+                    _outlineBuffer.DrawMesh(mark.mesh, mark.matrix, _stencilMarkMat, sub);
+            }
+            _outlineBuffer.DrawMesh(_combinedOutlineShell, Matrix4x4.identity, _outlineMat);
+
+            _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
 
             mainCam.AddCommandBuffer(CameraEvent.AfterEverything, _outlineBuffer);
             _outlineCameraTarget = mainCam;
@@ -394,27 +429,52 @@ namespace BabyBlocks
             return data;
         }
 
-        // World-space expansion so thickness is uniform under non-uniform scale.
-        // TransformDirection normalizes the normal, cancelling scale before the offset.
-        static Mesh BuildShellWorldSpace(Vector3[] localVerts, int[] tris, Vector3[] smoothNormals, Transform t)
+        static OutlineShellData GetOrBuildOutlineShell(Mesh source, Transform t)
         {
-            var worldVerts = new Vector3[localVerts.Length];
-            for (int i = 0; i < localVerts.Length; i++)
+            if (source == null || t == null) return default;
+
+            int key = t.GetInstanceID();
+            int sourceId = source.GetInstanceID();
+
+            if (_outlineShellCache.TryGetValue(key, out var cached)
+                && cached.mesh != null
+                && cached.meshId == sourceId
+                && cached.position == t.position
+                && cached.rotation == t.rotation
+                && cached.scale == t.localScale)
             {
-                var wPos    = t.TransformPoint(localVerts[i]);
-                var wNormal = t.TransformDirection(smoothNormals[i]).normalized;
+                return cached;
+            }
+
+            var data = GetOrBuildMeshData(source);
+            if (data.verts == null || data.tris == null || data.smoothNormals == null) return default;
+
+            var worldVerts = new Vector3[data.verts.Length];
+            for (int i = 0; i < data.verts.Length; i++)
+            {
+                var wPos    = t.TransformPoint(data.verts[i]);
+                var wNormal = t.TransformDirection(data.smoothNormals[i]).normalized;
                 worldVerts[i] = wPos + wNormal * OutlineThickness;
             }
 
-            var colors = new Color[localVerts.Length];
+            var mesh = cached.mesh ?? new Mesh { name = "PropOutlineShell" };
+            mesh.Clear(false);
+            mesh.vertices = worldVerts;
+            mesh.triangles = data.tris;
+            var colors = new Color[worldVerts.Length];
             for (int i = 0; i < colors.Length; i++) colors[i] = Color.white;
-
-            var mesh = new Mesh();
-            mesh.vertices  = worldVerts;
-            mesh.triangles = tris;
-            mesh.colors    = colors;
+            mesh.colors = colors;
             mesh.RecalculateBounds();
-            return mesh;
+
+            cached.mesh = mesh;
+            cached.meshId = sourceId;
+            cached.position = t.position;
+            cached.rotation = t.rotation;
+            cached.scale = t.localScale;
+            cached.worldVerts = worldVerts;
+            cached.tris = data.tris;
+            _outlineShellCache[key] = cached;
+            return cached;
         }
 
         static Vector3[] ComputeSmoothedNormals(Vector3[] verts, int[] tris)

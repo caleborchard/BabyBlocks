@@ -248,7 +248,15 @@ namespace BabyBlocks
             EnsureManager();
 
             PropLibrary.LoadPropData(prop);
-            var obj = LevelEditorManager.Instance.SpawnFromPropInfo(prop, hit.point + Vector3.up * 0.5f);
+            // Compute prop pivot center so the prop's center lands on the hit point.
+            Vector3 pivot = PropLibrary.GetPropPivotCenter(prop);
+            Vector3 spawnPos;
+            if (pivot == Vector3.zero)
+                spawnPos = hit.point + Vector3.up * 0.5f; // fallback
+            else
+                spawnPos = hit.point - pivot;
+
+            var obj = LevelEditorManager.Instance.SpawnFromPropInfo(prop, spawnPos);
             if (obj == null) return;
             Select(obj);
             LevelEditorHistory.PushSpawn(obj);

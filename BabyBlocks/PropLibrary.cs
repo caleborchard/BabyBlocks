@@ -662,6 +662,85 @@ namespace BabyBlocks
             return c >= '1' && c <= '9';
         }
 
+        // Compute the prop's pivot center in the prop-root local space by
+        // combining all part mesh bounds transformed by their local transforms.
+        // Returns Vector3.zero if no reliable data is available.
+        public static Vector3 GetPropPivotCenter(PropInfo info)
+        {
+            if (info == null) return Vector3.zero;
+
+            Bounds? acc = null;
+
+            // Use rendered parts first
+            if (info.parts != null)
+            {
+                for (int i = 0; i < info.parts.Count; i++)
+                {
+                    var p = info.parts[i];
+                    if (p == null || p.mesh == null) continue;
+                    var mb = p.mesh.bounds;
+                    Vector3 center = mb.center;
+                    Vector3 ext    = mb.extents;
+
+                    // Transform 8 corners into prop-local space
+                    for (int xi = -1; xi <= 1; xi += 2)
+                    for (int yi = -1; yi <= 1; yi += 2)
+                    for (int zi = -1; zi <= 1; zi += 2)
+                    {
+                        var localCorner = center + Vector3.Scale(new Vector3(xi * ext.x, yi * ext.y, zi * ext.z), Vector3.one);
+                        var scaled = Vector3.Scale(localCorner, p.localScale);
+                        var rotated = p.localRotation * scaled;
+                        var worldLocal = p.localPosition + rotated;
+                        if (acc == null) acc = new Bounds(worldLocal, Vector3.zero);
+                        else { var b = acc.Value; b.Encapsulate(worldLocal); acc = b; }
+                    }
+                }
+            }
+
+            // If no render parts, fall back to collider parts
+            if (acc == null && info.colliderParts != null)
+            {
+                for (int i = 0; i < info.colliderParts.Count; i++)
+                {
+                    var cp = info.colliderParts[i];
+                    if (cp == null) continue;
+                    if (cp.mesh != null)
+                    {
+                        var mb = cp.mesh.bounds;
+                        Vector3 center = mb.center;
+                        Vector3 ext    = mb.extents;
+                        for (int xi = -1; xi <= 1; xi += 2)
+                        for (int yi = -1; yi <= 1; yi += 2)
+                        for (int zi = -1; zi <= 1; zi += 2)
+                        {
+                            var localCorner = center + Vector3.Scale(new Vector3(xi * ext.x, yi * ext.y, zi * ext.z), Vector3.one);
+                            var scaled = Vector3.Scale(localCorner, cp.localScale);
+                            var rotated = cp.localRotation * scaled;
+                            var worldLocal = cp.localPosition + rotated;
+                            if (acc == null) acc = new Bounds(worldLocal, Vector3.zero);
+                            else { var b = acc.Value; b.Encapsulate(worldLocal); acc = b; }
+                        }
+                    }
+                    else
+                    {
+                        // For simple colliders, include their center points
+                        var worldLocal = cp.localPosition + cp.localRotation * Vector3.Scale(cp.center, cp.localScale);
+                        if (acc == null) acc = new Bounds(worldLocal, Vector3.zero);
+                        else { var b = acc.Value; b.Encapsulate(worldLocal); acc = b; }
+                    }
+                }
+            }
+
+            if (acc == null) return Vector3.zero;
+
+            // If bounds are implausibly large, return zero to avoid wild placement.
+            var size = acc.Value.size;
+            if (size.x > 100f || size.y > 100f || size.z > 100f)
+                return Vector3.zero;
+
+            return acc.Value.center;
+        }
+
         // Natural string comparison: compares alphabetic parts case-insensitively
         // and numeric parts by numeric value so names like "Rock 2" sort before "Rock 11".
         static int NaturalStringCompare(string a, string b)
