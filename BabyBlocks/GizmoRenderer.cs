@@ -12,6 +12,9 @@ namespace BabyBlocks
         public const  int Layer = 31;
         public static readonly int Mask = 1 << Layer;
 
+        public const  int   FreeRotateAxis        = 7;
+        public const  float FreeRotSphereDrawScale = 0.85f;  // fraction of gizmo scale; must stay inside rings
+
         public static readonly Quaternion[] PivotRots =
         {
             Quaternion.Euler(  0f, 0f, -90f),  // X
@@ -40,6 +43,7 @@ namespace BabyBlocks
         static Material[] _mats, _hoverMats;
         static Material[] _planeMats, _planeHoverMats;
         static Material _freeMat, _freeHoverMat;
+        static Material _freeRotMat, _freeRotHoverMat;
 
         // Stencil outline: shell cleared to 0, prop footprint marked 1 (ZTest=Always so occluded
         // props still mark), then shell drawn only where stencil=0 — giving a ring, always on top.
@@ -159,16 +163,18 @@ namespace BabyBlocks
             var hits = Physics.RaycastAll(ray, 2000f, Mask);
             if (hits == null || hits.Length == 0) return null;
 
-            GizmoHandle closest     = null;
+            GizmoHandle closest   = null;
+            GizmoHandle freeRot   = null;   // axis 7: only wins if no ring is hit
             float       closestDist = float.MaxValue;
             foreach (var hit in hits)
             {
                 var h = hit.collider.GetComponent<GizmoHandle>();
                 if (h == null) continue;
-                if (h.axisIndex == 3) return h;
+                if (h.axisIndex == 3)           return h;               // center free: always wins
+                if (h.axisIndex == FreeRotateAxis) { freeRot = h; continue; } // defer; rings take priority
                 if (hit.distance < closestDist) { closestDist = hit.distance; closest = h; }
             }
-            return closest;
+            return closest ?? freeRot;
         }
 
         public static void Draw(int hoveredAxis, LevelEditor.ToolMode tool)
@@ -182,6 +188,15 @@ namespace BabyBlocks
 
             if (tool == LevelEditor.ToolMode.Rotate)
             {
+                // Free-rotate sphere drawn first (lower queue) so the rings render on top.
+                if (_freeRotMat != null)
+                {
+                    var frMat = (hoveredAxis == FreeRotateAxis && _freeRotHoverMat != null)
+                        ? _freeRotHoverMat : _freeRotMat;
+                    Graphics.DrawMesh(_sphereMesh,
+                        Matrix4x4.TRS(origin, Quaternion.identity, Vector3.one * FreeRotSphereDrawScale * s),
+                        frMat, Layer, _overlayCam);
+                }
                 for (int i = 0; i < 3; i++)
                 {
                     var mat = (hoveredAxis == i && _hoverMats != null) ? _hoverMats[i] : _mats[i];
@@ -436,6 +451,19 @@ namespace BabyBlocks
                 _planeHoverMats[i] = MakeGizmoMat(shader, Color.Lerp(planeColors[i], Color.white, 0.45f), GizmoQueue);
             }
 
+            // Free-rotate sphere: semi-transparent overlay inside the rotation rings.
+            // UI/Default supports alpha blending without needing Standard's transparency setup.
+            var freeRotShader = Shader.Find("UI/Default") ?? shader;
+            _freeRotMat = new Material(freeRotShader);
+            _freeRotMat.color = new Color(1f, 1f, 1f, 0.14f);
+            _freeRotMat.SetInt("_ZTest", 8); // Always
+            _freeRotMat.renderQueue = GizmoQueue - 1; // draw before rings so rings read on top
+
+            _freeRotHoverMat = new Material(freeRotShader);
+            _freeRotHoverMat.color = new Color(0.8f, 0.9f, 1f, 0.28f);
+            _freeRotHoverMat.SetInt("_ZTest", 8);
+            _freeRotHoverMat.renderQueue = GizmoQueue - 1;
+
             // UI/Default exposes stencil control as material properties; ZTest is driven by
             // the unity_GUIZTestMode global set in the CommandBuffer before each draw group.
             var uiShader = Shader.Find("UI/Default");
@@ -559,6 +587,15 @@ namespace BabyBlocks
                 mc.sharedMesh = _ringMesh;
                 col.AddComponent<GizmoHandle>().axisIndex = i;
             }
+
+            // Free-rotate sphere: collider slightly smaller than inner ring radius (0.50)
+            // so clicking directly on a ring always hits the ring, not this sphere.
+            var freeRotCol = new GameObject("GizmoCol_FreeRot");
+            freeRotCol.transform.SetParent(_ringHandles.transform, false);
+            freeRotCol.transform.localScale = Vector3.one * 0.88f; // radius ≈ 0.44, ring inner = 0.50
+            freeRotCol.layer = Layer;
+            freeRotCol.AddComponent<SphereCollider>();
+            freeRotCol.AddComponent<GizmoHandle>().axisIndex = FreeRotateAxis;
         }
 
         static Mesh BorrowMesh(PrimitiveType type)
@@ -634,6 +671,38 @@ namespace BabyBlocks
         // (e.g. geometry authored far from the mesh origin). Skip them and fall back to
         // transform.position so the gizmo stays at the object's intended pivot.
         const float MaxPlausibleBoundsExtent = 100f;
+
+        public static Bounds GetSelectionBounds(IReadOnlyList<LevelEditorObject> selection)
+        {
+            var result = new Bounds();
+            bool initialized = false;
+
+            if (selection == null) return result;
+            for (int s = 0; s < selection.Count; s++)
+            {
+                var sel = selection[s];
+                if (sel == null) continue;
+                var renderers = sel.GetComponentsInChildren<Renderer>();
+                if (renderers != null)
+                {
+                    for (int i = 0; i < renderers.Length; i++)
+                    {
+                        var r = renderers[i];
+                        if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
+                        var bs = r.bounds.size;
+                        if (bs.x > MaxPlausibleBoundsExtent || bs.y > MaxPlausibleBoundsExtent || bs.z > MaxPlausibleBoundsExtent) continue;
+                        if (!initialized) { result = r.bounds; initialized = true; }
+                        else result.Encapsulate(r.bounds);
+                    }
+                }
+                if (!initialized)
+                {
+                    result = new Bounds(sel.transform.position, Vector3.one);
+                    initialized = true;
+                }
+            }
+            return result;
+        }
 
         public static Vector3 GetSelectionBoundsCenter(IReadOnlyList<LevelEditorObject> selection)
         {

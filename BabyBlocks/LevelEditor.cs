@@ -20,6 +20,9 @@ namespace BabyBlocks
         static Vector3    _dragStartPos, _dragStartScale, _dragStartHit, _dragPlaneNormal, _dragPivot;
         static Quaternion _dragStartRot;
         static Vector2    _dragStartMouse;
+        static Vector2    _rawMouseAccum;      // accumulated raw mouse delta (screen-px units); not clamped at edges
+        static float      _dragGizmoScale;     // gizmo world-space size at drag start; used by scale tool
+        static Quaternion _accumulatedFreeRot; // accumulated rotation for free-rotate (velocity-based)
         static int        _hoveredAxis = -1;
         static bool       _pivotLocked;
 
@@ -42,8 +45,8 @@ namespace BabyBlocks
 
         static readonly List<CopyEntry> _copyEntries = new();
         static Vector3 _copyPivot;
+        static Vector3 _copyBoundsSize = Vector3.one;
         static bool _copyHasValue;
-        static readonly Vector3 PasteOffset = new Vector3(0.5f, 0f, 0.5f);
 
         static bool _snapEnabled = false;
         const float SnapStep = 0.1f;
@@ -142,10 +145,12 @@ namespace BabyBlocks
                 DeleteSelected();
 
             bool ctrl = ctrlDown;
+            bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
             if (ctrl && Input.GetKeyDown(KeyCode.Z)) LevelEditorHistory.Undo();
             if (ctrl && Input.GetKeyDown(KeyCode.Y)) LevelEditorHistory.Redo();
             if (ctrl && Input.GetKeyDown(KeyCode.C)) CopySelected();
-            if (ctrl && Input.GetKeyDown(KeyCode.V)) PasteCopy();
+            if (ctrl && shift && Input.GetKeyDown(KeyCode.V)) PasteCopy(pasteInPlace: true);
+            else if (ctrl && !shift && Input.GetKeyDown(KeyCode.V)) PasteCopy(pasteInPlace: false);
 
             if (PropPalette.IsDragging)
             {
@@ -274,6 +279,7 @@ namespace BabyBlocks
             _dragStartScale = selectedObject.transform.localScale;
             _dragStartRot   = selectedObject.transform.rotation;
             _dragStartMouse = new Vector2(Input.mousePosition.x, Input.mousePosition.y);
+            _rawMouseAccum  = Vector2.zero;
             _dragPivot      = GizmoRenderer.PivotPosition;
             if (currentTool == ToolMode.Rotate)
             {
@@ -299,6 +305,13 @@ namespace BabyBlocks
 
             if (currentTool == ToolMode.Rotate)
             {
+                if (_dragAxis == GizmoRenderer.FreeRotateAxis)
+                {
+                    // Velocity-based free rotate: reset accumulator; per-frame delta applied in ContinueDrag.
+                    _accumulatedFreeRot = Quaternion.identity;
+                    return;
+                }
+
                 _dragPlaneNormal = AxisVec(_dragAxis);
                 var plane = new Plane(_dragPlaneNormal, _dragPivot);
                 if (plane.Raycast(ray, out float enter))
@@ -321,7 +334,11 @@ namespace BabyBlocks
             }
             else
             {
-                var axis   = AxisVec(_dragAxis);
+                // Single-axis drag: build a camera-facing plane containing the drag axis.
+                // For scale, use the object-local axis so the drag plane aligns with the arrow.
+                var axis = currentTool == ToolMode.Scale
+                    ? selectedObject.transform.rotation * AxisVec(_dragAxis)
+                    : AxisVec(_dragAxis);
                 var camFwd = cam.transform.forward;
                 var normal = camFwd - Vector3.Dot(camFwd, axis) * axis;
                 if (normal.sqrMagnitude < 0.01f)
@@ -335,6 +352,14 @@ namespace BabyBlocks
             var pl = new Plane(_dragPlaneNormal, _dragPivot);
             if (pl.Raycast(ray, out float e))
                 _dragStartHit = ray.GetPoint(e);
+
+            // Scale: capture the gizmo's world-space size so that CalcLineTranslation sensitivity
+            // is proportional to the visual handle extent and thus naturally scales with camera distance.
+            if (currentTool == ToolMode.Scale && selectedObject != null)
+            {
+                float camDist   = Vector3.Distance(cam.transform.position, _dragPivot);
+                _dragGizmoScale = Mathf.Max(camDist * 0.14f, 0.02f);
+            }
         }
 
         static void ContinueDrag()
@@ -344,15 +369,47 @@ namespace BabyBlocks
             var cam   = Camera.main;
             var mouse = new Vector2(Input.mousePosition.x, Input.mousePosition.y);
 
+            // Accumulate raw axis delta every frame so scale drags continue past screen edges.
+            if (currentTool == ToolMode.Scale)
+                _rawMouseAccum += new Vector2(Input.GetAxis("Mouse X"), Input.GetAxis("Mouse Y")) * 10f;
+
+            // ── FREE ROTATE (velocity-based; mirrors Unity's FreeRotate.cs) ──────────
+            // Each frame: build a rotation axis perpendicular to the mouse-drag direction
+            // in screen space and accumulate it.  Applied from drag-start so the total
+            // rotation is always relative to the original orientation.
+            if (currentTool == ToolMode.Rotate && _dragAxis == GizmoRenderer.FreeRotateAxis)
+            {
+                var rawDelta = new Vector2(Input.GetAxis("Mouse X"), Input.GetAxis("Mouse Y")) * 10f;
+                if (rawDelta.sqrMagnitude > 0.0001f)
+                {
+                    // Rotation axis: perpendicular to drag direction in screen space → world space.
+                    // (drag right → rotate around cam.up; drag up → rotate around cam.right)
+                    var   rotAxis  = cam.transform.TransformDirection(-rawDelta.y, rawDelta.x, 0f).normalized;
+                    float angle    = rawDelta.magnitude * 0.3f;
+                    _accumulatedFreeRot = Quaternion.AngleAxis(angle, rotAxis) * _accumulatedFreeRot;
+                }
+
+                for (int i = 0; i < _dragObjects.Count; i++)
+                {
+                    var obj = _dragObjects[i];
+                    if (obj == null) continue;
+                    obj.transform.rotation = _accumulatedFreeRot * _dragStartRotations[i];
+                    var rel = _dragStartPositions[i] - _dragPivot;
+                    obj.transform.position = _dragPivot + _accumulatedFreeRot * rel;
+                }
+                return;
+            }
+
+            // ── RING ROTATE ──────────────────────────────────────────────────────────
             if (currentTool == ToolMode.Rotate)
             {
-                var rotRay = cam.ScreenPointToRay(Input.mousePosition);
+                var rotRay   = cam.ScreenPointToRay(Input.mousePosition);
                 var rotPlane = new Plane(_dragPlaneNormal, _dragPivot);
                 if (!rotPlane.Raycast(rotRay, out float rotEnter)) return;
                 var hit = rotRay.GetPoint(rotEnter);
 
                 var from = _dragStartHit - _dragPivot;
-                var to = hit - _dragPivot;
+                var to   = hit - _dragPivot;
                 if (from.sqrMagnitude < 0.001f || to.sqrMagnitude < 0.001f) return;
 
                 float angle = Vector3.SignedAngle(from, to, AxisVec(_dragAxis));
@@ -379,17 +436,23 @@ namespace BabyBlocks
                 return;
             }
 
+            // ── TRANSLATE + SCALE: ray-plane intersection ────────────────────────────
             var ray   = cam.ScreenPointToRay(Input.mousePosition);
             var plane = new Plane(_dragPlaneNormal, _dragPivot);
             if (!plane.Raycast(ray, out float enter)) return;
             var delta = ray.GetPoint(enter) - _dragStartHit;
 
+            // ── AXIS 3 (uniform sphere) ───────────────────────────────────────────────
             if (_dragAxis == 3)
             {
                 if (currentTool == ToolMode.Scale)
                 {
-                    float amount = Vector3.Dot(delta, cam.transform.up);
-                    float factor = Mathf.Max(0.05f, 1f + amount * 0.5f);
+                    // Project accumulated mouse delta onto the screen-diagonal direction (cam.right+cam.up).
+                    // Moving one gizmo-unit along that direction doubles the scale (factor = 1 + dist/handleSize).
+                    var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
+                    var   scaleDir       = (cam.transform.right + cam.transform.up).normalized;
+                    float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, scaleDir, cam);
+                    float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
                     for (int i = 0; i < _dragObjects.Count; i++)
                     {
                         var obj = _dragObjects[i];
@@ -399,36 +462,35 @@ namespace BabyBlocks
                         obj.transform.localScale = sc;
                     }
                 }
-                else
-                {
-                    ApplyTranslation(delta);
-                }
+                else { ApplyTranslation(delta); }
                 return;
             }
 
+            // ── AXES 4-6 (plane handles) ──────────────────────────────────────────────
             if (_dragAxis >= 4)
             {
                 if (currentTool == ToolMode.Scale)
                 {
                     if (TryGetPlaneAxes(_dragAxis, out int aIdx, out int bIdx))
                     {
-                        var localDir = (AxisVec(aIdx) + AxisVec(bIdx)).normalized;
-                        var worldDir = selectedObject.transform.rotation * localDir;
-                        var originV = cam.WorldToScreenPoint(_dragPivot);
-                        var tipV = cam.WorldToScreenPoint(_dragPivot + worldDir);
-                        var planeScrn = new Vector2(tipV.x - originV.x, tipV.y - originV.y);
-                        if (tipV.z < 0f) planeScrn = -planeScrn;
-                        if (planeScrn.sqrMagnitude < 0.01f) planeScrn = Vector2.up;
-                        else planeScrn.Normalize();
-
-                        float screenDelta = Vector2.Dot(mouse - _dragStartMouse, planeScrn);
+                        // Project onto the diagonal that matches the plane handle's visual position.
+                        // Positions in gizmo-local space: XY=(+X,+Y,0), YZ=(0,+Y,-Z), XZ=(+X,0,-Z).
+                        // Z is -Z (not +Z) because the blue arrow's PivotRot points in local -Z.
+                        var   rot            = selectedObject.transform.rotation;
+                        var   planeLocalDir  = _dragAxis == 4 ? new Vector3(1f, 1f,  0f).normalized  // XY
+                                             : _dragAxis == 5 ? new Vector3(0f, 1f, -1f).normalized  // YZ
+                                                              : new Vector3(1f, 0f, -1f).normalized; // XZ
+                        var   localDiag      = rot * planeLocalDir;
+                        var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
+                        float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localDiag, cam);
+                        float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
                         for (int i = 0; i < _dragObjects.Count; i++)
                         {
                             var obj = _dragObjects[i];
                             if (obj == null) continue;
-                            var sc = _dragStartScales[i];
-                            sc[aIdx] = Mathf.Max(0.05f, _dragStartScales[i][aIdx] + screenDelta * 0.008f);
-                            sc[bIdx] = Mathf.Max(0.05f, _dragStartScales[i][bIdx] + screenDelta * 0.008f);
+                            var sc   = _dragStartScales[i];
+                            sc[aIdx] = Mathf.Max(0.001f, _dragStartScales[i][aIdx] * factor);
+                            sc[bIdx] = Mathf.Max(0.001f, _dragStartScales[i][bIdx] * factor);
                             if (_snapEnabled) sc = SnapVector(sc);
                             obj.transform.localScale = sc;
                         }
@@ -436,30 +498,55 @@ namespace BabyBlocks
                 }
                 else
                 {
-                    ApplyTranslation(delta);
+                    // Translate: screen-space 2-D solve for natural diagonal movement at any angle.
+                    if (TryGetPlaneAxes(_dragAxis, out int aIdx, out int bIdx))
+                    {
+                        var   axA     = AxisVec(aIdx);
+                        var   axB     = AxisVec(bIdx);
+                        var   oScreen = cam.WorldToScreenPoint(_dragPivot);
+                        var   screenA = new Vector2(cam.WorldToScreenPoint(_dragPivot + axA).x - oScreen.x,
+                                                    cam.WorldToScreenPoint(_dragPivot + axA).y - oScreen.y);
+                        var   screenB = new Vector2(cam.WorldToScreenPoint(_dragPivot + axB).x - oScreen.x,
+                                                    cam.WorldToScreenPoint(_dragPivot + axB).y - oScreen.y);
+                        var   sd      = mouse - _dragStartMouse;
+                        float det     = screenA.x * screenB.y - screenB.x * screenA.y;
+                        if (Mathf.Abs(det) > 0.5f)
+                        {
+                            float a  = (sd.x * screenB.y - sd.y * screenB.x) / det;
+                            float b  = (sd.y * screenA.x - sd.x * screenA.y) / det;
+                            var   td = axA * a + axB * b;
+                            for (int i = 0; i < _dragObjects.Count; i++)
+                            {
+                                var obj = _dragObjects[i];
+                                if (obj == null) continue;
+                                var pos = _dragStartPositions[i] + td;
+                                if (_snapEnabled) pos = SnapVector(pos);
+                                obj.transform.position = pos;
+                            }
+                        }
+                        else { ApplyTranslation(delta); } // fallback: plane nearly edge-on
+                    }
+                    else { ApplyTranslation(delta); }
                 }
                 return;
             }
 
+            // ── AXES 0-2 (single-axis arrows) ─────────────────────────────────────────
             if (currentTool == ToolMode.Scale)
             {
-                // Arrow points along the object's local axis; account for object rotation
-                // so the screen-space projection matches the visually rendered arrow.
-                var arrowDir  = selectedObject.transform.rotation * GizmoRenderer.PivotRots[_dragAxis] * Vector3.up;
-                var originV   = cam.WorldToScreenPoint(_dragPivot);
-                var tipV      = cam.WorldToScreenPoint(_dragPivot + arrowDir);
-                var arrowScrn = new Vector2(tipV.x - originV.x, tipV.y - originV.y);
-                if (tipV.z < 0f) arrowScrn = -arrowScrn;
-                if (arrowScrn.sqrMagnitude < 0.01f) arrowScrn = Vector2.up;
-                else arrowScrn.Normalize();
-
-                float screenDelta = Vector2.Dot(mouse - _dragStartMouse, arrowScrn);
+                // Project accumulated mouse delta onto the actual visual arrow direction.
+                // PivotRots[i] * up gives the direction each arrow is drawn in (gizmo-local space),
+                // which differs from AxisVec for Z: the blue arrow points in local -Z, not +Z.
+                var   localAxis      = selectedObject.transform.rotation * (GizmoRenderer.PivotRots[_dragAxis] * Vector3.up);
+                var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
+                float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localAxis, cam);
+                float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
                 for (int i = 0; i < _dragObjects.Count; i++)
                 {
                     var obj = _dragObjects[i];
                     if (obj == null) continue;
                     var sc = _dragStartScales[i];
-                    sc[_dragAxis] = Mathf.Max(0.05f, _dragStartScales[i][_dragAxis] + screenDelta * 0.008f);
+                    sc[_dragAxis] = Mathf.Max(0.001f, _dragStartScales[i][_dragAxis] * factor);
                     if (_snapEnabled) sc = SnapVector(sc);
                     obj.transform.localScale = sc;
                 }
@@ -515,6 +602,7 @@ namespace BabyBlocks
             if (_selection.Count == 0) return;
             _copyEntries.Clear();
             _copyPivot = GizmoRenderer.GetSelectionBoundsCenter(_selection);
+            _copyBoundsSize = GizmoRenderer.GetSelectionBounds(_selection).size;
 
             for (int i = 0; i < _selection.Count; i++)
             {
@@ -542,7 +630,7 @@ namespace BabyBlocks
             _copyHasValue = _copyEntries.Count > 0;
         }
 
-        static void PasteCopy()
+        static void PasteCopy(bool pasteInPlace = false)
         {
             if (!_copyHasValue) return;
             EnsureManager();
@@ -550,7 +638,10 @@ namespace BabyBlocks
                 ? GizmoRenderer.GetSelectionBoundsCenter(_selection)
                 : _copyPivot;
 
-            var snappedOffset = SnapVector(PasteOffset);
+            Vector3 pasteOffset = pasteInPlace
+                ? Vector3.zero
+                : new Vector3(0, Mathf.Clamp(_copyBoundsSize.y * 0.1f, 0.05f, 0.5f), 0);
+            var snappedOffset = SnapVector(pasteOffset);
             var newSelection = new List<LevelEditorObject>();
             for (int i = 0; i < _copyEntries.Count; i++)
             {
@@ -607,6 +698,25 @@ namespace BabyBlocks
         static float SnapAngleValue(float angle)
         {
             return Mathf.Round(angle / (SnapStep * RotateSnapMultiplier)) * (SnapStep * RotateSnapMultiplier);
+        }
+
+        // Mirrors Unity's HandleUtility.CalcLineTranslation.
+        // Projects srcMouse and dstMouse (screen-pixel positions) onto the screen-space projection
+        // of the world-space axis (origin → origin+unitDir), and returns the displacement in
+        // world-space units along that axis.  Camera-distance-aware: the result is ~1 world unit
+        // when the cursor moves by exactly one "handle length" in screen space.
+        static float CalcLineTranslation(Vector2 srcMouse, Vector2 dstMouse,
+                                         Vector3 origin,   Vector3 unitDir, Camera cam)
+        {
+            var p1        = cam.WorldToScreenPoint(origin);
+            var p2        = cam.WorldToScreenPoint(origin + unitDir);
+            var screenDir = new Vector2(p2.x - p1.x, p2.y - p1.y);
+            float sqMag   = screenDir.sqrMagnitude;
+            if (sqMag < 0.01f) return 0f;
+            var   o2d = new Vector2(p1.x, p1.y);
+            float t0  = Vector2.Dot(srcMouse - o2d, screenDir) / sqMag;
+            float t1  = Vector2.Dot(dstMouse - o2d, screenDir) / sqMag;
+            return t1 - t0;
         }
     }
 }
