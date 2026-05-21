@@ -190,6 +190,8 @@ namespace BabyBlocks
                             if (obj == null) continue;
                             LevelEditorHistory.PushTransform(obj, _dragStartPositions[i], _dragStartScales[i], _dragStartRotations[i]);
                         }
+                        if (LevelEditorManager.Instance != null)
+                            LevelEditorManager.Instance.SyncLoopBases(_dragObjects);
                     }
                 }
             }

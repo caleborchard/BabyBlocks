@@ -15,18 +15,31 @@ namespace BabyBlocks
     //   Version  : 1 byte
     //   Count    : int32    (number of objects)
     //
-    // Per object (version 2):
-    //   MetaIndex: int32    (PropMetadataPanel index — the sole prop reference)
-    //   Pos.x/y/z: 3 × float32
-    //   Rot.x/y/z/w: 4 × float32 (quaternion)
+    // Per object (version 3):
+    //   MetaIndex : int32    (PropMetadataPanel index — the sole prop reference)
+    //   ChunkIndex: byte     (0..63, 64-unit chunks across the 512-unit loop)
+    //   Pos.x/y/z : 3 × float32
+    //   Rot.x/y/z : 3 × float32 (w reconstructed; same compact idea used by the multiplayer client)
     //   Scale.x/y/z: 3 × float32
+    //
+    // Version 2 (legacy): MetaIndex + full quaternion + scale.
     //
     // Version 1 (legacy): PropId string (int32 len + UTF-8 bytes) + MetaIndex int32 + same transform.
     // -------------------------------------------------------------------------
     static class LevelSaveLoad
     {
         static readonly byte[] Magic = { 0x42, 0x42, 0x42 };
-        const byte FormatVersion = 2;
+        const byte FormatVersion = 3;
+
+        struct SaveRecord
+        {
+            public LevelEditorObject obj;
+            public int metaIndex;
+            public int chunkIndex;
+            public Vector3 position;
+            public Quaternion rotation;
+            public Vector3 scale;
+        }
 
         public static bool Save(string path)
         {
@@ -46,33 +59,13 @@ namespace BabyBlocks
                 w.Write(Magic);
                 w.Write(FormatVersion);
 
-                var objects = mgr.Objects;
+                var records = BuildSortedRecords(mgr);
+                w.Write(records.Count);
 
-                // Count saveable objects first (only those with a valid metadata index).
-                int saveCount = 0;
-                foreach (var leo in objects)
-                {
-                    if (leo == null) continue;
-                    if (PropMetadataPanel.GetMetaIndex(leo.addressableKey) > 0) saveCount++;
-                }
-                w.Write(saveCount);
+                for (int i = 0; i < records.Count; i++)
+                    WriteRecord(w, records[i]);
 
-                int written = 0;
-                foreach (var leo in objects)
-                {
-                    if (leo == null) continue;
-                    int metaIndex = PropMetadataPanel.GetMetaIndex(leo.addressableKey);
-                    if (metaIndex <= 0) continue;
-
-                    w.Write(metaIndex);
-                    var t = leo.transform;
-                    w.Write(t.position.x);  w.Write(t.position.y);  w.Write(t.position.z);
-                    w.Write(t.rotation.x);  w.Write(t.rotation.y);  w.Write(t.rotation.z);  w.Write(t.rotation.w);
-                    w.Write(t.localScale.x); w.Write(t.localScale.y); w.Write(t.localScale.z);
-                    written++;
-                }
-
-                MelonLogger.Msg($"[SaveLoad] Saved {written} object(s) → {path}");
+                MelonLogger.Msg($"[SaveLoad] Saved {records.Count} object(s) → {path}");
                 return true;
             }
             catch (Exception e)
@@ -112,13 +105,14 @@ namespace BabyBlocks
                 for (int i = 0; i < count; i++)
                 {
                     string propId;
+                    int chunkIndex = -1;
                     if (version == 1)
                     {
                         // Legacy: string propId + metaIndex (discarded — use propId directly).
                         propId = ReadLegacyString(r);
                         r.ReadInt32();
                     }
-                    else
+                    else if (version == 2)
                     {
                         int metaIndex = r.ReadInt32();
                         propId = PropMetadataPanel.FindIdByIndex(metaIndex);
@@ -131,9 +125,24 @@ namespace BabyBlocks
                             continue;
                         }
                     }
+                    else
+                    {
+                        int metaIndex = r.ReadInt32();
+                        chunkIndex = r.ReadByte();
+                        propId = PropMetadataPanel.FindIdByIndex(metaIndex);
+                        if (string.IsNullOrEmpty(propId))
+                        {
+                            MelonLogger.Warning($"[SaveLoad] No prop for index {metaIndex}");
+                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // pos
+                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // rot
+                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // scale
+                            continue;
+                        }
+                    }
 
                     var pos   = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                    var rot   = new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    var rot   = version == 3 ? ReadCompactRotation(r)
+                                              : new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
                     var scale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
 
                     var info = PropLibrary.FindById(propId);
@@ -148,6 +157,12 @@ namespace BabyBlocks
 
                     leo.transform.rotation   = rot;
                     leo.transform.localScale = scale;
+                    if (version == 3 && chunkIndex >= 0)
+                    {
+                        int safeChunk = Mathf.Clamp(chunkIndex, 0, 63);
+                        leo.chunkIndex = safeChunk;
+                        leo.chunkCoord = new Vector2Int(safeChunk % 8, safeChunk / 8);
+                    }
                     spawned++;
                 }
 
@@ -167,6 +182,84 @@ namespace BabyBlocks
             int len = r.ReadInt32();
             if (len <= 0) return "";
             return Encoding.UTF8.GetString(r.ReadBytes(len));
+        }
+
+        static List<SaveRecord> BuildSortedRecords(LevelEditorManager mgr)
+        {
+            var records = new List<SaveRecord>();
+            if (mgr == null) return records;
+
+            foreach (var leo in mgr.Objects)
+            {
+                if (leo == null || string.IsNullOrEmpty(leo.addressableKey)) continue;
+                int metaIndex = PropMetadataPanel.GetMetaIndex(leo.addressableKey);
+                if (metaIndex <= 0) continue;
+
+                var position = leo.hasLoopBasePosition ? leo.loopBasePosition : leo.transform.position;
+                records.Add(new SaveRecord
+                {
+                    obj = leo,
+                    metaIndex = metaIndex,
+                    chunkIndex = LevelEditorManager.GetChunkIndex(position),
+                    position = position,
+                    rotation = CanonicalizeRotation(leo.transform.rotation),
+                    scale = leo.transform.localScale,
+                });
+            }
+
+            records.Sort(CompareRecords);
+            return records;
+        }
+
+        static int CompareRecords(SaveRecord a, SaveRecord b)
+        {
+            int chunkCompare = a.chunkIndex.CompareTo(b.chunkIndex);
+            if (chunkCompare != 0) return chunkCompare;
+
+            int zCompare = a.position.z.CompareTo(b.position.z);
+            if (zCompare != 0) return zCompare;
+
+            int xCompare = a.position.x.CompareTo(b.position.x);
+            if (xCompare != 0) return xCompare;
+
+            int yCompare = a.position.y.CompareTo(b.position.y);
+            if (yCompare != 0) return yCompare;
+
+            return string.Compare(a.obj?.addressableKey, b.obj?.addressableKey, StringComparison.Ordinal);
+        }
+
+        static void WriteRecord(BinaryWriter w, SaveRecord record)
+        {
+            w.Write(record.metaIndex);
+            w.Write((byte)Mathf.Clamp(record.chunkIndex, 0, 255));
+            w.Write(record.position.x);  w.Write(record.position.y);  w.Write(record.position.z);
+            WriteCompactRotation(w, record.rotation);
+            w.Write(record.scale.x); w.Write(record.scale.y); w.Write(record.scale.z);
+        }
+
+        static void WriteCompactRotation(BinaryWriter w, Quaternion rotation)
+        {
+            rotation = CanonicalizeRotation(rotation);
+            w.Write(rotation.x);
+            w.Write(rotation.y);
+            w.Write(rotation.z);
+        }
+
+        static Quaternion ReadCompactRotation(BinaryReader r)
+        {
+            float x = r.ReadSingle();
+            float y = r.ReadSingle();
+            float z = r.ReadSingle();
+            float w = 1f - (x * x + y * y + z * z);
+            w = w > 0f ? Mathf.Sqrt(w) : 0f;
+            return new Quaternion(x, y, z, w);
+        }
+
+        static Quaternion CanonicalizeRotation(Quaternion rotation)
+        {
+            if (rotation.w < 0f)
+                rotation = new Quaternion(-rotation.x, -rotation.y, -rotation.z, -rotation.w);
+            return rotation;
         }
     }
 
@@ -307,7 +400,7 @@ namespace BabyBlocks
     static class SaveLoadWindow
     {
         const float WinW   = 310f;
-        const float WinH   = 136f;
+        const float WinH   = 160f;
         const float HeaderH= 30f;
         const float Pad    = 7f;
 
@@ -394,6 +487,13 @@ namespace BabyBlocks
                 DoClear();
 
             contentY += 26f;
+
+            bool newLooping = GUI.Toggle(new Rect(contentX, contentY, innerW, 20f),
+                LevelEditorManager.ChunkLoopingEnabled, "Chunk looping");
+            if (newLooping != LevelEditorManager.ChunkLoopingEnabled)
+                LevelEditorManager.ChunkLoopingEnabled = newLooping;
+
+            contentY += 24f;
 
             // File path text field + browse button
             float browseW = 26f;

@@ -1878,6 +1878,8 @@ namespace BabyBlocks
                 var r = t.GetComponent<Renderer>();
                 if (r != null) r.enabled = false;
             }
+
+            LevelEditorManager.NotifyVisualStateChanged(root);
         }
 
         public static void ApplyMaterialOverridesToRoot(string propId, GameObject root)

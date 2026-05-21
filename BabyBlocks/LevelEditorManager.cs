@@ -10,6 +10,12 @@ namespace BabyBlocks
     {
         public LevelEditorManager(IntPtr ptr) : base(ptr) { }
 
+        const float WorldLoopSize = 512f;
+        const float ChunkWorldSize = 64f;
+        const int ChunksPerAxis = (int)(WorldLoopSize / ChunkWorldSize);
+
+        public static bool ChunkLoopingEnabled = true;
+
         public static LevelEditorManager Instance { get; private set; }
 
         readonly List<LevelEditorObject> _objects = new();
@@ -66,6 +72,7 @@ namespace BabyBlocks
             leo.objectType     = "Addressable";
             leo.addressableKey = info.id;
             _objects.Add(leo);
+            InitializeLoopBase(leo, position);
             PropLibrary.AddRef(info.id);
             return leo;
         }
@@ -300,6 +307,7 @@ namespace BabyBlocks
             var leo = go.AddComponent<LevelEditorObject>();
             leo.objectType = type.ToString();
             _objects.Add(leo);
+            InitializeLoopBase(leo, position);
             return leo;
         }
 
@@ -312,6 +320,137 @@ namespace BabyBlocks
             if (!string.IsNullOrEmpty(obj.addressableKey))
                 PropLibrary.RemoveRef(obj.addressableKey);
             Destroy(obj.gameObject);
+        }
+
+        public static Vector2Int GetChunkCoord(Vector3 position)
+        {
+            float wrappedX = Mathf.Repeat(position.x + WorldLoopSize * 0.5f, WorldLoopSize);
+            float wrappedZ = Mathf.Repeat(position.z + WorldLoopSize * 0.5f, WorldLoopSize);
+
+            int chunkX = Mathf.Clamp(Mathf.FloorToInt(wrappedX / ChunkWorldSize), 0, ChunksPerAxis - 1);
+            int chunkZ = Mathf.Clamp(Mathf.FloorToInt(wrappedZ / ChunkWorldSize), 0, ChunksPerAxis - 1);
+            return new Vector2Int(chunkX, chunkZ);
+        }
+
+        public static int GetChunkIndex(Vector3 position)
+            => GetChunkIndex(GetChunkCoord(position));
+
+        public static int GetChunkIndex(Vector2Int chunkCoord)
+            => chunkCoord.y * ChunksPerAxis + chunkCoord.x;
+
+        public static void NotifyVisualStateChanged(GameObject root)
+        {
+        }
+
+        public void SyncLoopBase(LevelEditorObject obj)
+        {
+            if (obj == null) return;
+            obj.loopBasePosition = obj.transform.position;
+            obj.hasLoopBasePosition = true;
+            UpdateChunkData(obj, obj.loopBasePosition);
+        }
+
+        public void SyncLoopBases(IEnumerable<LevelEditorObject> objects)
+        {
+            if (objects == null) return;
+            foreach (var obj in objects)
+                SyncLoopBase(obj);
+        }
+
+        void Update()
+        {
+            RefreshChunkMemberships();
+            ApplyChunkLooping();
+        }
+
+        void RefreshChunkMemberships()
+        {
+            for (int i = 0; i < _objects.Count; i++)
+            {
+                var obj = _objects[i];
+                if (obj == null) continue;
+                UpdateChunkData(obj, GetChunkSourcePosition(obj));
+            }
+        }
+
+        void UpdateChunkData(LevelEditorObject obj, Vector3 position)
+        {
+            if (obj == null) return;
+
+            var coord = GetChunkCoord(position);
+            int index = GetChunkIndex(coord);
+            obj.chunkCoord = coord;
+            obj.chunkIndex = index;
+        }
+
+        void ApplyChunkLooping()
+        {
+            var reference = GetRenderReference();
+            if (reference == null || !ChunkLoopingEnabled || LevelEditor.isDragging || PropPalette.IsDragging)
+                return;
+
+            for (int i = 0; i < _objects.Count; i++)
+            {
+                var obj = _objects[i];
+                if (obj == null) continue;
+
+                var basePos = GetLoopBasePosition(obj);
+                var loopedPos = GetLoopedPosition(basePos, reference.position);
+                if (obj.transform.position != loopedPos)
+                    obj.transform.position = loopedPos;
+
+                UpdateChunkData(obj, basePos);
+            }
+        }
+
+        Vector3 GetChunkSourcePosition(LevelEditorObject obj)
+            => GetLoopBasePosition(obj);
+
+        Vector3 GetLoopBasePosition(LevelEditorObject obj)
+        {
+            if (obj == null) return Vector3.zero;
+            if (!obj.hasLoopBasePosition)
+            {
+                obj.loopBasePosition = obj.transform.position;
+                obj.hasLoopBasePosition = true;
+            }
+            return obj.loopBasePosition;
+        }
+
+        void InitializeLoopBase(LevelEditorObject obj, Vector3 position)
+        {
+            if (obj == null) return;
+            obj.loopBasePosition = position;
+            obj.hasLoopBasePosition = true;
+            UpdateChunkData(obj, position);
+        }
+
+        Vector3 GetLoopedPosition(Vector3 basePosition, Vector3 referencePosition)
+        {
+            float shiftX = Mathf.Round((referencePosition.x - basePosition.x) / WorldLoopSize) * WorldLoopSize;
+            float shiftZ = Mathf.Round((referencePosition.z - basePosition.z) / WorldLoopSize) * WorldLoopSize;
+            return new Vector3(basePosition.x + shiftX, basePosition.y, basePosition.z + shiftZ);
+        }
+
+        Transform GetRenderReference()
+        {
+            var mainCam = Camera.main;
+            if (mainCam != null)
+                return mainCam.transform;
+
+            var player = PlayerMovement.me;
+            if (player == null) return null;
+
+            if (player.flyCam != null && (Core.flyCamActive || player.flyCam.gameObject.activeInHierarchy))
+                return player.flyCam.transform;
+
+            return player.transform;
+        }
+
+        static int WrappedChunkDelta(int a, int b)
+        {
+            int delta = Mathf.Abs(a - b);
+            return Mathf.Min(delta, ChunksPerAxis - delta);
         }
 
         public void RemoveAll()
