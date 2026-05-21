@@ -67,8 +67,21 @@ namespace BabyBlocks
         static bool _pivotOverrideActive;
         static Vector3 _pivotOverride;
 
+        // Per-axis camera-side flipping: arrow pivots and plane handles always face the camera.
+        static readonly Quaternion FlipArrowQ   = Quaternion.Euler(180f, 0f, 0f); // flips +Y→−Y in pivot-local space
+        static Transform[]  _axisPivots   = new Transform[3];   // GizmoPivot_i transforms (own arrow collider as child)
+        static Transform[]  _planeHandles = new Transform[3];   // plane-handle collider transforms
+        static bool[]       _axisFlipped  = new bool[3];        // current per-axis flip state
+
         public static bool IsReady => _root != null && _overlayCam != null;
         public static Vector3 PivotPosition => _pivotPos;
+
+        /// <summary>
+        /// Returns the effective pivot rotation for axis i, accounting for the camera-side flip.
+        /// PivotRots[i] * FlipArrowQ reverses the arrow direction (used by scale drag logic).
+        /// </summary>
+        public static Quaternion GetEffectivePivotRot(int i) =>
+            i >= 0 && i < 3 && _axisFlipped[i] ? PivotRots[i] * FlipArrowQ : PivotRots[i];
 
         public static void SetPivotOverride(Vector3 pivot)
         {
@@ -112,6 +125,37 @@ namespace BabyBlocks
             bool rotating = tool == LevelEditor.ToolMode.Rotate;
             if (_arrowHandles != null) _arrowHandles.SetActive(!rotating);
             if (_ringHandles  != null) _ringHandles.SetActive(rotating);
+
+            // ── Per-axis camera-side flip ──────────────────────────────────────────
+            // For each arrow axis: if the arrow points away from the camera, flip it
+            // 180° so the handle is always on the camera-facing side.
+            // Rotate mode uses world-aligned rings and is never flipped.
+            for (int i = 0; i < 3; i++)
+            {
+                if (!rotating && _axisPivots[i] != null)
+                {
+                    var arrowWorldDir = _root.transform.rotation * (PivotRots[i] * Vector3.up);
+                    _axisFlipped[i]   = Vector3.Dot(arrowWorldDir, mainCam.transform.position - _pivotPos) < 0;
+                    _axisPivots[i].localRotation = GetEffectivePivotRot(i);
+                }
+                else
+                {
+                    _axisFlipped[i] = false;
+                    if (_axisPivots[i] != null) _axisPivots[i].localRotation = PivotRots[i];
+                }
+            }
+            // Move each plane handle to the diagonal of its two (possibly flipped) axes.
+            for (int pi = 0; pi < 3; pi++)
+            {
+                if (_planeHandles[pi] == null) continue;
+                int aIdx  = pi == 0 ? 0 : pi == 1 ? 1 : 0;
+                int bIdx  = pi == 0 ? 1 : pi == 1 ? 2 : 2;
+                var signA = _axisFlipped[aIdx] ? -1f : 1f;
+                var signB = _axisFlipped[bIdx] ? -1f : 1f;
+                var dirA  = (PivotRots[aIdx] * Vector3.up) * signA;
+                var dirB  = (PivotRots[bIdx] * Vector3.up) * signB;
+                _planeHandles[pi].localPosition = (dirA + dirB) * PlaneSizeMove * 0.5f;
+            }
 
             if (_overlayCam != null)
             {
@@ -215,9 +259,6 @@ namespace BabyBlocks
             var  tipPos    = scaleMode ? ScaleTipPos   : TipPos;
             var  tipScale  = scaleMode ? ScaleTipScale : TipScale;
             var  planeSize  = scaleMode ? PlaneSizeScale : PlaneSizeMove;
-            var  planePosXY = new Vector3(planeSize * 0.5f, planeSize * 0.5f, 0f);
-            var  planePosYZ = new Vector3(0f, planeSize * 0.5f, -planeSize * 0.5f);
-            var  planePosXZ = new Vector3(planeSize * 0.5f, 0f, -planeSize * 0.5f);
             var  planeScaleXY = new Vector3(planeSize, planeSize, PlaneThickness);
             var  planeScaleYZ = new Vector3(PlaneThickness, planeSize, planeSize);
             var  planeScaleXZ = new Vector3(planeSize, PlaneThickness, planeSize);
@@ -225,7 +266,7 @@ namespace BabyBlocks
             var rootRot = _root.transform.rotation;
             for (int i = 0; i < 3; i++)
             {
-                var rot = rootRot * PivotRots[i];
+                var rot = rootRot * GetEffectivePivotRot(i);   // flips toward camera when needed
                 var mat = (hoveredAxis == i && _hoverMats != null) ? _hoverMats[i] : _mats[i];
 
                 Graphics.DrawMesh(_shaftMesh,
@@ -253,7 +294,12 @@ namespace BabyBlocks
                     var mat = (hoveredAxis == axisIndex) ? _planeHoverMats[i] : _planeMats[i];
                     if (mat == null) continue;
 
-                    Vector3 localPos  = i == 0 ? planePosXY : i == 1 ? planePosYZ : planePosXZ;
+                    // Compute plane handle position as the diagonal of its two (possibly flipped) axes.
+                    int aIdx = i == 0 ? 0 : i == 1 ? 1 : 0;
+                    int bIdx = i == 0 ? 1 : i == 1 ? 2 : 2;
+                    var dirA     = GetEffectivePivotRot(aIdx) * Vector3.up;
+                    var dirB     = GetEffectivePivotRot(bIdx) * Vector3.up;
+                    Vector3 localPos  = (dirA + dirB) * planeSize * 0.5f;
                     Vector3 localSize = i == 0 ? planeScaleXY : i == 1 ? planeScaleYZ : planeScaleXZ;
                     var pos = origin + rootRot * (localPos * s);
 
@@ -539,6 +585,7 @@ namespace BabyBlocks
                 var pivot = new GameObject($"GizmoPivot_{i}");
                 pivot.transform.SetParent(_arrowHandles.transform, false);
                 pivot.transform.localRotation = PivotRots[i];
+                _axisPivots[i] = pivot.transform;   // stored for per-frame flip updates
 
                 var col = new GameObject($"GizmoCol_{i}");
                 col.transform.SetParent(pivot.transform, false);
@@ -571,6 +618,7 @@ namespace BabyBlocks
                 col.layer = Layer;
                 col.AddComponent<BoxCollider>();
                 col.AddComponent<GizmoHandle>().axisIndex = 4 + i;
+                _planeHandles[i] = col.transform;   // stored for per-frame flip updates
             }
 
             _ringHandles = new GameObject("RingHandles");

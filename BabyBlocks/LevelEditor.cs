@@ -478,14 +478,12 @@ namespace BabyBlocks
                 {
                     if (TryGetPlaneAxes(_dragAxis, out int aIdx, out int bIdx))
                     {
-                        // Project onto the diagonal that matches the plane handle's visual position.
-                        // Positions in gizmo-local space: XY=(+X,+Y,0), YZ=(0,+Y,-Z), XZ=(+X,0,-Z).
-                        // In local mode the gizmo inherits obj.rotation; global mode uses identity.
-                        var   rot            = LocalMode ? selectedObject.transform.rotation : Quaternion.identity;
-                        var   planeLocalDir  = _dragAxis == 4 ? new Vector3(1f, 1f,  0f).normalized  // XY
-                                             : _dragAxis == 5 ? new Vector3(0f, 1f, -1f).normalized  // YZ
-                                                              : new Vector3(1f, 0f, -1f).normalized; // XZ
-                        var   localDiag      = rot * planeLocalDir;
+                        // Diagonal of the plane handle's two (possibly camera-flipped) axes.
+                        // GetEffectivePivotRot already accounts for the per-axis flip state.
+                        var   rot    = LocalMode ? selectedObject.transform.rotation : Quaternion.identity;
+                        var   dirA   = GizmoRenderer.GetEffectivePivotRot(aIdx) * Vector3.up;
+                        var   dirB   = GizmoRenderer.GetEffectivePivotRot(bIdx) * Vector3.up;
+                        var   localDiag = rot * (dirA + dirB).normalized;
                         var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
                         float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localDiag, cam);
                         float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
@@ -540,11 +538,10 @@ namespace BabyBlocks
             // ── AXES 0-2 (single-axis arrows) ─────────────────────────────────────────
             if (currentTool == ToolMode.Scale)
             {
-                // Project accumulated mouse delta onto the visual arrow direction.
-                // PivotRots[i] * up gives the direction each arrow is drawn in gizmo-local space.
+                // Project onto the effective arrow direction (accounts for camera-side flip).
                 // In local mode the gizmo inherits obj.rotation, so we apply it here too.
                 var   scaleObjRot    = LocalMode ? selectedObject.transform.rotation : Quaternion.identity;
-                var   localAxis      = scaleObjRot * (GizmoRenderer.PivotRots[_dragAxis] * Vector3.up);
+                var   localAxis      = scaleObjRot * (GizmoRenderer.GetEffectivePivotRot(_dragAxis) * Vector3.up);
                 var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
                 float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localAxis, cam);
                 float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
