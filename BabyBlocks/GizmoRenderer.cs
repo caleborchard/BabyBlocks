@@ -100,9 +100,12 @@ namespace BabyBlocks
 
             _pivotPos = _pivotOverrideActive ? _pivotOverride : GetSelectionBoundsCenter(selection);
             _root.transform.position = _pivotPos;
-            _root.transform.rotation = (tool == LevelEditor.ToolMode.Scale)
-                ? (primary != null ? primary.transform.rotation : Quaternion.identity)
-                : Quaternion.identity;
+            // Rotate the gizmo with the selected object in local mode (move + scale only).
+            // Rotate tool always uses world-aligned rings.
+            bool useObjRot = LevelEditor.LocalMode
+                && tool != LevelEditor.ToolMode.Rotate
+                && primary != null;
+            _root.transform.rotation = useObjRot ? primary.transform.rotation : Quaternion.identity;
             float dist = Vector3.Distance(mainCam.transform.position, _root.transform.position);
             _root.transform.localScale = Vector3.one * Mathf.Max(dist * 0.14f, 0.02f);
 

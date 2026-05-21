@@ -12,6 +12,7 @@ namespace BabyBlocks
         public static ToolMode          currentTool    = ToolMode.Translate;
         public static LevelEditorObject selectedObject;
         public static bool              isDragging     => _isDragging;
+        public static bool              LocalMode      = true;   // true = local axes; false = world axes (G key)
         public static IReadOnlyList<LevelEditorObject> SelectedObjects => _selection;
 
         static readonly List<LevelEditorObject> _selection = new();
@@ -119,6 +120,9 @@ namespace BabyBlocks
                             : currentTool == ToolMode.Scale     ? ToolMode.Rotate
                             : ToolMode.Translate;
 
+            if (!blockShortcuts && Input.GetKeyDown(KeyCode.G))
+                LocalMode = !LocalMode;
+
             bool ctrlDown = !blockShortcuts
                 && (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl));
 
@@ -197,10 +201,11 @@ namespace BabyBlocks
             PropMetadataPanel.DrawGUI(selectedObject);
             SaveLoadWindow.DrawGUI(Event.current);
 
-            string tool = currentTool == ToolMode.Translate ? "MOVE"
-                        : currentTool == ToolMode.Scale     ? "SCALE" : "ROTATE";
-            string msg = selectedObject != null
-                ? $"LEVEL EDITOR  [{tool}]  |  Drag arrows / sphere  |  Space = switch tool  |  ` = toggle editor  |  RMB = orbit"
+            string tool  = currentTool == ToolMode.Translate ? "MOVE"
+                         : currentTool == ToolMode.Scale     ? "SCALE" : "ROTATE";
+            string space = LocalMode ? "LOCAL" : "GLOBAL";
+            string msg   = selectedObject != null
+                ? $"LEVEL EDITOR  [{tool}] [{space}]  |  Space = switch tool  |  G = local/global  |  ` = toggle editor  |  RMB = orbit"
                 : "LEVEL EDITOR  |  Drag a prop from the palette onto the terrain  |  RMB = orbit";
 
             GUI.color = new Color(0f, 0f, 0f, 0.6f);
@@ -328,15 +333,15 @@ namespace BabyBlocks
             }
             else if (TryGetPlaneNormal(_dragAxis, out var planeNormal))
             {
-                _dragPlaneNormal = currentTool == ToolMode.Scale
+                _dragPlaneNormal = LocalMode
                     ? selectedObject.transform.rotation * planeNormal
                     : planeNormal;
             }
             else
             {
-                // Single-axis drag: build a camera-facing plane containing the drag axis.
-                // For scale, use the object-local axis so the drag plane aligns with the arrow.
-                var axis = currentTool == ToolMode.Scale
+                // Single-axis drag: build a camera-facing plane that contains the drag axis.
+                // In local mode the axis is object-local so the drag plane aligns with the visual arrow.
+                var axis = LocalMode
                     ? selectedObject.transform.rotation * AxisVec(_dragAxis)
                     : AxisVec(_dragAxis);
                 var camFwd = cam.transform.forward;
@@ -475,8 +480,8 @@ namespace BabyBlocks
                     {
                         // Project onto the diagonal that matches the plane handle's visual position.
                         // Positions in gizmo-local space: XY=(+X,+Y,0), YZ=(0,+Y,-Z), XZ=(+X,0,-Z).
-                        // Z is -Z (not +Z) because the blue arrow's PivotRot points in local -Z.
-                        var   rot            = selectedObject.transform.rotation;
+                        // In local mode the gizmo inherits obj.rotation; global mode uses identity.
+                        var   rot            = LocalMode ? selectedObject.transform.rotation : Quaternion.identity;
                         var   planeLocalDir  = _dragAxis == 4 ? new Vector3(1f, 1f,  0f).normalized  // XY
                                              : _dragAxis == 5 ? new Vector3(0f, 1f, -1f).normalized  // YZ
                                                               : new Vector3(1f, 0f, -1f).normalized; // XZ
@@ -501,8 +506,9 @@ namespace BabyBlocks
                     // Translate: screen-space 2-D solve for natural diagonal movement at any angle.
                     if (TryGetPlaneAxes(_dragAxis, out int aIdx, out int bIdx))
                     {
-                        var   axA     = AxisVec(aIdx);
-                        var   axB     = AxisVec(bIdx);
+                        var objRot = selectedObject.transform.rotation;
+                        var   axA  = LocalMode ? objRot * AxisVec(aIdx) : AxisVec(aIdx);
+                        var   axB  = LocalMode ? objRot * AxisVec(bIdx) : AxisVec(bIdx);
                         var   oScreen = cam.WorldToScreenPoint(_dragPivot);
                         var   screenA = new Vector2(cam.WorldToScreenPoint(_dragPivot + axA).x - oScreen.x,
                                                     cam.WorldToScreenPoint(_dragPivot + axA).y - oScreen.y);
@@ -534,10 +540,11 @@ namespace BabyBlocks
             // ── AXES 0-2 (single-axis arrows) ─────────────────────────────────────────
             if (currentTool == ToolMode.Scale)
             {
-                // Project accumulated mouse delta onto the actual visual arrow direction.
-                // PivotRots[i] * up gives the direction each arrow is drawn in (gizmo-local space),
-                // which differs from AxisVec for Z: the blue arrow points in local -Z, not +Z.
-                var   localAxis      = selectedObject.transform.rotation * (GizmoRenderer.PivotRots[_dragAxis] * Vector3.up);
+                // Project accumulated mouse delta onto the visual arrow direction.
+                // PivotRots[i] * up gives the direction each arrow is drawn in gizmo-local space.
+                // In local mode the gizmo inherits obj.rotation, so we apply it here too.
+                var   scaleObjRot    = LocalMode ? selectedObject.transform.rotation : Quaternion.identity;
+                var   localAxis      = scaleObjRot * (GizmoRenderer.PivotRots[_dragAxis] * Vector3.up);
                 var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
                 float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localAxis, cam);
                 float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
@@ -553,7 +560,8 @@ namespace BabyBlocks
                 return;
             }
 
-            var ax = AxisVec(_dragAxis);
+            var ax = LocalMode ? selectedObject.transform.rotation * AxisVec(_dragAxis)
+                               : AxisVec(_dragAxis);
             ApplyTranslation(ax * Vector3.Dot(delta, ax));
         }
 
