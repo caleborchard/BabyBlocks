@@ -212,7 +212,7 @@ namespace BabyBlocks
             {
                 _all.Sort(primitiveCount, _all.Count - primitiveCount,
                     Comparer<PropInfo>.Create((a, b) =>
-                        string.Compare(a.displayName, b.displayName, StringComparison.OrdinalIgnoreCase)));
+                        NaturalStringCompare(a.displayName, b.displayName)));
             }
 
             IsInitialized = true;
@@ -260,7 +260,7 @@ namespace BabyBlocks
             {
                 string nameA = PropMetadataPanel.GetDisplayName(a.id) ?? a.displayName;
                 string nameB = PropMetadataPanel.GetDisplayName(b.id) ?? b.displayName;
-                return string.Compare(nameA, nameB, StringComparison.OrdinalIgnoreCase);
+                return NaturalStringCompare(nameA, nameB);
             });
         }
 
@@ -660,6 +660,65 @@ namespace BabyBlocks
             if (after >= name.Length) return false;
             char c = name[after];
             return c >= '1' && c <= '9';
+        }
+
+        // Natural string comparison: compares alphabetic parts case-insensitively
+        // and numeric parts by numeric value so names like "Rock 2" sort before "Rock 11".
+        static int NaturalStringCompare(string a, string b)
+        {
+            if (a == b) return 0;
+            if (a == null) return -1;
+            if (b == null) return 1;
+
+            int i = 0, j = 0;
+            int na = a.Length, nb = b.Length;
+            while (i < na && j < nb)
+            {
+                char ca = a[i];
+                char cb = b[j];
+
+                if (char.IsDigit(ca) && char.IsDigit(cb))
+                {
+                    int ia = i; while (ia < na && char.IsDigit(a[ia])) ia++;
+                    int ib = j; while (ib < nb && char.IsDigit(b[ib])) ib++;
+
+                    int sa = i; while (sa < ia && a[sa] == '0') sa++;
+                    int sb = j; while (sb < ib && b[sb] == '0') sb++;
+
+                    int lena = ia - sa;
+                    int lenb = ib - sb;
+                    if (lena != lenb) return lena < lenb ? -1 : 1;
+
+                    for (int k = 0; k < lena; k++)
+                    {
+                        char da = a[sa + k];
+                        char db = b[sb + k];
+                        if (da != db) return da < db ? -1 : 1;
+                    }
+
+                    int origLenA = ia - i;
+                    int origLenB = ib - j;
+                    if (origLenA != origLenB) return origLenA < origLenB ? -1 : 1;
+
+                    i = ia; j = ib;
+                    continue;
+                }
+
+                int ja = i; while (ja < na && !char.IsDigit(a[ja])) ja++;
+                int jb2 = j; while (jb2 < nb && !char.IsDigit(b[jb2])) jb2++;
+
+                int lenA = ja - i;
+                int lenB = jb2 - j;
+                int cmp = string.Compare(a, i, b, j, Math.Min(lenA, lenB), StringComparison.OrdinalIgnoreCase);
+                if (cmp != 0) return cmp;
+                if (lenA != lenB) return lenA < lenB ? -1 : 1;
+
+                i = ja; j = jb2;
+            }
+
+            if (i < na) return 1;
+            if (j < nb) return -1;
+            return 0;
         }
 
         public static PropInfo FindById(string id) => _byId.TryGetValue(id, out var p) ? p : null;
