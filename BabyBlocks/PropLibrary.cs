@@ -243,13 +243,22 @@ namespace BabyBlocks
 
             // Non-debug: only props that have a category in metadata, filtered by selected category.
             string selectedCategory = PropPalette.SelectedCategory;
+            bool hasSearch = !string.IsNullOrEmpty(SearchText);
             foreach (var p in _all)
             {
                 if (!PropMetadataPanel.HasCategory(p.id)) continue;
+                string cat = PropMetadataPanel.GetCategory(p.id);
                 if (selectedCategory != null)
                 {
-                    string cat = PropMetadataPanel.GetCategory(p.id);
                     if (!string.Equals(cat, selectedCategory, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                }
+                if (hasSearch)
+                {
+                    string displayName = PropMetadataPanel.GetDisplayName(p.id) ?? p.displayName;
+                    if (displayName.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0
+                        && p.id.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0
+                        && (cat == null || cat.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0))
                         continue;
                 }
                 _filtered.Add(p);

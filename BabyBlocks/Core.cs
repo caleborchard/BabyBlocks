@@ -50,8 +50,10 @@ namespace BabyBlocks
                 ToggleEditorMode();
 
             // Keep terrain streaming around the fly cam rather than the hidden player.
-            // Skipped during active teleports so TeleportCo can pre-load the destination.
-            if (flyCamActive && !Menu.me.teleporting)
+            // Skipped during active teleports (so TeleportCo can pre-load the destination)
+            // and during fly-cam teleport exit (so ToggleFlyMode/ToggleFlyCam restores the
+            // correct player reference without us re-overriding it for 2 extra frames).
+            if (flyCamActive && !Menu.me.teleporting && !_flyTeleportInProgress)
             {
                 var player = PlayerMovement.me;
                 if (player != null)
