@@ -123,11 +123,7 @@ namespace BabyBlocks
 
             _pivotPos = _pivotOverrideActive ? _pivotOverride : GetSelectionBoundsCenter(selection);
             _root.transform.position = _pivotPos;
-            // Rotate the gizmo with the selected object in local mode (move + scale only).
-            // Rotate tool always uses world-aligned rings.
-            bool useObjRot = LevelEditor.LocalMode
-                && tool != LevelEditor.ToolMode.Rotate
-                && primary != null;
+            bool useObjRot = LevelEditor.LocalMode && primary != null;
             _root.transform.rotation = useObjRot ? primary.transform.rotation : Quaternion.identity;
             float dist = Vector3.Distance(mainCam.transform.position, _root.transform.position);
             _root.transform.localScale = Vector3.one * Mathf.Max(dist * 0.14f, 0.02f);
@@ -249,11 +245,12 @@ namespace BabyBlocks
                         Matrix4x4.TRS(origin, Quaternion.identity, Vector3.one * FreeRotSphereDrawScale * s),
                         frMat, Layer, _overlayCam);
                 }
+                var ringBaseRot = _root.transform.rotation;
                 for (int i = 0; i < 3; i++)
                 {
                     var mat = (hoveredAxis == i && _hoverMats != null) ? _hoverMats[i] : _mats[i];
                     Graphics.DrawMesh(_ringMesh,
-                        Matrix4x4.TRS(origin, RingPivotRots[i], Vector3.one * s),
+                        Matrix4x4.TRS(origin, ringBaseRot * RingPivotRots[i], Vector3.one * s),
                         mat, Layer, _overlayCam);
                 }
                 return;

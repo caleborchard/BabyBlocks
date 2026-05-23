@@ -120,13 +120,13 @@ namespace BabyBlocks
                             : currentTool == ToolMode.Scale     ? ToolMode.Rotate
                             : ToolMode.Translate;
 
-            if (!blockShortcuts && Input.GetKeyDown(KeyCode.G))
+            if (!blockShortcuts && Input.GetKeyDown(KeyCode.T))
                 LocalMode = !LocalMode;
 
             bool ctrlDown = !blockShortcuts
                 && (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl));
 
-            if (!blockShortcuts && Input.GetKeyDown(KeyCode.X))
+            if (!blockShortcuts && !ctrlDown && Input.GetKeyDown(KeyCode.Y))
                 _snapEnabled = !_snapEnabled;
 
             if (!blockShortcuts)
@@ -206,14 +206,16 @@ namespace BabyBlocks
             string tool  = currentTool == ToolMode.Translate ? "MOVE"
                          : currentTool == ToolMode.Scale     ? "SCALE" : "ROTATE";
             string space = LocalMode ? "LOCAL" : "GLOBAL";
+            string snapTag = _snapEnabled ? " [SNAP]" : "";
             string msg   = selectedObject != null
-                ? $"LEVEL EDITOR  [{tool}] [{space}]  |  Space = switch tool  |  G = local/global  |  ` = toggle editor  |  RMB = orbit"
-                : "LEVEL EDITOR  |  Drag a prop from the palette onto the terrain  |  RMB = orbit";
+                ? $"LEVEL EDITOR  [{tool}] [{space}]{snapTag}  |  Space=cycle tool  T=local/global  Y=snap  Del=delete  |  R=teleport mode  `=exit to player  |  LMB=teleport  RMB=orbit"
+                : $"LEVEL EDITOR  |  Drag a prop from the palette onto the terrain  |  R=edit mode  `=exit to player  |  LMB=teleport  RMB=orbit";
 
+            float barW = Screen.width - 20f;
             GUI.color = new Color(0f, 0f, 0f, 0.6f);
-            GUI.Box(new Rect(10, Screen.height - 28, 600, 22), "");
+            GUI.Box(new Rect(10, Screen.height - 28, barW, 22), "");
             GUI.color = Color.white;
-            GUI.Label(new Rect(14, Screen.height - 27, 596, 20), msg);
+            GUI.Label(new Rect(14, Screen.height - 27, barW - 8f, 20), msg);
             GUI.color = Color.white;
         }
 
@@ -327,7 +329,9 @@ namespace BabyBlocks
                     return;
                 }
 
-                _dragPlaneNormal = AxisVec(_dragAxis);
+                _dragPlaneNormal = LocalMode && selectedObject != null
+                    ? selectedObject.transform.rotation * AxisVec(_dragAxis)
+                    : AxisVec(_dragAxis);
                 var plane = new Plane(_dragPlaneNormal, _dragPivot);
                 if (plane.Raycast(ray, out float enter))
                     _dragStartHit = ray.GetPoint(enter);
@@ -427,9 +431,9 @@ namespace BabyBlocks
                 var to   = hit - _dragPivot;
                 if (from.sqrMagnitude < 0.001f || to.sqrMagnitude < 0.001f) return;
 
-                float angle = Vector3.SignedAngle(from, to, AxisVec(_dragAxis));
+                float angle = Vector3.SignedAngle(from, to, _dragPlaneNormal);
                 if (_snapEnabled) angle = SnapAngleValue(angle);
-                var deltaRot = Quaternion.AngleAxis(angle, AxisVec(_dragAxis));
+                var deltaRot = Quaternion.AngleAxis(angle, _dragPlaneNormal);
 
                 if (_dragObjects.Count > 1)
                 {

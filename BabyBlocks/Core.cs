@@ -15,8 +15,22 @@ namespace BabyBlocks
         public static bool flyCamActive;
         public static bool cursorMode;
         public static bool DebugMode = true; // For categorizing props in the library, not for general debug logging.
-        static bool _flyTeleportInProgress;
         static float _flyCamNoiseAmplitude = -1f;
+        static bool _refreezePending;
+        static bool _playerFreezeActive;
+        static bool _playerMovementWasEnabled;
+        static bool _playerControllerWasEnabled;
+        static bool _playerRigidbodyWasKinematic;
+        static bool _playerRigidbodyWasUseGravity;
+        static RigidbodyConstraints _playerRigidbodyConstraints;
+        static Vector3 _playerRigidbodyVelocity;
+        static Vector3 _playerRigidbodyAngularVelocity;
+        static float _playerAnimatorSpeed = 1f;
+
+        static PlayerMovement _frozenPlayer;
+        static CharacterController _frozenController;
+        static Rigidbody _frozenRigidbody;
+        static Animator _frozenAnimator;
 
         static MelonPreferences_Category _prefs;
         static MelonPreferences_Entry<string> _lastSavePath;
@@ -46,14 +60,23 @@ namespace BabyBlocks
 
         public override void OnUpdate()
         {
-            if (Input.GetKeyDown(KeyCode.BackQuote) && PlayerMovement.me != null)
+            if (Input.GetKeyDown(KeyCode.R) && PlayerMovement.me != null && !Menu.me.teleporting)
                 ToggleEditorMode();
 
-            // Keep terrain streaming around the fly cam rather than the hidden player.
-            // Skipped during active teleports (so TeleportCo can pre-load the destination)
-            // and during fly-cam teleport exit (so ToggleFlyMode/ToggleFlyCam restores the
-            // correct player reference without us re-overriding it for 2 extra frames).
-            if (flyCamActive && !Menu.me.teleporting && !_flyTeleportInProgress)
+            if (Input.GetKeyDown(KeyCode.BackQuote) && PlayerMovement.me != null && !Menu.me.teleporting)
+                TogglePlayerMode();
+
+            // After a background teleport finishes, re-freeze the player so fly cam stays active.
+            if (flyCamActive && _refreezePending && !Menu.me.teleporting)
+            {
+                var player = PlayerMovement.me;
+                if (player != null)
+                    FreezePlayer(player, true);
+                _refreezePending = false;
+            }
+
+            // Keep terrain streaming around the fly cam rather than the player.
+            if (flyCamActive && !Menu.me.teleporting)
             {
                 var player = PlayerMovement.me;
                 if (player != null)
@@ -85,7 +108,7 @@ namespace BabyBlocks
 
         public override void OnGUI()
         {
-            if (flyCamActive && cursorMode)
+            if (flyCamActive)
                 LevelEditor.OnGUI();
         }
 
@@ -102,10 +125,9 @@ namespace BabyBlocks
             {
                 flyCamActive = true;
                 cursorMode   = false;
+                _refreezePending = false;
                 Cursor.lockState = CursorLockMode.Locked;
-                // Hide player before freezing physics so the A-pose from SwitchToDisabledMode is never visible.
-                player.gameObject.SetActive(false);
-                player.pm.SwitchToDisabledMode();
+                FreezePlayer(player, true);
                 LevelEditor.EnsureManager();
                 PropLibrary.ScanGpuiProps();
                 PropMetadataPanel.InvalidateMaterialSources();
@@ -121,11 +143,13 @@ namespace BabyBlocks
             {
                 flyCamActive = false;
                 cursorMode   = false;
+                _refreezePending = false;
                 Cursor.lockState = CursorLockMode.Locked;
                 Cursor.visible   = false;
+                FreezePlayer(player, false);
+
                 player.pm.SwitchToActiveMode();
                 player.pm.SwitchModes();
-                player.gameObject.SetActive(true);
                 player.OnStandUp();
                 LevelEditor.HideGizmo();
 
@@ -135,6 +159,83 @@ namespace BabyBlocks
                     if (noise != null) noise.m_AmplitudeGain = _flyCamNoiseAmplitude;
                 }
             }
+        }
+
+        static void FreezePlayer(PlayerMovement player, bool frozen)
+        {
+            if (player == null)
+                return;
+
+            if (frozen)
+            {
+                if (_playerFreezeActive && _frozenPlayer == player)
+                    return;
+
+                _frozenPlayer = player;
+                _playerFreezeActive = true;
+
+                _playerMovementWasEnabled = player.enabled;
+                player.enabled = false;
+
+                _frozenController = player.GetComponent<CharacterController>();
+                if (_frozenController != null)
+                {
+                    _playerControllerWasEnabled = _frozenController.enabled;
+                    _frozenController.enabled = false;
+                }
+
+                _frozenRigidbody = player.GetComponent<Rigidbody>();
+                if (_frozenRigidbody != null)
+                {
+                    _playerRigidbodyWasKinematic = _frozenRigidbody.isKinematic;
+                    _playerRigidbodyWasUseGravity = _frozenRigidbody.useGravity;
+                    _playerRigidbodyConstraints = _frozenRigidbody.constraints;
+                    _playerRigidbodyVelocity = _frozenRigidbody.velocity;
+                    _playerRigidbodyAngularVelocity = _frozenRigidbody.angularVelocity;
+
+                    _frozenRigidbody.velocity = Vector3.zero;
+                    _frozenRigidbody.angularVelocity = Vector3.zero;
+                    _frozenRigidbody.isKinematic = true;
+                    _frozenRigidbody.useGravity = false;
+                    _frozenRigidbody.constraints = RigidbodyConstraints.FreezeAll;
+                }
+
+                _frozenAnimator = player.anim;
+                if (_frozenAnimator != null)
+                {
+                    _playerAnimatorSpeed = _frozenAnimator.speed;
+                    _frozenAnimator.speed = 0f;
+                }
+
+                Physics.SyncTransforms();
+                return;
+            }
+
+            if (!_playerFreezeActive || _frozenPlayer != player)
+                return;
+
+            if (_frozenAnimator != null)
+                _frozenAnimator.speed = _playerAnimatorSpeed;
+
+            if (_frozenRigidbody != null)
+            {
+                _frozenRigidbody.constraints = _playerRigidbodyConstraints;
+                _frozenRigidbody.isKinematic = _playerRigidbodyWasKinematic;
+                _frozenRigidbody.useGravity = _playerRigidbodyWasUseGravity;
+                _frozenRigidbody.velocity = _playerRigidbodyVelocity;
+                _frozenRigidbody.angularVelocity = _playerRigidbodyAngularVelocity;
+            }
+
+            if (_frozenController != null)
+                _frozenController.enabled = _playerControllerWasEnabled;
+
+            player.enabled = _playerMovementWasEnabled;
+
+            _playerFreezeActive = false;
+            _frozenPlayer = null;
+            _frozenController = null;
+            _frozenRigidbody = null;
+            _frozenAnimator = null;
         }
 
         static void ToggleCursorMode()
@@ -163,38 +264,52 @@ namespace BabyBlocks
             ToggleCursorMode();
         }
 
+        static void TogglePlayerMode()
+        {
+            if (!flyCamActive)
+            {
+                ToggleFlyMode();
+                ToggleCursorMode();
+                return;
+            }
+
+            ToggleFlyMode();
+        }
+
         public static void HandleFlyCamTeleport(FlyCam flyCam)
         {
-            if (_flyTeleportInProgress || Menu.me.teleporting) return;
+            if (Menu.me.teleporting || _refreezePending) return;
 
+            // Raycast from screen centre — the surface we hit already has collision loaded
+            // (it's visible from the fly cam), so no chunk-loading wait is needed.
             var ray = Camera.main.ScreenPointToRay(new Vector3(Screen.width / 2f, Screen.height / 2f));
             if (!Physics.Raycast(ray, out var hit, 1000f, LayerCache.PropTerrainMask))
                 return;
 
-            // Set animator yaw before teleport so FindBestFootSpots uses the fly cam's facing.
             var player = PlayerMovement.me;
-            if (player != null)
-            {
-                float yaw = flyCam.transform.eulerAngles.y;
-                player.anim.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
-            }
+            if (player == null) return;
 
-            _flyTeleportInProgress = true;
-            Menu.me.Teleport(hit.point);
-            MelonCoroutines.Start(ExitFlyModeAfterTeleport());
-        }
+            // Cast down from just above the hit point to get the clean surface height.
+            Vector3 checkPos;
+            if (Physics.Raycast(hit.point + Vector3.up * 0.5f, Vector3.down, out var groundHit, 10f, LayerCache.PropTerrainMask))
+                checkPos = groundHit.point + Vector3.up;
+            else
+                checkPos = hit.point + Vector3.up;
 
-        static System.Collections.IEnumerator ExitFlyModeAfterTeleport()
-        {
-            while (Menu.me.teleporting)
-                yield return null;
+            // Unfreeze the player so TeleportCo's SetActive/SwitchToDisabledMode sequence
+            // runs on a properly active player — leaving the player frozen causes TeleportCo
+            // to crash silently mid-coroutine, locking controls with teleporting stuck true.
+            FreezePlayer(player, false);
+            player.anim.transform.rotation = Quaternion.Euler(0f, flyCam.transform.eulerAngles.y, 0f);
+            player.pm.SwitchToActiveMode();
+            player.pm.SwitchModes();
 
-            yield return null; // One extra frame for TeleportCo's final cleanup.
+            // Fire the native teleport in the background — fly cam stays active.
+            // The fly cam has been streaming this area, so fullyLoaded is already true.
+            Menu.me.Teleport(checkPos);
 
-            if (flyCamActive)
-                ToggleFlyMode();
-
-            _flyTeleportInProgress = false;
+            // OnUpdate will re-freeze once Menu.me.teleporting drops back to false.
+            _refreezePending = true;
         }
     }
 
@@ -243,4 +358,11 @@ namespace BabyBlocks
             return false;
         }
     }
+
+    [HarmonyPatch(typeof(BBConvoStarter), "OnTriggerEnter")]
+    class BBConvoStarterTriggerPatch
+    {
+        static bool Prefix() => !Core.flyCamActive;
+    }
+
 }
