@@ -1790,6 +1790,105 @@ namespace BabyBlocks
             Load();
         }
 
+        static bool TryGetInfoById(string id, out PropExtraInfo info)
+        {
+            info = null;
+            if (string.IsNullOrEmpty(id)) return false;
+            if (_byId.TryGetValue(id, out info)) return true;
+
+            string canonical = PropLibrary.ResolveCanonicalId(id);
+            return !string.IsNullOrEmpty(canonical) && _byId.TryGetValue(canonical, out info);
+        }
+
+        static bool MergeItem(PropExtraInfo target, PropExtraInfo source)
+        {
+            if (target == null || source == null || ReferenceEquals(target, source)) return false;
+
+            bool changed = false;
+
+            if (target.index <= 0 && source.index > 0) { target.index = source.index; changed = true; }
+            if (string.IsNullOrEmpty(target.displayName) && !string.IsNullOrEmpty(source.displayName)) { target.displayName = source.displayName; changed = true; }
+            if (string.IsNullOrEmpty(target.category) && !string.IsNullOrEmpty(source.category)) { target.category = source.category; changed = true; }
+            if (string.IsNullOrEmpty(target.colliderIgnoredSubmeshes) && !string.IsNullOrEmpty(source.colliderIgnoredSubmeshes)) { target.colliderIgnoredSubmeshes = source.colliderIgnoredSubmeshes; changed = true; }
+            if (string.IsNullOrEmpty(target.overrideMaterialId) && !string.IsNullOrEmpty(source.overrideMaterialId)) { target.overrideMaterialId = source.overrideMaterialId; changed = true; }
+            if (string.IsNullOrEmpty(target.nativeMaterialName) && !string.IsNullOrEmpty(source.nativeMaterialName)) { target.nativeMaterialName = source.nativeMaterialName; changed = true; }
+            if (string.IsNullOrEmpty(target.materialSourcePropId) && !string.IsNullOrEmpty(source.materialSourcePropId)) { target.materialSourcePropId = source.materialSourcePropId; changed = true; }
+            if (string.IsNullOrEmpty(target.surfaceType) && !string.IsNullOrEmpty(source.surfaceType)) { target.surfaceType = source.surfaceType; changed = true; }
+            if (!target.useRenderMeshCollider && source.useRenderMeshCollider) { target.useRenderMeshCollider = true; changed = true; }
+            if (target.forcedMaterialSlots <= 1 && source.forcedMaterialSlots > 1) { target.forcedMaterialSlots = source.forcedMaterialSlots; changed = true; }
+
+            if ((target.disabledRenderers == null || target.disabledRenderers.Count == 0)
+                && source.disabledRenderers != null && source.disabledRenderers.Count > 0)
+            {
+                target.disabledRenderers = new List<string>(source.disabledRenderers);
+                changed = true;
+            }
+
+            if (!HasNonEmptySlot(target.perSlotMaterialOverrides) && HasNonEmptySlot(source.perSlotMaterialOverrides))
+            {
+                target.perSlotMaterialOverrides = new List<string>(source.perSlotMaterialOverrides);
+                changed = true;
+            }
+
+            if (!target.excluded && source.excluded)
+            {
+                target.excluded = true;
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        public static void MigratePropIdsToCanonical()
+        {
+            EnsureLoaded();
+            if (_byId.Count == 0) return;
+
+            bool changed = false;
+            var remaps = new List<(string fromId, string toId, PropExtraInfo item)>();
+            foreach (var kvp in _byId)
+            {
+                string canonical = PropLibrary.ResolveCanonicalId(kvp.Key);
+                if (string.IsNullOrEmpty(canonical) || string.Equals(canonical, kvp.Key, StringComparison.Ordinal))
+                    continue;
+                remaps.Add((kvp.Key, canonical, kvp.Value));
+            }
+
+            for (int i = 0; i < remaps.Count; i++)
+            {
+                var remap = remaps[i];
+                if (!_byId.TryGetValue(remap.fromId, out var source))
+                    continue;
+
+                _byId.Remove(remap.fromId);
+                changed = true;
+
+                source.id = remap.toId;
+                if (_byId.TryGetValue(remap.toId, out var existing))
+                {
+                    if (MergeItem(existing, source)) changed = true;
+                }
+                else
+                {
+                    _byId[remap.toId] = source;
+                }
+            }
+
+            foreach (var item in _byId.Values)
+            {
+                if (item == null || string.IsNullOrEmpty(item.materialSourcePropId)) continue;
+                string canonicalSource = PropLibrary.ResolveCanonicalId(item.materialSourcePropId);
+                if (string.IsNullOrEmpty(canonicalSource)
+                    || string.Equals(canonicalSource, item.materialSourcePropId, StringComparison.Ordinal))
+                    continue;
+
+                item.materialSourcePropId = canonicalSource;
+                changed = true;
+            }
+
+            if (changed) Save();
+        }
+
         public static bool GetUseRenderMeshCollider(string id)
         {
             EnsureLoaded();
@@ -2503,7 +2602,7 @@ namespace BabyBlocks
         public static int GetMetaIndex(string id)
         {
             EnsureLoaded();
-            return _byId.TryGetValue(id, out var info) ? info.index : 0;
+            return TryGetInfoById(id, out var info) ? info.index : 0;
         }
 
         public static string FindIdByIndex(int index)
@@ -2519,7 +2618,7 @@ namespace BabyBlocks
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return null;
-            return _byId.TryGetValue(id, out var info) && !string.IsNullOrEmpty(info.displayName)
+            return TryGetInfoById(id, out var info) && !string.IsNullOrEmpty(info.displayName)
                 ? info.displayName : null;
         }
 
@@ -2527,14 +2626,14 @@ namespace BabyBlocks
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return "";
-            return _byId.TryGetValue(id, out var info) ? (info.category ?? "") : "";
+            return TryGetInfoById(id, out var info) ? (info.category ?? "") : "";
         }
 
         public static bool HasCategory(string id)
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return false;
-            return _byId.TryGetValue(id, out var info) && !string.IsNullOrEmpty(info.category);
+            return TryGetInfoById(id, out var info) && !string.IsNullOrEmpty(info.category);
         }
 
         public static List<string> GetAllCategories()

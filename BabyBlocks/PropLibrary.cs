@@ -72,6 +72,7 @@ namespace BabyBlocks
         static readonly List<PropInfo> _all = new();
         static readonly List<PropInfo> _filtered = new();
         static readonly Dictionary<string, PropInfo> _byId = new(StringComparer.Ordinal);
+        static readonly Dictionary<string, string> _idAliases = new(StringComparer.Ordinal);
 
         static readonly string[] PrimitiveNames = { "Cube", "Sphere", "Capsule", "Cylinder", "Plane", "Quad", "Torus", "Cone", "Helix", "Egg" };
         static Type _bestRegionType;
@@ -123,11 +124,6 @@ namespace BabyBlocks
                 if (!File.Exists(GpuiCachePath)) return false;
                 var lines = File.ReadAllLines(GpuiCachePath);
                 if (lines.Length == 0 || !lines[0].StartsWith("MTIME=")) return false;
-                string cachedMtime = lines[0].Substring(6);
-                string actualMtime = File.Exists(catalogPath)
-                    ? File.GetLastWriteTimeUtc(catalogPath).Ticks.ToString()
-                    : "0";
-                if (cachedMtime != actualMtime) return false;
                 entries = new List<(string, string, string, string)>();
                 for (int i = 1; i < lines.Length; i++)
                 {
@@ -150,6 +146,54 @@ namespace BabyBlocks
                 return true;
             }
             catch { return false; }
+        }
+
+        static bool TryParseGpuiIndex(string id, out int index)
+        {
+            index = -1;
+            if (string.IsNullOrEmpty(id)) return false;
+
+            const string Prefix = "gpui://";
+            if (!id.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase)) return false;
+            return int.TryParse(id.Substring(Prefix.Length), out index) && index >= 0;
+        }
+
+        static string BuildStableGpuiId(string baseName, string prefabName, string visualPath)
+        {
+            string key = string.IsNullOrWhiteSpace(prefabName) ? baseName : prefabName;
+            if (string.IsNullOrWhiteSpace(key))
+                key = "unnamed";
+
+            key = key.Trim();
+            if (key.IndexOf('|') >= 0)
+                key = key.Replace("|", "_");
+
+            string stable = $"gpui://{key}";
+            if (!_byId.TryGetValue(stable, out var existing))
+                return stable;
+
+            // Resolve collisions deterministically so IDs remain stable across launches.
+            string existingFingerprint = (existing.gpuiPrefabName ?? "") + "|" + (existing.visualPath ?? "");
+            string incomingFingerprint = (prefabName ?? "") + "|" + (visualPath ?? "");
+            if (string.Equals(existingFingerprint, incomingFingerprint, StringComparison.OrdinalIgnoreCase))
+                return stable;
+
+            return stable + "#" + ComputeShortStableHash(incomingFingerprint);
+        }
+
+        static string ComputeShortStableHash(string value)
+        {
+            unchecked
+            {
+                uint hash = 2166136261;
+                string text = value ?? "";
+                for (int i = 0; i < text.Length; i++)
+                {
+                    hash ^= text[i];
+                    hash *= 16777619;
+                }
+                return hash.ToString("x8");
+            }
         }
 
         static void SaveGpuiCache(string catalogPath,
@@ -191,6 +235,7 @@ namespace BabyBlocks
         {
             _all.Clear();
             _byId.Clear();
+            _idAliases.Clear();
             _filtered.Clear();
             _gpuiScannedNames.Clear();
 
@@ -344,37 +389,47 @@ namespace BabyBlocks
             string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
             int insertAt = PrimitiveNames.Length;
             int added    = 0;
+            int nextGpuiIndex = 0;
 
             if (TryLoadGpuiCache(catalogPath, out var cached) && cached != null)
             {
-                int gi = 0;
                 foreach (var (baseName, id, visualPath, prefabName) in cached)
                 {
-                    if (_byId.ContainsKey(id) || _gpuiScannedNames.Contains(baseName)) continue;
-                    var info = new PropInfo(id, baseName)
+                    if (TryParseGpuiIndex(id, out int legacyIndex))
+                        nextGpuiIndex = Math.Max(nextGpuiIndex, legacyIndex + 1);
+
+                    string stableId = BuildStableGpuiId(baseName, prefabName, visualPath);
+                    if (!string.Equals(id, stableId, StringComparison.Ordinal))
+                        _idAliases[id] = stableId;
+
+                    if (_byId.ContainsKey(stableId)) continue;
+
+                    var info = new PropInfo(stableId, baseName)
                     {
-                        gpuiIndex      = gi++,
+                        gpuiIndex      = nextGpuiIndex++,
                         visualPath     = visualPath,
                         gpuiPrefabName = prefabName,
                         isLoaded       = false,
                         isInvalid      = false,
                     };
                     _all.Insert(insertAt++, info);
-                    _byId[id] = info;
+                    _byId[stableId] = info;
                     _gpuiScannedNames.Add(baseName);
                     added++;
                 }
-                if (added > 0) BuildFiltered();
-                MelonLogger.Msg($"[PropLibrary] GPUI cache loaded: {added} props.");
-                return;
+                MelonLogger.Msg($"[PropLibrary] GPUI cache loaded: {cached.Count} props.");
             }
 
             var loaded = TryGetLoadedProps();
-            if (loaded == null || loaded.Length == 0) return;
+            if (loaded == null || loaded.Length == 0)
+            {
+                PropMetadataPanel.MigratePropIdsToCanonical();
+                if (added > 0) BuildFiltered();
+                return;
+            }
 
             var visualLookup  = BuildGpuiVisualLookup();
-            var cacheEntries  = new List<(string, string, string, string)>();
-            int gpuiIdx       = 0;
+            int gpuiIdx       = nextGpuiIndex;
 
             for (int i = 0; i < loaded.Length; i++)
             {
@@ -389,15 +444,18 @@ namespace BabyBlocks
                 if (!hasCollider) continue;
 
                 string baseName = NormalizePropName(prefabGO.name);
-                if (_gpuiScannedNames.Contains(baseName)) continue;
-
-                int    gi     = gpuiIdx++;
-                string gpuiId = $"gpui://{gi}";
-                if (_byId.ContainsKey(gpuiId)) continue;
 
                 visualLookup.TryGetValue(baseName, out string visualPath);
                 visualPath   ??= "";
                 string prefabName = prefabGO.name;
+
+                int    gi     = gpuiIdx++;
+                string gpuiId = BuildStableGpuiId(baseName, prefabName, visualPath);
+                if (_byId.ContainsKey(gpuiId)) continue;
+
+                string legacyId = $"gpui://{gi}";
+                if (!string.Equals(legacyId, gpuiId, StringComparison.Ordinal))
+                    _idAliases[legacyId] = gpuiId;
 
                 var info = new PropInfo(gpuiId, baseName)
                 {
@@ -411,12 +469,60 @@ namespace BabyBlocks
                 _gpuiScannedNames.Add(baseName);
                 _all.Insert(insertAt++, info);
                 _byId[gpuiId] = info;
-                cacheEntries.Add((baseName, gpuiId, visualPath, prefabName));
                 added++;
             }
 
+            // Regeneration must not depend solely on currently loaded GPUI props. Backfill
+            // from catalog player-prefab entries so off-screen props keep stable IDs.
+            var playerPaths = GetGpuiPlayerPaths();
+            int backfilledFromCatalog = 0;
+            foreach (var kvp in playerPaths)
+            {
+                string prefabName = kvp.Key;
+                if (string.IsNullOrEmpty(prefabName)) continue;
+
+                string baseName = NormalizePropName(prefabName);
+                if (string.IsNullOrEmpty(baseName)) continue;
+
+                visualLookup.TryGetValue(baseName, out string visualPath);
+                visualPath ??= "";
+
+                int    gi     = gpuiIdx++;
+                string gpuiId = BuildStableGpuiId(baseName, prefabName, visualPath);
+                if (_byId.ContainsKey(gpuiId)) continue;
+
+                string legacyId = $"gpui://{gi}";
+                if (!string.Equals(legacyId, gpuiId, StringComparison.Ordinal))
+                    _idAliases[legacyId] = gpuiId;
+
+                var info = new PropInfo(gpuiId, baseName)
+                {
+                    gpuiIndex      = gi,
+                    visualPath     = visualPath,
+                    gpuiPrefabName = prefabName,
+                    isLoaded       = false,
+                    isInvalid      = false,
+                };
+
+                _gpuiScannedNames.Add(baseName);
+                _all.Insert(insertAt++, info);
+                _byId[gpuiId] = info;
+                added++;
+                backfilledFromCatalog++;
+            }
+
+            var cacheEntries = new List<(string baseName, string id, string visualPath, string prefabName)>();
+            foreach (var info in _all)
+            {
+                if (!info.IsGpui) continue;
+                cacheEntries.Add((info.displayName, info.id, info.visualPath ?? "", info.gpuiPrefabName ?? ""));
+            }
+
             SaveGpuiCache(catalogPath, cacheEntries);
+            PropMetadataPanel.MigratePropIdsToCanonical();
             if (added > 0) BuildFiltered();
+            if (backfilledFromCatalog > 0)
+                MelonLogger.Msg($"[PropLibrary] GPUI catalog backfill added: {backfilledFromCatalog} props.");
             MelonLogger.Msg($"[PropLibrary] GPUI scan complete: {added} props added.");
         }
 
@@ -809,7 +915,45 @@ namespace BabyBlocks
             return 0;
         }
 
-        public static PropInfo FindById(string id) => _byId.TryGetValue(id, out var p) ? p : null;
+        public static string ResolveCanonicalId(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return id;
+            if (_byId.ContainsKey(id)) return id;
+
+            string current = id;
+            for (int i = 0; i < 8; i++)
+            {
+                if (!_idAliases.TryGetValue(current, out var mapped) || string.IsNullOrEmpty(mapped))
+                    break;
+                if (_byId.ContainsKey(mapped))
+                    return mapped;
+                if (string.Equals(mapped, current, StringComparison.Ordinal))
+                    break;
+                current = mapped;
+            }
+
+            if (TryParseGpuiIndex(id, out int legacyIndex))
+            {
+                for (int i = 0; i < _all.Count; i++)
+                {
+                    var info = _all[i];
+                    if (info == null || !info.IsGpui) continue;
+                    if (info.gpuiIndex != legacyIndex) continue;
+                    _idAliases[id] = info.id;
+                    return info.id;
+                }
+            }
+
+            return id;
+        }
+
+        public static PropInfo FindById(string id)
+        {
+            if (_byId.TryGetValue(id, out var direct)) return direct;
+
+            string canonical = ResolveCanonicalId(id);
+            return _byId.TryGetValue(canonical, out var resolved) ? resolved : null;
+        }
 
         public static void LoadPropData(PropInfo info)
         {
