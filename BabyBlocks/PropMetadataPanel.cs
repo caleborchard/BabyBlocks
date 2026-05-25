@@ -25,6 +25,9 @@ namespace BabyBlocks
         public List<string> disabledRenderers = new();
         public List<string> perSlotMaterialOverrides;
         public int forcedMaterialSlots; // 0 = auto-detect; >1 = manual multi-slot
+        public bool isBush;
+        public float bushRadius;
+        public int soundGrassType = 1;
     }
 
     [Serializable]
@@ -118,6 +121,36 @@ namespace BabyBlocks
 
         static bool _materialExplicitlyChosen;
         static float _lastChangeTime;
+        static bool _isBush;
+        static float _bushRadius;
+        static int _soundGrassType = 1;
+        static bool _showGrassTypeDropdown;
+        static Vector2 _grassTypeScroll;
+
+        static readonly (string label, int value)[] KnownGrassTypes =
+        {
+            ("Normal",       1),
+            ("None (silent)",0),
+            ("Tall",         2),
+            ("Dry Tall",     3),
+            ("Fern",         4),
+            ("Dry Leaf",     5),
+            ("Wet Leaf",     6),
+            ("Leafy Shrub",  7),
+            ("Dry Shrub",    8),
+            ("Wild Flower",  9),
+            ("Twiggy",      10),
+            ("Needle",      11),
+            ("Cedar",       12),
+            ("Reed",        13),
+        };
+
+        static string GrassTypeName(int value)
+        {
+            foreach (var (label, val) in KnownGrassTypes)
+                if (val == value) return label;
+            return value.ToString();
+        }
 
         static readonly List<string> _perSlotSelected = new();
         static readonly List<string> _perSlotDefault = new();
@@ -337,6 +370,44 @@ namespace BabyBlocks
                 ApplyRendererVisibility();
                 ApplyCurrent();
                 _dirty = false;
+            }
+
+            var newIsBush = GUILayout.Toggle(_isBush, "Is Bush");
+            if (newIsBush != _isBush)
+            {
+                _isBush = newIsBush;
+                ApplyBushCollider(_selectedLEO, newIsBush);
+                ApplyCurrent();
+                _dirty = false;
+            }
+            if (_isBush)
+            {
+                GUILayout.Label($"  Bush sphere radius: {_bushRadius:F3} (local)");
+                GUILayout.Label("  Grass type (sound)");
+                if (GUILayout.Button(GrassTypeName(_soundGrassType), GUILayout.Height(22f)))
+                    _showGrassTypeDropdown = !_showGrassTypeDropdown;
+                if (_showGrassTypeDropdown)
+                {
+                    _grassTypeScroll = GUILayout.BeginScrollView(_grassTypeScroll, GUILayout.Height(120f));
+                    foreach (var (lbl, val) in KnownGrassTypes)
+                    {
+                        string btnLbl = val == _soundGrassType ? "> " + lbl : lbl;
+                        EnsureMaterialButtonStyle();
+                        if (GUILayout.Button(btnLbl, _materialButtonStyle))
+                        {
+                            _soundGrassType = val;
+                            _showGrassTypeDropdown = false;
+                            if (_selectedLEO != null)
+                            {
+                                BushAudioTracker.Unregister(_selectedLEO.transform);
+                                BushAudioTracker.Register(_selectedLEO.transform, _bushRadius, _soundGrassType);
+                            }
+                            ApplyCurrent();
+                            _dirty = false;
+                        }
+                    }
+                    GUILayout.EndScrollView();
+                }
             }
 
             GUILayout.BeginHorizontal();
@@ -1094,7 +1165,7 @@ namespace BabyBlocks
                 int slotCountToSave = _multiMaterialEnabled ? _forcedMaterialSlots : 0;
                 var multiInfo = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
                     string.Empty, _defaultMaterialName, string.Empty, _surfaceType, _disabledRendererPaths,
-                    _colliderIgnoredSubmeshes, perSlotToSave, slotCountToSave);
+                    _colliderIgnoredSubmeshes, perSlotToSave, slotCountToSave, _isBush, _bushRadius, _soundGrassType);
                 if (multiInfo != null)
                     _index = multiInfo.index;
                 _materialExplicitlyChosen = false;
@@ -1105,7 +1176,7 @@ namespace BabyBlocks
             _knownMaterialSources.TryGetValue(overrideToSave ?? string.Empty, out string srcPropId);
             var info = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
                 overrideToSave, _defaultMaterialName, srcPropId, _surfaceType, _disabledRendererPaths,
-                _colliderIgnoredSubmeshes);
+                _colliderIgnoredSubmeshes, null, 0, _isBush, _bushRadius, _soundGrassType);
             if (info != null)
                 _index = info.index;
             _overrideMaterialName = overrideToSave ?? string.Empty;
@@ -1156,6 +1227,10 @@ namespace BabyBlocks
             _useRenderMeshCollider = false;
             _colliderIgnoredSubmeshes = string.Empty;
             _surfaceType = string.Empty;
+            _isBush = false;
+            _bushRadius = 0f;
+            _soundGrassType = 1;
+            _showGrassTypeDropdown = false;
             _index = -1;
             _dirty = false;
             _materialExplicitlyChosen = false;
@@ -1187,6 +1262,9 @@ namespace BabyBlocks
                 _excluded = info.excluded;
                 _useRenderMeshCollider = info.useRenderMeshCollider;
                 _colliderIgnoredSubmeshes = info.colliderIgnoredSubmeshes ?? string.Empty;
+                _isBush = info.isBush;
+                _bushRadius = info.bushRadius;
+                _soundGrassType = info.soundGrassType;
                 _index = info.index;
                 if (info.disabledRenderers != null)
                 {
@@ -1529,6 +1607,122 @@ namespace BabyBlocks
             }
         }
 
+        static void ApplyBushCollider(LevelEditorObject leo, bool enable)
+        {
+            if (leo == null) return;
+            var root = leo.gameObject;
+
+            var existingBush = root.GetComponent<Il2Cpp.BushCollider>();
+            if (existingBush != null) UnityEngine.Object.DestroyImmediate(existingBush);
+            var existingSphere = root.GetComponent<SphereCollider>();
+            if (existingSphere != null) UnityEngine.Object.DestroyImmediate(existingSphere);
+
+            BushAudioTracker.Unregister(root.transform);
+            // Restore / set trigger state on all physics colliders (BushCollider sphere excluded,
+            // since it hasn't been added yet and its isTrigger is set explicitly below).
+            SetBushPassthrough(root, enable);
+
+            if (!enable) { _bushRadius = 0f; return; }
+
+            _bushRadius = ComputeBushRadius(leo);
+            BushAudioTracker.Register(root.transform, _bushRadius, _soundGrassType);
+            var sphere = root.AddComponent<SphereCollider>();
+            sphere.radius = _bushRadius;
+            sphere.isTrigger = true;
+            var bush = root.AddComponent<Il2Cpp.BushCollider>();
+            // Set rad immediately; BushCollider.Start() mirrors this but may not have run yet.
+            bush.rad = sphere.radius * root.transform.localScale.x;
+        }
+
+        static void SetBushPassthrough(GameObject root, bool passthrough)
+        {
+            foreach (var col in root.GetComponentsInChildren<Collider>(true))
+            {
+                if (col == null) continue;
+                // Leave the BushCollider's own SphereCollider alone (already a trigger, handled separately).
+                if (col.gameObject.GetComponent<Il2Cpp.BushCollider>() != null) continue;
+                col.isTrigger = passthrough;
+            }
+        }
+
+        static float ComputeBushRadius(LevelEditorObject leo)
+        {
+            var bounds = new Bounds();
+            bool first = true;
+            foreach (var r in leo.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null) continue;
+                if (first) { bounds = r.bounds; first = false; }
+                else bounds.Encapsulate(r.bounds);
+            }
+            if (first) return 1f;
+            // BushCollider.Start() multiplies sphere.radius * localScale.x, so store in local space
+            float worldRadius = Mathf.Max(bounds.extents.x, bounds.extents.z);
+            float scale = Mathf.Max(0.001f, leo.transform.lossyScale.x);
+            return worldRadius / scale;
+        }
+
+        public static void ApplyBushColliderToRoot(string propId, GameObject root)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(propId) || root == null) return;
+            if (!_byId.TryGetValue(propId, out var info) || !info.isBush) return;
+
+            var existingBush = root.GetComponent<Il2Cpp.BushCollider>();
+            if (existingBush != null) UnityEngine.Object.DestroyImmediate(existingBush);
+            var existingSphere = root.GetComponent<SphereCollider>();
+            if (existingSphere != null) UnityEngine.Object.DestroyImmediate(existingSphere);
+
+            SetBushPassthrough(root, true);
+
+            float radius = info.bushRadius > 0f ? info.bushRadius : 1f;
+            int grassType = info.soundGrassType > 0 ? info.soundGrassType : 1;
+            BushAudioTracker.Register(root.transform, radius, grassType);
+            var sphere = root.AddComponent<SphereCollider>();
+            sphere.radius = radius;
+            sphere.isTrigger = true;
+            var bush = root.AddComponent<Il2Cpp.BushCollider>();
+            bush.rad = sphere.radius * root.transform.localScale.x;
+        }
+
+        public static bool GetIsBush(string id)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id)) return false;
+            return _byId.TryGetValue(id, out var info) && info.isBush;
+        }
+
+        // Tracks editor bush spheres so the GetGrassAt Harmony patch can return a grass type
+        // for positions inside them, enabling BodyCollisions rustle and PlayerMovement plant sounds.
+        internal static class BushAudioTracker
+        {
+            static readonly List<(Transform t, float localRad, int grassType)> _bushes = new();
+
+            public static void Register(Transform t, float localRad, int grassType = 1)
+            {
+                if (t != null) _bushes.Add((t, localRad, grassType));
+            }
+
+            public static void Unregister(Transform t)
+            {
+                for (int i = _bushes.Count - 1; i >= 0; i--)
+                    if (_bushes[i].t == t) { _bushes.RemoveAt(i); return; }
+            }
+
+            // Returns the GrassType int of the first bush sphere containing pos, or 0 (none) if outside all.
+            public static int GetGrassTypeAtPos(Vector3 pos)
+            {
+                for (int i = _bushes.Count - 1; i >= 0; i--)
+                {
+                    var (t, localRad, grassType) = _bushes[i];
+                    if (t == null) { _bushes.RemoveAt(i); continue; }
+                    float worldRad = localRad * Mathf.Max(0.001f, t.lossyScale.x);
+                    if ((pos - t.position).sqrMagnitude < worldRad * worldRad) return grassType;
+                }
+                return 0;
+            }
+        }
+
         static void ApplyColliderToSelected(bool enable)
         {
             if (_selectedLEO == null) return;
@@ -1835,6 +2029,9 @@ namespace BabyBlocks
                 target.excluded = true;
                 changed = true;
             }
+
+            if (!target.isBush && source.isBush) { target.isBush = true; changed = true; }
+            if (target.bushRadius <= 0f && source.bushRadius > 0f) { target.bushRadius = source.bushRadius; changed = true; }
 
             return changed;
         }
@@ -2148,7 +2345,8 @@ namespace BabyBlocks
             bool excluded, bool useRenderMeshCollider, string overrideMaterialName,
             string nativeMaterialName, string materialSourcePropId, string surfaceType,
             HashSet<string> disabledRenderers, string colliderIgnoredSubmeshes,
-            List<string> perSlotOverrides = null, int forcedMaterialSlots = 0)
+            List<string> perSlotOverrides = null, int forcedMaterialSlots = 0,
+            bool isBush = false, float bushRadius = 0f, int soundGrassType = 1)
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return null;
@@ -2162,7 +2360,8 @@ namespace BabyBlocks
                     || (disabledRenderers != null && disabledRenderers.Count > 0)
                     || !string.IsNullOrEmpty(colliderIgnoredSubmeshes)
                     || HasNonEmptySlot(perSlotOverrides)
-                    || forcedMaterialSlots > 1;
+                    || forcedMaterialSlots > 1
+                    || isBush;
 
             if (!_byId.TryGetValue(id, out var info))
             {
@@ -2183,6 +2382,9 @@ namespace BabyBlocks
                 info.disabledRenderers        = new List<string>();
                 info.perSlotMaterialOverrides = null;
                 info.forcedMaterialSlots      = 0;
+                info.isBush                   = false;
+                info.bushRadius               = 0f;
+                info.soundGrassType           = 1;
                 info.index                    = 0;
             }
             else
@@ -2217,6 +2419,9 @@ namespace BabyBlocks
                     foreach (var path in disabledRenderers) info.disabledRenderers.Add(path);
                 info.perSlotMaterialOverrides = HasNonEmptySlot(perSlotOverrides) ? perSlotOverrides : null;
                 info.forcedMaterialSlots = forcedMaterialSlots;
+                info.isBush = isBush;
+                info.bushRadius = bushRadius;
+                info.soundGrassType = soundGrassType;
             }
 
             Save();
@@ -2345,6 +2550,12 @@ namespace BabyBlocks
                         AppendJsonArray(sb, "perSlotMaterialOverrides", item.perSlotMaterialOverrides, 6).Append(",\n");
                     if (item.forcedMaterialSlots > 1)
                         sb.Append("      \"forcedMaterialSlots\": ").Append(item.forcedMaterialSlots).Append(",\n");
+                    if (item.isBush)
+                    {
+                        sb.Append("      \"isBush\": true,\n");
+                        sb.Append("      \"bushRadius\": ").Append(item.bushRadius.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)).Append(",\n");
+                        sb.Append("      \"soundGrassType\": ").Append(item.soundGrassType).Append(",\n");
+                    }
                     sb.Append("      \"index\": ").Append(item.index).Append("\n");
                 }
                 sb.Append("    }");
@@ -2440,7 +2651,10 @@ namespace BabyBlocks
                     index = ExtractInt(obj, "index", 0),
                     disabledRenderers = ExtractStringArray(obj, "disabledRenderers"),
                     perSlotMaterialOverrides = ExtractStringArray(obj, "perSlotMaterialOverrides"),
-                    forcedMaterialSlots = ExtractInt(obj, "forcedMaterialSlots", 0)
+                    forcedMaterialSlots = ExtractInt(obj, "forcedMaterialSlots", 0),
+                    isBush = ExtractBool(obj, "isBush"),
+                    bushRadius = ExtractFloat(obj, "bushRadius", 0f),
+                    soundGrassType = ExtractInt(obj, "soundGrassType", 1)
                 };
                 if (!string.IsNullOrEmpty(item.id))
                     data.items.Add(item);
@@ -2512,6 +2726,20 @@ namespace BabyBlocks
             SkipWhitespace(json, ref i);
             if (json.IndexOf("true", i, StringComparison.OrdinalIgnoreCase) == i) return true;
             return false;
+        }
+
+        static float ExtractFloat(string json, string key, float fallback)
+        {
+            if (!TryFindKey(json, key, out int valueStart)) return fallback;
+            int i = valueStart;
+            SkipWhitespace(json, ref i);
+            int start = i;
+            if (i < json.Length && (json[i] == '-' || json[i] == '+')) i++;
+            while (i < json.Length && (char.IsDigit(json[i]) || json[i] == '.')) i++;
+            if (i == start) return fallback;
+            string raw = json.Substring(start, i - start);
+            return float.TryParse(raw, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : fallback;
         }
 
         static string ExtractString(string json, string key)

@@ -19,6 +19,7 @@ namespace BabyBlocks
         public static LevelEditorManager Instance { get; private set; }
 
         readonly List<LevelEditorObject> _objects = new();
+        GameObject _propsContainer;
         public IReadOnlyList<LevelEditorObject> Objects => _objects;
 
         public void Awake()
@@ -26,6 +27,10 @@ namespace BabyBlocks
             if (Instance != null && Instance != this) { Destroy(gameObject); return; }
             Instance = this;
             DontDestroyOnLoad(gameObject);
+
+            _propsContainer = new GameObject("Baby Blocks");
+            DontDestroyOnLoad(_propsContainer);
+
             if (!PropLibrary.IsInitialized) PropLibrary.Init();
         }
 
@@ -41,6 +46,8 @@ namespace BabyBlocks
             var root = new GameObject($"LEO_{info.displayName}");
             root.transform.position = position;
             root.layer = PropLayer;
+            if (_propsContainer != null)
+                root.transform.SetParent(_propsContainer.transform, true);
 
             for (int i = 0; i < info.parts.Count; i++)
             {
@@ -67,6 +74,7 @@ namespace BabyBlocks
 
             PropMetadataPanel.ApplyMaterialOverridesToRoot(info.id, root);
             PropMetadataPanel.ApplyDisabledRenderersToRoot(info.id, root);
+            PropMetadataPanel.ApplyBushColliderToRoot(info.id, root);
 
             var leo = root.AddComponent<LevelEditorObject>();
             leo.objectType     = "Addressable";
@@ -300,6 +308,8 @@ namespace BabyBlocks
             go.transform.position = position;
             go.name  = $"LEO_{type}";
             go.layer = PropLayer;
+            if (_propsContainer != null)
+                go.transform.SetParent(_propsContainer.transform, true);
             var col = go.GetComponent<Collider>();
             if (col != null) Destroy(col);
             var mc = go.AddComponent<MeshCollider>();
@@ -324,11 +334,11 @@ namespace BabyBlocks
 
         public static Vector2Int GetChunkCoord(Vector3 position)
         {
+            // X is periodic — wrap into [0, WorldLoopSize).
+            // Z is the forward/progress axis and is not periodic; clamp to chunk grid.
             float wrappedX = Mathf.Repeat(position.x + WorldLoopSize * 0.5f, WorldLoopSize);
-            float wrappedZ = Mathf.Repeat(position.z + WorldLoopSize * 0.5f, WorldLoopSize);
-
             int chunkX = Mathf.Clamp(Mathf.FloorToInt(wrappedX / ChunkWorldSize), 0, ChunksPerAxis - 1);
-            int chunkZ = Mathf.Clamp(Mathf.FloorToInt(wrappedZ / ChunkWorldSize), 0, ChunksPerAxis - 1);
+            int chunkZ = Mathf.Clamp(Mathf.FloorToInt(position.z / ChunkWorldSize), 0, ChunksPerAxis - 1);
             return new Vector2Int(chunkX, chunkZ);
         }
 
@@ -357,37 +367,15 @@ namespace BabyBlocks
                 SyncLoopBase(obj);
         }
 
+        // Dead-zone around each loop boundary so the ~512-unit snap doesn't fire
+        // repeatedly when the reference oscillates right at the ±256 edge.
+        const float LoopHysteresis = 16f;
+
         void Update()
         {
-            RefreshChunkMemberships();
-            ApplyChunkLooping();
-        }
-
-        void RefreshChunkMemberships()
-        {
-            for (int i = 0; i < _objects.Count; i++)
-            {
-                var obj = _objects[i];
-                if (obj == null) continue;
-                UpdateChunkData(obj, GetChunkSourcePosition(obj));
-            }
-        }
-
-        void UpdateChunkData(LevelEditorObject obj, Vector3 position)
-        {
-            if (obj == null) return;
-
-            var coord = GetChunkCoord(position);
-            int index = GetChunkIndex(coord);
-            obj.chunkCoord = coord;
-            obj.chunkIndex = index;
-        }
-
-        void ApplyChunkLooping()
-        {
             var reference = GetRenderReference();
-            if (reference == null || !ChunkLoopingEnabled || LevelEditor.isDragging || PropPalette.IsDragging)
-                return;
+            bool canLoop = reference != null && ChunkLoopingEnabled
+                        && !LevelEditor.isDragging && !PropPalette.IsDragging;
 
             for (int i = 0; i < _objects.Count; i++)
             {
@@ -395,16 +383,35 @@ namespace BabyBlocks
                 if (obj == null) continue;
 
                 var basePos = GetLoopBasePosition(obj);
-                var loopedPos = GetLoopedPosition(basePos, reference.position);
-                if (obj.transform.position != loopedPos)
-                    obj.transform.position = loopedPos;
+
+                if (canLoop)
+                {
+                    var loopedPos = GetLoopedPosition(basePos, reference.position);
+                    if (obj.transform.position != loopedPos)
+                    {
+                        float dx = loopedPos.x - obj.transform.position.x;
+                        bool crossesBoundary = Mathf.Abs(dx) > WorldLoopSize * 0.5f;
+                        if (!crossesBoundary || LoopBoundaryDist(basePos.x, reference.position.x) >= LoopHysteresis)
+                            obj.transform.position = loopedPos;
+                    }
+                }
 
                 UpdateChunkData(obj, basePos);
             }
         }
 
-        Vector3 GetChunkSourcePosition(LevelEditorObject obj)
-            => GetLoopBasePosition(obj);
+        // Distance from refX to the nearest loop boundary for an object based at baseX.
+        float LoopBoundaryDist(float baseX, float refX)
+            => Mathf.Min(Mathf.Abs(refX - (baseX + WorldLoopSize * 0.5f)),
+                         Mathf.Abs(refX - (baseX - WorldLoopSize * 0.5f)));
+
+        void UpdateChunkData(LevelEditorObject obj, Vector3 position)
+        {
+            if (obj == null) return;
+            var coord = GetChunkCoord(position);
+            obj.chunkCoord = coord;
+            obj.chunkIndex = GetChunkIndex(coord);
+        }
 
         Vector3 GetLoopBasePosition(LevelEditorObject obj)
         {
@@ -427,30 +434,26 @@ namespace BabyBlocks
 
         Vector3 GetLoopedPosition(Vector3 basePosition, Vector3 referencePosition)
         {
-            float shiftX = Mathf.Round((referencePosition.x - basePosition.x) / WorldLoopSize) * WorldLoopSize;
-            float shiftZ = Mathf.Round((referencePosition.z - basePosition.z) / WorldLoopSize) * WorldLoopSize;
-            return new Vector3(basePosition.x + shiftX, basePosition.y, basePosition.z + shiftZ);
+            // Snap to the nearest integer multiple of WorldLoopSize so the result is always
+            // exactly basePosition.x + n*WorldLoopSize (n ∈ ℤ). This gives the same float
+            // every frame regardless of camera micro-movement, preventing sub-unit position
+            // jitter that causes position-based material shaders to flicker.
+            float n = Mathf.Round((referencePosition.x - basePosition.x) / WorldLoopSize);
+            return new Vector3(basePosition.x + n * WorldLoopSize, basePosition.y, basePosition.z);
         }
 
         Transform GetRenderReference()
         {
-            var mainCam = Camera.main;
-            if (mainCam != null)
-                return mainCam.transform;
-
+            // When the fly cam is active, use its virtual camera transform directly.
+            // Camera.main in fly-cam mode is the physical Cinemachine camera which can sit
+            // near the player (z≈289) while the virtual fly cam is at the edit site (z≈801),
+            // causing every object to ghost-loop to the wrong position.
             var player = PlayerMovement.me;
-            if (player == null) return null;
-
-            if (player.flyCam != null && (Core.flyCamActive || player.flyCam.gameObject.activeInHierarchy))
+            if (player != null && Core.flyCamActive && player.flyCam != null)
                 return player.flyCam.transform;
 
-            return player.transform;
-        }
-
-        static int WrappedChunkDelta(int a, int b)
-        {
-            int delta = Mathf.Abs(a - b);
-            return Mathf.Min(delta, ChunksPerAxis - delta);
+            var mainCam = Camera.main;
+            return mainCam != null ? mainCam.transform : null;
         }
 
         public void RemoveAll()

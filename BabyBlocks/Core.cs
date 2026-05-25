@@ -14,7 +14,7 @@ namespace BabyBlocks
     {
         public static bool flyCamActive;
         public static bool cursorMode;
-        public static bool DebugMode = false; // For categorizing props in the library, not for general debug logging.
+        public static bool DebugMode = true; // For categorizing props in the library, not for general debug logging.
         static float _flyCamNoiseAmplitude = -1f;
         static bool _refreezePending;
         static bool _playerFreezeActive;
@@ -363,6 +363,23 @@ namespace BabyBlocks
     class BBConvoStarterTriggerPatch
     {
         static bool Prefix() => !Core.flyCamActive;
+    }
+
+    // Makes editor bush props produce grass sounds (rustle + foot-plant impact) by intercepting
+    // TractionByteKeeper.GetGrassAt for positions inside any active editor bush sphere.
+    [HarmonyPatch(typeof(TractionByteKeeper), "GetGrassAt")]
+    class TractionByteKeeperGetGrassAtPatch
+    {
+        static bool Prefix(Vector3 pos, ref GrassType __result)
+        {
+            int gt = PropMetadataPanel.BushAudioTracker.GetGrassTypeAtPos(pos);
+            if (gt != 0)
+            {
+                __result = (GrassType)gt;
+                return false;
+            }
+            return true;
+        }
     }
 
 }
