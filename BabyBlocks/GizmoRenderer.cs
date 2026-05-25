@@ -54,13 +54,24 @@ namespace BabyBlocks
         static CommandBuffer _outlineBuffer;
         static Camera _outlineCameraTarget;
 
+        static bool    _outlineTranslateDrag;
+        static Vector3 _outlineTranslateDelta;
+
+        public static void SetTranslateDragDelta(Vector3 delta)
+        {
+            _outlineTranslateDrag  = true;
+            _outlineTranslateDelta = delta;
+        }
+
+        public static void ClearDragDelta() => _outlineTranslateDrag = false;
+
         struct MeshData { public Vector3[] verts; public int[] tris; public Vector3[] smoothNormals; }
         struct OutlineShellData
         {
             public int meshId;
             public Vector3 position;
             public Quaternion rotation;
-            public Vector3 scale;
+            public Vector3 scale;      // world (lossy) scale — invalidates when parent scales
             public Vector3[] worldVerts;
             public int[] tris;
             public Mesh mesh;
@@ -324,9 +335,35 @@ namespace BabyBlocks
             else
                 _outlineBuffer.Clear();
 
-            // ZTest=Always on all passes; restored to LEqual at the end so game UI is unaffected.
             _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.Always);
 
+            // ── TRANSLATE DRAG FAST PATH ─────────────────────────────────────────────
+            // Reuse the cached combined shell drawn at a translation offset.
+            // Stencil marks are refreshed (cheap component lookups, no mesh work).
+            if (_outlineTranslateDrag
+                && _combinedOutlineShell != null && _combinedOutlineShell.vertexCount > 0)
+            {
+                _outlineMarks.Clear();
+                CollectOutlineMarks(selection);
+                if (_outlineMarks.Count > 0)
+                {
+                    var tMat = Matrix4x4.Translate(_outlineTranslateDelta);
+                    _outlineBuffer.DrawMesh(_combinedOutlineShell, tMat, _stencilClearMat);
+                    for (int i = 0; i < _outlineMarks.Count; i++)
+                    {
+                        var mark = _outlineMarks[i];
+                        for (int sub = 0; sub < mark.subMeshCount; sub++)
+                            _outlineBuffer.DrawMesh(mark.mesh, mark.matrix, _stencilMarkMat, sub);
+                    }
+                    _outlineBuffer.DrawMesh(_combinedOutlineShell, tMat, _outlineMat);
+                }
+                _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
+                mainCam.AddCommandBuffer(CameraEvent.AfterEverything, _outlineBuffer);
+                _outlineCameraTarget = mainCam;
+                return;
+            }
+
+            // ── NORMAL PATH ──────────────────────────────────────────────────────────
             _combinedOutlineCombines.Clear();
             _outlineMarks.Clear();
             int outlineSignature = 17;
@@ -357,7 +394,7 @@ namespace BabyBlocks
                     outlineSignature = unchecked(outlineSignature * 31 + mesh.GetInstanceID());
                     outlineSignature = unchecked(outlineSignature * 31 + t.position.GetHashCode());
                     outlineSignature = unchecked(outlineSignature * 31 + t.rotation.GetHashCode());
-                    outlineSignature = unchecked(outlineSignature * 31 + t.localScale.GetHashCode());
+                    outlineSignature = unchecked(outlineSignature * 31 + t.lossyScale.GetHashCode());
 
                     _combinedOutlineCombines.Add(new CombineInstance
                     {
@@ -375,30 +412,72 @@ namespace BabyBlocks
                 return;
             }
 
-            if (_combinedOutlineShell == null)
-                _combinedOutlineShell = new Mesh { name = "PropOutlineCombinedShell" };
+            bool isDragging = LevelEditor.IsDragging;
 
-            if (_combinedOutlineSignature != outlineSignature)
+            if (!isDragging)
             {
-                _combinedOutlineSignature = outlineSignature;
-                _combinedOutlineShell.Clear(false);
-                _combinedOutlineShell.CombineMeshes(_combinedOutlineCombines.ToArray(), true, false, false);
-                _combinedOutlineShell.RecalculateBounds();
-            }
+                // Static selection: combine all shells into one mesh for minimal draw calls.
+                if (_combinedOutlineShell == null)
+                    _combinedOutlineShell = new Mesh { name = "PropOutlineCombinedShell" };
 
-            _outlineBuffer.DrawMesh(_combinedOutlineShell, Matrix4x4.identity, _stencilClearMat);
-            for (int i = 0; i < _outlineMarks.Count; i++)
-            {
-                var mark = _outlineMarks[i];
-                for (int sub = 0; sub < mark.subMeshCount; sub++)
-                    _outlineBuffer.DrawMesh(mark.mesh, mark.matrix, _stencilMarkMat, sub);
+                if (_combinedOutlineSignature != outlineSignature)
+                {
+                    _combinedOutlineSignature = outlineSignature;
+                    _combinedOutlineShell.Clear(false);
+                    _combinedOutlineShell.CombineMeshes(_combinedOutlineCombines.ToArray(), true, false, false);
+                    _combinedOutlineShell.RecalculateBounds();
+                }
+
+                _outlineBuffer.DrawMesh(_combinedOutlineShell, Matrix4x4.identity, _stencilClearMat);
+                for (int i = 0; i < _outlineMarks.Count; i++)
+                {
+                    var mark = _outlineMarks[i];
+                    for (int sub = 0; sub < mark.subMeshCount; sub++)
+                        _outlineBuffer.DrawMesh(mark.mesh, mark.matrix, _stencilMarkMat, sub);
+                }
+                _outlineBuffer.DrawMesh(_combinedOutlineShell, Matrix4x4.identity, _outlineMat);
             }
-            _outlineBuffer.DrawMesh(_combinedOutlineShell, Matrix4x4.identity, _outlineMat);
+            else
+            {
+                // Active drag (rotate / scale): draw shells per-mesh to skip CombineMeshes.
+                // _combinedOutlineSignature is left stale so the first non-drag frame triggers
+                // a full rebuild of the combined mesh.
+                for (int i = 0; i < _combinedOutlineCombines.Count; i++)
+                    _outlineBuffer.DrawMesh(_combinedOutlineCombines[i].mesh, Matrix4x4.identity, _stencilClearMat);
+                for (int i = 0; i < _outlineMarks.Count; i++)
+                {
+                    var mark = _outlineMarks[i];
+                    for (int sub = 0; sub < mark.subMeshCount; sub++)
+                        _outlineBuffer.DrawMesh(mark.mesh, mark.matrix, _stencilMarkMat, sub);
+                }
+                for (int i = 0; i < _combinedOutlineCombines.Count; i++)
+                    _outlineBuffer.DrawMesh(_combinedOutlineCombines[i].mesh, Matrix4x4.identity, _outlineMat);
+            }
 
             _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
 
             mainCam.AddCommandBuffer(CameraEvent.AfterEverything, _outlineBuffer);
             _outlineCameraTarget = mainCam;
+        }
+
+        // Collects stencil-mark entries for the current selection using current transform matrices.
+        static void CollectOutlineMarks(IReadOnlyList<LevelEditorObject> selection)
+        {
+            for (int s = 0; s < selection.Count; s++)
+            {
+                var sel = selection[s];
+                if (sel == null) continue;
+                var mfs = sel.GetComponentsInChildren<MeshFilter>();
+                if (mfs == null) continue;
+                for (int i = 0; i < mfs.Length; i++)
+                {
+                    var mf = mfs[i];
+                    if (mf == null || mf.sharedMesh == null) continue;
+                    var mr = mf.GetComponent<MeshRenderer>();
+                    if (mr == null || !mr.enabled) continue;
+                    _outlineMarks.Add((mf.sharedMesh, mf.transform.localToWorldMatrix, mf.sharedMesh.subMeshCount));
+                }
+            }
         }
 
         static MeshData GetOrBuildMeshData(Mesh source)
@@ -438,7 +517,7 @@ namespace BabyBlocks
                 && cached.meshId == sourceId
                 && cached.position == t.position
                 && cached.rotation == t.rotation
-                && cached.scale == t.localScale)
+                && cached.scale == t.lossyScale)
             {
                 return cached;
             }
@@ -467,7 +546,7 @@ namespace BabyBlocks
             cached.meshId = sourceId;
             cached.position = t.position;
             cached.rotation = t.rotation;
-            cached.scale = t.localScale;
+            cached.scale = t.lossyScale;
             cached.worldVerts = worldVerts;
             cached.tris = data.tris;
             _outlineShellCache[key] = cached;

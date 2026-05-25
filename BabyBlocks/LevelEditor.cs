@@ -28,6 +28,7 @@ namespace BabyBlocks
         static bool       _pivotLocked;
 
         public static bool IsTypingInUI => PropMetadataPanel.IsTypingInUI;
+        public static bool IsDragging   => _isDragging;
 
         static readonly List<LevelEditorObject> _dragObjects = new();
         static readonly List<Vector3> _dragStartPositions = new();
@@ -141,6 +142,11 @@ namespace BabyBlocks
             if (main != null) GizmoRenderer.Sync(_selection, selectedObject, currentTool, main);
             UpdateHover(overUI);
             GizmoRenderer.Draw(_hoveredAxis, currentTool);
+            if (_isDragging && currentTool == ToolMode.Translate
+                && _dragObjects.Count > 0 && _dragObjects[0] != null)
+                GizmoRenderer.SetTranslateDragDelta(_dragObjects[0].transform.position - _dragStartPositions[0]);
+            else
+                GizmoRenderer.ClearDragDelta();
             GizmoRenderer.DrawOutline(_selection, main);
 
             if (Input.GetMouseButton(1)) return;
@@ -412,9 +418,29 @@ namespace BabyBlocks
                 {
                     var obj = _dragObjects[i];
                     if (obj == null) continue;
-                    obj.transform.rotation = _accumulatedFreeRot * _dragStartRotations[i];
+
+                    Quaternion finalRot;
+                    Quaternion deltaRot;
+                    if (_snapEnabled)
+                    {
+                        // Snap the final world-space Euler angles so the sphere respects snap mode
+                        // and normalizes any prior free-rotate angle to the nearest snap boundary.
+                        var euler = (_accumulatedFreeRot * _dragStartRotations[i]).eulerAngles;
+                        euler.x = SnapAngleValue(euler.x);
+                        euler.y = SnapAngleValue(euler.y);
+                        euler.z = SnapAngleValue(euler.z);
+                        finalRot = Quaternion.Euler(euler);
+                        deltaRot = finalRot * Quaternion.Inverse(_dragStartRotations[i]);
+                    }
+                    else
+                    {
+                        finalRot = _accumulatedFreeRot * _dragStartRotations[i];
+                        deltaRot = _accumulatedFreeRot;
+                    }
+
+                    obj.transform.rotation = finalRot;
                     var rel = _dragStartPositions[i] - _dragPivot;
-                    obj.transform.position = _dragPivot + _accumulatedFreeRot * rel;
+                    obj.transform.position = _dragPivot + deltaRot * rel;
                 }
                 return;
             }
