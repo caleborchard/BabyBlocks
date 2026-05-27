@@ -696,6 +696,8 @@
 		<Compile Include="SceneHierarchyScanner.cs" />
 		<Compile Include="PrimitiveMeshGen.cs" />
 		<Compile Include="SaveLoadWindow.cs" />
+		<Compile Include="PhysicsWindow.cs" />
+		<Compile Include="ObjImportWindow.cs" />
 	</ItemGroup>
 
 	<ItemGroup>

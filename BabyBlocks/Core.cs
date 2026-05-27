@@ -35,6 +35,56 @@ namespace BabyBlocks
         static MelonPreferences_Category _prefs;
         static MelonPreferences_Entry<string> _lastSavePath;
 
+        // ── Multiplayer-mod chat detection ────────────────────────────────────────
+        // Accessed via reflection so BabyBlocks compiles without a hard dependency
+        // on the multiplayer mod. FieldInfo is cached after the first lookup.
+        static System.Reflection.FieldInfo _mpUiManagerField;
+        static System.Reflection.FieldInfo _mpShowChatTabField;
+        static bool _mpReflectionDone;
+
+        static void EnsureMpReflection()
+        {
+            if (_mpReflectionDone) return;
+            _mpReflectionDone = true;
+            try
+            {
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    if (asm.GetName().Name != "BabyStepsMultiplayerClient") continue;
+                    var coreType  = asm.GetType("BabyStepsMultiplayerClient.Core");
+                    var uiField   = coreType?.GetField("uiManager",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    var chatField = uiField?.FieldType.GetField("showChatTab",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    if (uiField != null && chatField != null)
+                    {
+                        _mpUiManagerField   = uiField;
+                        _mpShowChatTabField = chatField;
+                    }
+                    break;
+                }
+            }
+            catch { }
+        }
+
+        public static bool IsMultiplayerChatOpen
+        {
+            get
+            {
+                EnsureMpReflection();
+                if (_mpUiManagerField == null) return false;
+                try
+                {
+                    var mgr = _mpUiManagerField.GetValue(null);
+                    return mgr != null && (bool)_mpShowChatTabField.GetValue(mgr);
+                }
+                catch { return false; }
+            }
+        }
+
+        public static bool IsKeyboardCaptured =>
+            IsMultiplayerChatOpen || (Menu.me != null && Menu.me.paused);
+
         public static string LastSavePath
         {
             get => _lastSavePath?.Value ?? "";
@@ -60,11 +110,13 @@ namespace BabyBlocks
 
         public override void OnUpdate()
         {
-            if (Input.GetKeyDown(KeyCode.R) && PlayerMovement.me != null && !Menu.me.teleporting)
-                ToggleEditorMode();
+            if (Input.GetKeyDown(KeyCode.R) && PlayerMovement.me != null
+                && !Menu.me.teleporting && !IsKeyboardCaptured)
+                ToggleFlyEditorMode();
 
-            if (Input.GetKeyDown(KeyCode.BackQuote) && PlayerMovement.me != null && !Menu.me.teleporting)
-                TogglePlayerMode();
+            if (Input.GetKeyDown(KeyCode.BackQuote) && PlayerMovement.me != null
+                && !Menu.me.teleporting && !IsKeyboardCaptured)
+                ToggleTeleportMode();
 
             // After a background teleport finishes, re-freeze the player so fly cam stays active.
             if (flyCamActive && _refreezePending && !Menu.me.teleporting)
@@ -98,7 +150,7 @@ namespace BabyBlocks
                 }
             }
 
-            if (flyCamActive && cursorMode && !LevelEditor.IsTypingInUI
+            if (flyCamActive && cursorMode && !LevelEditor.IsTypingInUI && !IsKeyboardCaptured
                 && Input.GetKey(KeyCode.LeftControl) && Input.GetKeyDown(KeyCode.S))
                 SaveLoadWindow.TriggerSave();
 
@@ -108,7 +160,7 @@ namespace BabyBlocks
 
         public override void OnGUI()
         {
-            if (flyCamActive)
+            if (flyCamActive && cursorMode)
                 LevelEditor.OnGUI();
         }
 
@@ -141,6 +193,7 @@ namespace BabyBlocks
             }
             else
             {
+                LevelEditorManager.Instance?.SetEditorModeActive(false);
                 flyCamActive = false;
                 cursorMode   = false;
                 _refreezePending = false;
@@ -243,37 +296,33 @@ namespace BabyBlocks
             cursorMode = !cursorMode;
             Cursor.lockState = cursorMode ? CursorLockMode.Confined : CursorLockMode.Locked;
             Cursor.visible   = cursorMode;
+            if (LevelEditorManager.Instance != null)
+                LevelEditorManager.Instance.SetEditorModeActive(cursorMode && flyCamActive);
             if (!cursorMode) LevelEditor.HideGizmo();
         }
 
-        static void ToggleEditorMode()
+        // R key: toggle teleport mode (fly cam without cursor/editor).
+        static void ToggleTeleportMode()
         {
             if (!flyCamActive)
             {
                 ToggleFlyMode();
-                ToggleCursorMode();
-                return;
-            }
-
-            if (cursorMode)
-            {
-                ToggleCursorMode();
-                return;
-            }
-
-            ToggleCursorMode();
-        }
-
-        static void TogglePlayerMode()
-        {
-            if (!flyCamActive)
-            {
-                ToggleFlyMode();
-                ToggleCursorMode();
                 return;
             }
 
             ToggleFlyMode();
+        }
+
+        // BackQuote key: toggle fly+editor mode (fly cam with cursor).
+        static void ToggleFlyEditorMode()
+        {
+            if (!flyCamActive)
+            {
+                ToggleFlyMode();
+                return;
+            }
+
+            ToggleCursorMode();
         }
 
         public static void HandleFlyCamTeleport(FlyCam flyCam)
@@ -321,7 +370,7 @@ namespace BabyBlocks
         {
             if (FlyCam.locked) return false;
 
-            bool uiTyping = Core.cursorMode && LevelEditor.IsTypingInUI;
+            bool uiTyping = Core.cursorMode && (LevelEditor.IsTypingInUI || Core.IsKeyboardCaptured);
             var input = Vector3.zero;
             if (!uiTyping)
             {

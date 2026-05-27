@@ -15,21 +15,25 @@ namespace BabyBlocks
     //   Version  : 1 byte
     //   Count    : int32    (number of objects)
     //
-    // Per object (version 3):
-    //   MetaIndex : int32    (PropMetadataPanel index — the sole prop reference)
-    //   ChunkIndex: byte     (0..63, 64-unit chunks across the 512-unit loop)
-    //   Pos.x/y/z : 3 × float32
-    //   Rot.x/y/z : 3 × float32 (w reconstructed; same compact idea used by the multiplayer client)
+    // Per object (version 4):
+    //   MetaIndex  : int32    (PropMetadataPanel index — the sole prop reference)
+    //   ChunkIndex : byte     (0..63 for chunked props, 255 for physics objects)
+    //   Pos.x/y/z  : 3 × float32
+    //   Rot.x/y/z  : 3 × float32 (w reconstructed)
     //   Scale.x/y/z: 3 × float32
+    //   PhysicsType: byte     (0=static, 1=rigidbody, 2=grabable, 3=hat)
+    //   GroupId    : byte     (0=no logical group)
+    //   PhysGroupId: byte     (0=no physics group)
+    //   HatHairAmt : float32  (hat hair-cut amount 0..1)
     //
+    // Version 3 (legacy): same without PhysicsType/GroupId/HatHairAmt.
     // Version 2 (legacy): MetaIndex + full quaternion + scale.
-    //
-    // Version 1 (legacy): PropId string (int32 len + UTF-8 bytes) + MetaIndex int32 + same transform.
+    // Version 1 (legacy): PropId string + MetaIndex int32 + same transform.
     // -------------------------------------------------------------------------
     static class LevelSaveLoad
     {
         static readonly byte[] Magic = { 0x42, 0x42, 0x42 };
-        const byte FormatVersion = 3;
+        const byte FormatVersion = 4;
 
         struct SaveRecord
         {
@@ -39,6 +43,10 @@ namespace BabyBlocks
             public Vector3 position;
             public Quaternion rotation;
             public Vector3 scale;
+            public PhysicsMode physicsType;
+            public int groupId;
+            public int physicsGroupId;
+            public float hatHairAmt;
         }
 
         public static bool Save(string path)
@@ -86,6 +94,7 @@ namespace BabyBlocks
 
             try
             {
+                LevelEditor.Select(null);
                 using var fs = File.Open(path, FileMode.Open, FileAccess.Read);
                 using var r  = new BinaryReader(fs, Encoding.UTF8, leaveOpen: false);
 
@@ -94,7 +103,7 @@ namespace BabyBlocks
                     return (false, 0, "Not a .bbb file.");
 
                 byte version = r.ReadByte();
-                if (version > FormatVersion)
+                if (version > 5)
                     return (false, 0, $"Unsupported format version {version}.");
 
                 int count = r.ReadInt32();
@@ -134,16 +143,37 @@ namespace BabyBlocks
                         {
                             MelonLogger.Warning($"[SaveLoad] No prop for index {metaIndex}");
                             r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // pos
-                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // rot
+                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // rot (compact)
                             r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // scale
+                            if (version >= 4)
+                            {
+                                r.ReadByte(); // physicsType
+                                r.ReadByte(); // groupId
+                                r.ReadByte(); // physicsGroupId
+                                r.ReadSingle(); // hatHairAmt
+                            }
                             continue;
                         }
                     }
 
                     var pos   = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                    var rot   = version == 3 ? ReadCompactRotation(r)
-                                              : new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    var rot   = (version >= 3) ? ReadCompactRotation(r)
+                                               : new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
                     var scale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+
+                    PhysicsMode physicsType      = PhysicsMode.Static;
+                    int recordGroupId            = 0;
+                    int recordPhysicsGroupId     = 0;
+                    float hatHairAmt             = 0f;
+                    if (version >= 4)
+                    {
+                        byte rawPhysics = r.ReadByte();
+                        physicsType = Enum.IsDefined(typeof(PhysicsMode), (int)rawPhysics)
+                            ? (PhysicsMode)rawPhysics : PhysicsMode.Static;
+                        recordGroupId        = r.ReadByte();
+                        recordPhysicsGroupId = r.ReadByte();
+                        hatHairAmt           = Mathf.Clamp01(r.ReadSingle());
+                    }
 
                     var info = PropLibrary.FindById(propId);
                     if (info == null)
@@ -157,14 +187,30 @@ namespace BabyBlocks
 
                     leo.transform.rotation   = rot;
                     leo.transform.localScale = scale;
-                    if (version == 3 && chunkIndex >= 0)
+                    mgr.SyncLoopBase(leo);
+                    if (version >= 3 && chunkIndex >= 0)
                     {
-                        int safeChunk = Mathf.Clamp(chunkIndex, 0, 63);
-                        leo.chunkIndex = safeChunk;
-                        leo.chunkCoord = new Vector2Int(safeChunk % 8, safeChunk / 8);
+                        if (chunkIndex == 255)
+                        {
+                            leo.chunkIndex = 255;
+                            leo.chunkCoord = new Vector2Int(-1, -1);
+                        }
+                        else
+                        {
+                            int safeChunk = Mathf.Clamp(chunkIndex, 0, 63);
+                            leo.chunkIndex = safeChunk;
+                            leo.chunkCoord = new Vector2Int(safeChunk % 8, safeChunk / 8);
+                        }
                     }
+                    leo.physicsMode      = physicsType;
+                    leo.groupId          = recordGroupId;
+                    leo.physicsGroupId   = recordPhysicsGroupId;
+                    leo.hatHairAmt       = hatHairAmt;
                     spawned++;
                 }
+
+                mgr.ApplyPhysicsGroups();
+                mgr.SyncLoadedHatHairValues();
 
                 MelonLogger.Msg($"[SaveLoad] Loaded {spawned}/{count} object(s) from {path}");
                 return (true, spawned, null);
@@ -200,10 +246,16 @@ namespace BabyBlocks
                 {
                     obj = leo,
                     metaIndex = metaIndex,
-                    chunkIndex = LevelEditorManager.GetChunkIndex(position),
+                    chunkIndex = leo.physicsMode == PhysicsMode.Static
+                        ? LevelEditorManager.GetChunkIndex(position)
+                        : 255,
                     position = position,
                     rotation = CanonicalizeRotation(leo.transform.rotation),
                     scale = leo.transform.localScale,
+                    physicsType      = leo.physicsMode,
+                    groupId          = leo.groupId,
+                    physicsGroupId   = leo.physicsGroupId,
+                    hatHairAmt       = leo.hatHairAmt,
                 });
             }
 
@@ -235,6 +287,10 @@ namespace BabyBlocks
             w.Write(record.position.x);  w.Write(record.position.y);  w.Write(record.position.z);
             WriteCompactRotation(w, record.rotation);
             w.Write(record.scale.x); w.Write(record.scale.y); w.Write(record.scale.z);
+            w.Write((byte)record.physicsType);
+            w.Write((byte)Mathf.Clamp(record.groupId, 0, 255));
+            w.Write((byte)Mathf.Clamp(record.physicsGroupId, 0, 255));
+            w.Write(Mathf.Clamp01(record.hatHairAmt));
         }
 
         static void WriteCompactRotation(BinaryWriter w, Quaternion rotation)

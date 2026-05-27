@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Il2Cpp;
+using Il2CppInterop.Runtime.Attributes;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using MelonLoader;
 using UnityEngine;
 
@@ -15,12 +18,35 @@ namespace BabyBlocks
         const int ChunksPerAxis = (int)(WorldLoopSize / ChunkWorldSize);
 
         public static bool ChunkLoopingEnabled = true;
+        const float PhysicsActiveRadius    = 25f;
+        const float PhysicsActiveRadiusSqr = PhysicsActiveRadius * PhysicsActiveRadius;
 
         public static LevelEditorManager Instance { get; private set; }
 
         readonly List<LevelEditorObject> _objects = new();
+        // Keyed by groupId. Using a dictionary avoids the Il2Cpp wrapper-equality pitfall where
+        // List<GameObject>.Contains() always returns false because each access returns a new
+        // managed wrapper for the same native object.
+        readonly Dictionary<int, GameObject> _groupRoots = new();
+        int _nextGroupId = 1;
+        bool _editorModeActive;
         GameObject _propsContainer;
-        public IReadOnlyList<LevelEditorObject> Objects => _objects;
+        static readonly HashSet<int> _physicsControlSeen = new();
+        readonly List<LevelEditorObject> _heldObjectsToRestore = new();
+        readonly List<Vector3> _heldScalesToRestore = new();
+
+        [HideFromIl2Cpp]
+        internal IReadOnlyList<LevelEditorObject> Objects => _objects;
+
+        // ── Group-root helpers ────────────────────────────────────────────────────
+        GameObject GetGroupRoot(int groupId)
+        {
+            if (groupId <= 0) return null;
+            _groupRoots.TryGetValue(groupId, out var r);
+            return r != null ? r : null;
+        }
+        void SetGroupRoot(int groupId, GameObject root)  { if (groupId > 0 && root != null) _groupRoots[groupId] = root; }
+        void RemoveGroupRoot(int groupId) => _groupRoots.Remove(groupId);
 
         public void Awake()
         {
@@ -34,7 +60,8 @@ namespace BabyBlocks
             if (!PropLibrary.IsInitialized) PropLibrary.Init();
         }
 
-        public LevelEditorObject SpawnFromPropInfo(PropInfo info, Vector3 position)
+        [HideFromIl2Cpp]
+        internal LevelEditorObject SpawnFromPropInfo(PropInfo info, Vector3 position)
         {
             PropLibrary.LoadPropData(info);
             if (!info.HasMesh)
@@ -83,6 +110,16 @@ namespace BabyBlocks
             InitializeLoopBase(leo, position);
             PropLibrary.AddRef(info.id);
             return leo;
+        }
+
+        [HideFromIl2Cpp]
+        internal IReadOnlyList<LevelEditorObject> GetLogicalGroupMembers(int groupId)
+        {
+            if (groupId <= 0) return Array.Empty<LevelEditorObject>();
+            var members = new List<LevelEditorObject>();
+            foreach (var obj in _objects)
+                if (obj != null && obj.groupId == groupId) members.Add(obj);
+            return members;
         }
 
         internal static readonly Dictionary<int, Dictionary<string, Mesh>> _physicsMeshCache = new();
@@ -326,6 +363,11 @@ namespace BabyBlocks
         public void Remove(LevelEditorObject obj)
         {
             if (obj == null) return;
+            // Dissolve the entire group before removing; DissolveGroup moves all
+            // siblings back to _propsContainer so they survive the deletion.
+            int gid = obj.groupId > 0 ? obj.groupId
+                    : obj.physicsGroupId > 0 ? obj.physicsGroupId : 0;
+            if (gid > 0) DissolveGroup(gid);
             _objects.Remove(obj);
             if (!string.IsNullOrEmpty(obj.addressableKey))
                 PropLibrary.RemoveRef(obj.addressableKey);
@@ -356,11 +398,16 @@ namespace BabyBlocks
         {
             if (obj == null) return;
             obj.loopBasePosition = obj.transform.position;
+            obj.loopBaseRotation = obj.transform.rotation;
+            obj.loopBaseScale    = obj.transform.localScale;
             obj.hasLoopBasePosition = true;
+            obj.hasLoopBaseRotation = true;
+            obj.hasLoopBaseScale    = true;
             UpdateChunkData(obj, obj.loopBasePosition);
         }
 
-        public void SyncLoopBases(IEnumerable<LevelEditorObject> objects)
+        [HideFromIl2Cpp]
+        internal void SyncLoopBases(IEnumerable<LevelEditorObject> objects)
         {
             if (objects == null) return;
             foreach (var obj in objects)
@@ -374,8 +421,11 @@ namespace BabyBlocks
         void Update()
         {
             var reference = GetRenderReference();
+            var playerPos = GetPlayerReferencePosition(reference);
             bool canLoop = reference != null && ChunkLoopingEnabled
                         && !LevelEditor.isDragging && !PropPalette.IsDragging;
+
+            _physicsControlSeen.Clear();
 
             for (int i = 0; i < _objects.Count; i++)
             {
@@ -383,6 +433,13 @@ namespace BabyBlocks
                 if (obj == null) continue;
 
                 var basePos = GetLoopBasePosition(obj);
+
+                if (obj.isPhysicsManaged)
+                {
+                    UpdatePhysicsObjectState(obj, playerPos);
+                    MarkPhysicsChunkIndependent(obj);
+                    continue;
+                }
 
                 if (canLoop)
                 {
@@ -428,7 +485,11 @@ namespace BabyBlocks
         {
             if (obj == null) return;
             obj.loopBasePosition = position;
+            obj.loopBaseRotation = obj.transform.rotation;
+            obj.loopBaseScale    = obj.transform.localScale;
             obj.hasLoopBasePosition = true;
+            obj.hasLoopBaseRotation = true;
+            obj.hasLoopBaseScale    = true;
             UpdateChunkData(obj, position);
         }
 
@@ -456,10 +517,737 @@ namespace BabyBlocks
             return mainCam != null ? mainCam.transform : null;
         }
 
+        // ── Physics-state helpers (Update) ───────────────────────────────────────
+
+        Vector3 GetPlayerReferencePosition(Transform reference)
+        {
+            var player = PlayerMovement.me;
+            if (player != null)
+                return player.head != null ? player.head.position : player.transform.position;
+            return reference != null ? reference.position : Vector3.zero;
+        }
+
+        void UpdatePhysicsObjectState(LevelEditorObject obj, Vector3 playerPos)
+        {
+            if (_editorModeActive) return;
+            var control = GetPhysicsControlObject(obj);
+            if (control == null) return;
+
+            int controlId = control.GetInstanceID();
+            if (!_physicsControlSeen.Add(controlId)) return;
+
+            var rb = control.GetComponent<Rigidbody>();
+            if (rb == null) return;
+            if (control.GetComponent<Grabable>() != null) return; // grabables manage their own kinematic state
+
+            bool active = (control.transform.position - playerPos).sqrMagnitude <= PhysicsActiveRadiusSqr;
+            if (active)
+            {
+                if (rb.isKinematic) rb.isKinematic = false;
+                rb.useGravity = true;
+            }
+            else if (!rb.isKinematic)
+            {
+                rb.velocity        = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+                rb.isKinematic     = true;
+                rb.useGravity      = false;
+            }
+        }
+
+        GameObject GetPhysicsControlObject(LevelEditorObject obj)
+        {
+            if (obj == null) return null;
+            var grabable = obj.GetComponentInParent<Grabable>(true);
+            if (grabable != null) return grabable.gameObject;
+            var rb = obj.GetComponentInParent<Rigidbody>(true);
+            if (rb != null) return rb.gameObject;
+            return obj.gameObject;
+        }
+
+        void MarkPhysicsChunkIndependent(LevelEditorObject obj)
+        {
+            if (obj == null) return;
+            obj.chunkIndex = 255;
+            obj.chunkCoord = new Vector2Int(-1, -1);
+        }
+
+        // ── Physics group support ─────────────────────────────────────────────────
+
+        public int AllocateGroupId() => _nextGroupId++;
+
+        public void SetEditorModeActive(bool active)
+        {
+            if (_editorModeActive == active) return;
+            _editorModeActive = active;
+            if (active)
+            {
+                ReleasePlayerHeldObjects();
+                RestoreHeldObjectScales();
+                EnterEditorPhysicsMode();
+            }
+            else
+            {
+                ExitEditorPhysicsMode();
+            }
+        }
+
+        void ReleasePlayerHeldObjects()
+        {
+            var player = PlayerMovement.me;
+            _heldObjectsToRestore.Clear();
+            _heldScalesToRestore.Clear();
+            if (player == null) return;
+
+            if (player.currentHat != null)
+            {
+                var hatObj = player.currentHat.GetComponent<LevelEditorObject>();
+                if (hatObj != null)
+                {
+                    _heldObjectsToRestore.Add(hatObj);
+                    _heldScalesToRestore.Add(hatObj.transform.localScale);
+                }
+                player.KnockOffHat();
+            }
+
+            for (int i = 0; i < player.handItems.Length; i++)
+            {
+                if (player.handItems[i] != null)
+                {
+                    var handObj = player.handItems[i].GetComponent<LevelEditorObject>();
+                    if (handObj != null)
+                    {
+                        _heldObjectsToRestore.Add(handObj);
+                        _heldScalesToRestore.Add(handObj.transform.localScale);
+                    }
+                    player.DropHandItem(i);
+                }
+            }
+        }
+
+        void RestoreHeldObjectScales()
+        {
+            int count = Mathf.Min(_heldObjectsToRestore.Count, _heldScalesToRestore.Count);
+            for (int i = 0; i < count; i++)
+            {
+                var obj = _heldObjectsToRestore[i];
+                if (obj != null) obj.transform.localScale = _heldScalesToRestore[i];
+            }
+            _heldObjectsToRestore.Clear();
+            _heldScalesToRestore.Clear();
+        }
+
+        void EnterEditorPhysicsMode()
+        {
+            var seenPhysicsGroups = new HashSet<int>();
+            foreach (var obj in _objects)
+            {
+                if (obj == null || obj.physicsMode == PhysicsMode.Static) continue;
+
+                if (obj.physicsMode == PhysicsMode.Rigidbody)
+                {
+                    if (obj.physicsGroupId > 0)
+                    {
+                        if (!seenPhysicsGroups.Add(obj.physicsGroupId)) continue;
+                        FreezeRigidBodyGroupForEditor(obj.physicsGroupId);
+                    }
+                    else
+                    {
+                        RestoreBasePose(obj);
+                        FreezeRigidBodyObject(obj, true);
+                        obj.isPhysicsManaged = true;
+                    }
+                    continue;
+                }
+
+                if (obj.physicsGroupId > 0)
+                {
+                    if (!seenPhysicsGroups.Add(obj.physicsGroupId)) continue;
+                    DeactivatePhysicsGroupForEditor(obj.physicsGroupId);
+                }
+                else
+                {
+                    DeactivateSoloWearableForEditor(obj);
+                }
+            }
+        }
+
+        void ExitEditorPhysicsMode()
+        {
+            var seenPhysicsGroups = new HashSet<int>();
+            foreach (var obj in _objects)
+            {
+                if (obj == null || obj.physicsMode != PhysicsMode.Rigidbody) continue;
+
+                if (obj.physicsGroupId > 0)
+                {
+                    if (!seenPhysicsGroups.Add(obj.physicsGroupId)) continue;
+                    UnfreezeRigidBodyGroup(obj.physicsGroupId);
+                }
+                else
+                {
+                    FreezeRigidBodyObject(obj, false);
+                }
+                obj.isPhysicsManaged = true;
+            }
+            ApplyPhysicsGroups();
+        }
+
+        void FreezeRigidBodyObject(LevelEditorObject obj, bool freeze)
+        {
+            if (obj == null) return;
+            var rb = obj.GetComponent<Rigidbody>();
+            if (rb == null) return;
+
+            if (freeze)
+            {
+                if (!obj.editorFreezeStateValid)
+                {
+                    obj.editorFreezeVelocity        = Vector3.zero;
+                    obj.editorFreezeAngularVelocity  = Vector3.zero;
+                    obj.editorFreezeIsKinematic      = rb.isKinematic;
+                    obj.editorFreezeUseGravity       = rb.useGravity;
+                    obj.editorFreezeConstraints      = rb.constraints;
+                    obj.editorFreezeStateValid       = true;
+                }
+                rb.velocity        = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+                rb.isKinematic     = true;
+                rb.useGravity      = false;
+                rb.constraints     = RigidbodyConstraints.FreezeAll;
+            }
+            else if (obj.editorFreezeStateValid)
+            {
+                rb.constraints     = obj.editorFreezeConstraints;
+                rb.isKinematic     = obj.editorFreezeIsKinematic;
+                rb.useGravity      = obj.editorFreezeUseGravity;
+                rb.velocity        = obj.editorFreezeVelocity;
+                rb.angularVelocity = obj.editorFreezeAngularVelocity;
+                obj.editorFreezeStateValid = false;
+            }
+        }
+
+        void FreezeRigidBodyGroupForEditor(int physicsGroupId)
+        {
+            var members = _objects.Where(o => o != null && o.physicsMode == PhysicsMode.Rigidbody && o.physicsGroupId == physicsGroupId).ToList();
+            if (members.Count == 0) return;
+
+            var root = FindPhysicsRoot(members) ?? ActivateRigidbodyGroup(members);
+            if (root == null) return;
+
+            var centroid = Vector3.zero;
+            foreach (var m in members)
+                centroid += m.hasLoopBasePosition ? m.loopBasePosition : m.transform.position;
+            centroid /= members.Count;
+
+            SetHierarchyCollisions(root, false);
+            root.transform.position = centroid;
+            foreach (var m in members) RestoreBasePose(m);
+            FreezeRigidBodyGameObject(root, true);
+            SetHierarchyCollisions(root, true);
+            foreach (var m in members) m.isPhysicsManaged = true;
+        }
+
+        void UnfreezeRigidBodyGroup(int physicsGroupId)
+        {
+            var members = _objects.Where(o => o != null && o.physicsMode == PhysicsMode.Rigidbody && o.physicsGroupId == physicsGroupId).ToList();
+            if (members.Count == 0) return;
+            var root = FindPhysicsRoot(members);
+            if (root == null) return;
+            FreezeRigidBodyGameObject(root, false);
+            foreach (var m in members) m.isPhysicsManaged = true;
+        }
+
+        static void FreezeRigidBodyGameObject(GameObject go, bool freeze)
+        {
+            if (go == null) return;
+            var rb = go.GetComponent<Rigidbody>();
+            if (rb == null) return;
+            if (freeze)
+            {
+                rb.velocity        = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+                rb.isKinematic     = true;
+                rb.useGravity      = false;
+                rb.constraints     = RigidbodyConstraints.FreezeAll;
+            }
+            else
+            {
+                rb.constraints = RigidbodyConstraints.None;
+                rb.isKinematic = false;
+                rb.useGravity  = true;
+            }
+        }
+
+        static void SetHierarchyCollisions(GameObject go, bool enabled)
+        {
+            if (go == null) return;
+            foreach (var col in go.GetComponentsInChildren<Collider>(true))
+                col.enabled = enabled;
+        }
+
+        void CleanupGroupRoot(int groupId)
+        {
+            if (groupId <= 0) return;
+            var root = GetGroupRoot(groupId);
+            if (root == null) { _groupRoots.Remove(groupId); return; }
+            for (int i = 0; i < root.transform.childCount; i++)
+                if (root.transform.GetChild(i).GetComponent<LevelEditorObject>() != null) return;
+            _groupRoots.Remove(groupId);
+            Destroy(root);
+        }
+
+        [HideFromIl2Cpp]
+        internal void CleanupPhysicsRoot(int groupId) => CleanupGroupRoot(groupId);
+
+        [HideFromIl2Cpp]
+        GameObject FindPhysicsRoot(List<LevelEditorObject> members)
+        {
+            if (members == null || members.Count == 0) return null;
+            int gid = members[0].physicsGroupId > 0 ? members[0].physicsGroupId : members[0].groupId;
+            return GetGroupRoot(gid);
+        }
+
+        void DeactivateSoloWearableForEditor(LevelEditorObject obj)
+        {
+            SetHierarchyCollisions(obj.gameObject, false);
+            RemoveGrabableComponents(obj.gameObject);
+            RestoreBasePose(obj);
+            SetHierarchyCollisions(obj.gameObject, true);
+            obj.isPhysicsManaged = false;
+        }
+
+        void DeactivatePhysicsGroupForEditor(int physicsGroupId)
+        {
+            var members = _objects.Where(o => o != null && o.physicsGroupId == physicsGroupId).ToList();
+            if (members.Count == 0) return;
+
+            var root = GetGroupRoot(physicsGroupId);
+            if (root != null)
+            {
+                SetHierarchyCollisions(root, false);
+                while (root.transform.childCount > 0)
+                {
+                    var child = root.transform.GetChild(0);
+                    child.SetParent(_propsContainer != null ? _propsContainer.transform : null, true);
+                    SetHierarchyCollisions(child.gameObject, true);
+                    var childLeo = child.GetComponent<LevelEditorObject>();
+                    if (childLeo != null) { RestoreBasePose(childLeo); childLeo.isPhysicsManaged = false; }
+                }
+                RemoveGroupRoot(physicsGroupId);
+                Destroy(root);
+                return;
+            }
+
+            foreach (var member in members)
+            {
+                RemoveGrabableComponents(member.gameObject);
+                RestoreBasePose(member);
+                member.isPhysicsManaged = false;
+            }
+        }
+
+        void RestoreBasePose(LevelEditorObject obj)
+        {
+            if (obj == null) return;
+            if (obj.hasLoopBasePosition) obj.transform.position   = obj.loopBasePosition;
+            if (obj.hasLoopBaseRotation) obj.transform.rotation   = obj.loopBaseRotation;
+            if (obj.hasLoopBaseScale)    obj.transform.localScale = obj.loopBaseScale;
+        }
+
+        public void ApplyPhysicsGroups()
+        {
+            var rigidbodySolos   = new List<LevelEditorObject>();
+            var rigidbodyGroups  = new Dictionary<int, List<LevelEditorObject>>();
+            var wearableSolos    = new List<LevelEditorObject>();
+            var wearableGroups   = new Dictionary<int, List<LevelEditorObject>>();
+            int maxGroupId = 0;
+
+            foreach (var leo in _objects)
+            {
+                if (leo == null || leo.physicsMode == PhysicsMode.Static) continue;
+                if (leo.groupId       > maxGroupId) maxGroupId = leo.groupId;
+                if (leo.physicsGroupId > maxGroupId) maxGroupId = leo.physicsGroupId;
+
+                if (leo.physicsMode == PhysicsMode.Rigidbody)
+                {
+                    if (leo.physicsGroupId <= 0) { rigidbodySolos.Add(leo); }
+                    else
+                    {
+                        if (!rigidbodyGroups.TryGetValue(leo.physicsGroupId, out var list)) { list = new List<LevelEditorObject>(); rigidbodyGroups[leo.physicsGroupId] = list; }
+                        list.Add(leo);
+                    }
+                    continue;
+                }
+
+                if (leo.physicsGroupId <= 0) { wearableSolos.Add(leo); }
+                else
+                {
+                    if (!wearableGroups.TryGetValue(leo.physicsGroupId, out var list)) { list = new List<LevelEditorObject>(); wearableGroups[leo.physicsGroupId] = list; }
+                    list.Add(leo);
+                }
+            }
+
+            foreach (var leo in rigidbodySolos)
+            {
+                var colls = leo.gameObject.GetComponentsInChildren<Collider>(true);
+                AddRigidBodyComponent(leo.gameObject, colls);
+                FreezeRigidBodyObject(leo, _editorModeActive);
+                MarkPhysicsChunkIndependent(leo);
+                leo.isPhysicsManaged = true;
+            }
+
+            foreach (var kvp in rigidbodyGroups)
+            {
+                var members = kvp.Value;
+                if (members.Count == 0) continue;
+                var root = FindPhysicsRoot(members) ?? ActivateRigidbodyGroup(members);
+                if (root != null) FreezeRigidBodyGameObject(root, _editorModeActive);
+                foreach (var m in members) { MarkPhysicsChunkIndependent(m); m.isPhysicsManaged = true; }
+            }
+
+            foreach (var leo in wearableSolos)
+            {
+                var colls = leo.gameObject.GetComponentsInChildren<Collider>(true);
+                AddGrabableComponent(leo.gameObject, leo.physicsMode == PhysicsMode.Hat, colls);
+                SyncHatHairAmount(leo);
+                MarkPhysicsChunkIndependent(leo);
+                leo.isPhysicsManaged = true;
+            }
+
+            foreach (var kvp in wearableGroups)
+            {
+                var members = kvp.Value;
+                if (members.Count == 0) continue;
+                ActivatePhysicsGroup(members, members[0].physicsMode);
+            }
+
+            if (maxGroupId >= _nextGroupId) _nextGroupId = maxGroupId + 1;
+        }
+
+        public void ActivatePhysics(LevelEditorObject leo)
+        {
+            var colls = leo.gameObject.GetComponentsInChildren<Collider>(true);
+            if (leo.physicsMode == PhysicsMode.Rigidbody)
+            {
+                AddRigidBodyComponent(leo.gameObject, colls);
+                FreezeRigidBodyObject(leo, true);
+            }
+            else
+            {
+                AddGrabableComponent(leo.gameObject, leo.physicsMode == PhysicsMode.Hat, colls);
+                SyncHatHairAmount(leo);
+            }
+            MarkPhysicsChunkIndependent(leo);
+            leo.isPhysicsManaged = true;
+        }
+
+        [HideFromIl2Cpp]
+        internal GameObject ActivateRigidbodyGroup(List<LevelEditorObject> members)
+        {
+            if (members == null || members.Count == 0) return null;
+            int gid = members[0].physicsGroupId > 0 ? members[0].physicsGroupId : members[0].groupId;
+
+            var existingRoot = FindPhysicsRoot(members);
+            if (existingRoot != null)
+            {
+                existingRoot.name = "PhysicsGroup";
+                RemoveGrabableComponents(existingRoot);
+                var colls2 = new List<Collider>();
+                foreach (var m in members)
+                {
+                    var p = m.transform.parent?.gameObject;
+                    if (p == null || p.GetInstanceID() != existingRoot.GetInstanceID())
+                        m.transform.SetParent(existingRoot.transform, true);
+                    foreach (var c in m.gameObject.GetComponentsInChildren<Collider>(true)) colls2.Add(c);
+                    m.isPhysicsManaged = true;
+                }
+                AddRigidBodyComponent(existingRoot, colls2.ToArray());
+                FreezeRigidBodyGameObject(existingRoot, _editorModeActive);
+                foreach (var m in members) MarkPhysicsChunkIndependent(m);
+                return existingRoot;
+            }
+
+            var centroid = Vector3.zero;
+            foreach (var m in members) centroid += m.hasLoopBasePosition ? m.loopBasePosition : m.transform.position;
+            centroid /= members.Count;
+
+            var root = new GameObject("PhysicsGroup");
+            root.transform.position = centroid;
+            if (_propsContainer != null) root.transform.SetParent(_propsContainer.transform, true);
+
+            var colls = new List<Collider>();
+            foreach (var m in members)
+            {
+                foreach (var c in m.gameObject.GetComponentsInChildren<Collider>(true)) colls.Add(c);
+                m.gameObject.transform.SetParent(root.transform, true);
+                m.isPhysicsManaged = true;
+            }
+            AddRigidBodyComponent(root, colls.ToArray());
+            FreezeRigidBodyGameObject(root, _editorModeActive);
+            foreach (var m in members) MarkPhysicsChunkIndependent(m);
+            if (gid > 0) SetGroupRoot(gid, root);
+            return root;
+        }
+
+        [HideFromIl2Cpp]
+        internal void ActivatePhysicsGroup(List<LevelEditorObject> members, PhysicsMode mode)
+        {
+            if (members == null || members.Count == 0) return;
+            int gid = members[0].physicsGroupId > 0 ? members[0].physicsGroupId : members[0].groupId;
+
+            var existingRoot = FindPhysicsRoot(members);
+            if (existingRoot != null)
+            {
+                existingRoot.name = "PhysicsGroup";
+                RemoveGrabableComponents(existingRoot);
+                var colls2 = new List<Collider>();
+                foreach (var m in members)
+                {
+                    var p = m.transform.parent?.gameObject;
+                    if (p == null || p.GetInstanceID() != existingRoot.GetInstanceID())
+                        m.transform.SetParent(existingRoot.transform, true);
+                    foreach (var c in m.gameObject.GetComponentsInChildren<Collider>(true)) colls2.Add(c);
+                    m.isPhysicsManaged = true;
+                }
+                AddGrabableComponent(existingRoot, mode == PhysicsMode.Hat, colls2.ToArray());
+                if (mode == PhysicsMode.Hat && members.Count > 0) SyncHatHairAmount(members[0]);
+                foreach (var m in members) MarkPhysicsChunkIndependent(m);
+                return;
+            }
+
+            var centroid = Vector3.zero;
+            foreach (var m in members) centroid += m.hasLoopBasePosition ? m.loopBasePosition : m.transform.position;
+            centroid /= members.Count;
+
+            var root = new GameObject("PhysicsGroup");
+            root.transform.position = centroid;
+            if (_propsContainer != null) root.transform.SetParent(_propsContainer.transform, true);
+
+            var colls = new List<Collider>();
+            foreach (var m in members)
+            {
+                foreach (var c in m.gameObject.GetComponentsInChildren<Collider>(true)) colls.Add(c);
+                m.gameObject.transform.SetParent(root.transform, true);
+                m.isPhysicsManaged = true;
+            }
+            AddGrabableComponent(root, mode == PhysicsMode.Hat, colls.ToArray());
+            if (mode == PhysicsMode.Hat && members.Count > 0) SyncHatHairAmount(members[0]);
+            foreach (var m in members) MarkPhysicsChunkIndependent(m);
+            if (gid > 0) SetGroupRoot(gid, root);
+        }
+
+        [HideFromIl2Cpp]
+        internal void SyncHatHairAmount(LevelEditorObject leo)
+        {
+            if (leo == null) return;
+            Hat hat = leo.GetComponent<Hat>();
+            if (hat == null)
+            {
+                var p = leo.transform.parent;
+                while (p != null && hat == null) { hat = p.GetComponent<Hat>(); p = p.parent; }
+            }
+            if (hat != null) hat.hairAmt = Mathf.Clamp01(leo.hatHairAmt);
+        }
+
+        [HideFromIl2Cpp]
+        internal void SyncLoadedHatHairValues()
+        {
+            foreach (var leo in _objects)
+            {
+                if (leo == null || leo.physicsMode != PhysicsMode.Hat) continue;
+                SyncHatHairAmount(leo);
+            }
+        }
+
+        public void ClearPhysics(LevelEditorObject leo)
+        {
+            if (leo == null || leo.physicsMode == PhysicsMode.Static) return;
+
+            if (leo.physicsGroupId <= 0)
+            {
+                RemoveGrabableComponents(leo.gameObject);
+                leo.isPhysicsManaged = false;
+                leo.physicsMode      = PhysicsMode.Static;
+                leo.physicsGroupId   = 0;
+                SyncLoopBase(leo);
+            }
+            else
+            {
+                int gid = leo.physicsGroupId;
+                var root = GetGroupRoot(gid);
+                if (root != null) { RemoveGrabableComponents(root); root.name = "Group"; }
+                foreach (var obj in _objects)
+                {
+                    if (obj == null || obj.physicsGroupId != gid) continue;
+                    obj.physicsMode      = PhysicsMode.Static;
+                    obj.physicsGroupId   = 0;
+                    obj.isPhysicsManaged = false;
+                    SyncLoopBase(obj);
+                }
+            }
+        }
+
+        [HideFromIl2Cpp]
+        internal void DissolveGroup(int groupId)
+        {
+            if (groupId <= 0) return;
+            var root = GetGroupRoot(groupId);
+            if (root != null)
+            {
+                RemoveGrabableComponents(root);
+                while (root.transform.childCount > 0)
+                {
+                    var child = root.transform.GetChild(0);
+                    child.SetParent(_propsContainer != null ? _propsContainer.transform : null, true);
+                    var childLeo = child.GetComponent<LevelEditorObject>();
+                    if (childLeo != null)
+                    {
+                        SyncLoopBase(childLeo);
+                        childLeo.physicsMode      = PhysicsMode.Static;
+                        childLeo.physicsGroupId   = 0;
+                        childLeo.groupId          = 0;
+                        childLeo.isPhysicsManaged = false;
+                    }
+                }
+                RemoveGroupRoot(groupId);
+                Destroy(root);
+            }
+            else
+            {
+                foreach (var obj in _objects)
+                {
+                    if (obj == null || obj.groupId != groupId) continue;
+                    RemoveGrabableComponents(obj.gameObject);
+                    obj.physicsMode      = PhysicsMode.Static;
+                    obj.physicsGroupId   = 0;
+                    obj.groupId          = 0;
+                    obj.isPhysicsManaged = false;
+                }
+            }
+        }
+
+        [HideFromIl2Cpp]
+        internal void EnsureStaticGroupRoot(int groupId, List<LevelEditorObject> members)
+        {
+            if (groupId <= 0 || members == null || members.Count == 0) return;
+            var root = GetGroupRoot(groupId);
+            if (root == null)
+            {
+                var centroid = Vector3.zero;
+                foreach (var m in members) centroid += m.hasLoopBasePosition ? m.loopBasePosition : m.transform.position;
+                centroid /= members.Count;
+                root = new GameObject("Group");
+                root.transform.position = centroid;
+                if (_propsContainer != null) root.transform.SetParent(_propsContainer.transform, true);
+                SetGroupRoot(groupId, root);
+            }
+            foreach (var m in members)
+            {
+                if (m == null) continue;
+                var p = m.transform.parent?.gameObject;
+                if (p == null || p.GetInstanceID() != root.GetInstanceID())
+                    m.transform.SetParent(root.transform, true);
+            }
+        }
+
+        static void AddRigidBodyComponent(GameObject go, Collider[] colls)
+        {
+            foreach (var mc in go.GetComponentsInChildren<MeshCollider>(true)) mc.convex = true;
+            var rb = go.GetComponent<Rigidbody>() ?? go.AddComponent<Rigidbody>();
+            rb.mass                   = 5f;
+            rb.isKinematic            = false;
+            rb.useGravity             = true;
+            rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+            rb.interpolation          = RigidbodyInterpolation.Interpolate;
+        }
+
+        static void AddGrabableComponent(GameObject go, bool isHat, Collider[] colls)
+        {
+            if (go == null) return;
+            if (colls == null) colls = Array.Empty<Collider>();
+
+            foreach (var mc in go.GetComponentsInChildren<MeshCollider>(true)) mc.convex = true;
+
+            var existingHat      = go.GetComponent<Hat>();
+            var existingGrabable = go.GetComponent<Grabable>();
+            Grabable g = null;
+
+            if (isHat)
+            {
+                if (existingGrabable != null && existingHat == null) DestroyImmediate(existingGrabable);
+                g = existingHat != null ? existingHat : go.AddComponent<Hat>();
+            }
+            else
+            {
+                if (existingHat != null) DestroyImmediate(existingHat);
+                g = existingGrabable != null ? existingGrabable : go.AddComponent<Grabable>();
+            }
+
+            if (g == null) return;
+
+            var rb = go.GetComponent<Rigidbody>() ?? go.AddComponent<Rigidbody>();
+            rb.mass                   = 5f;
+            rb.isKinematic            = true;
+            rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+            rb.interpolation          = RigidbodyInterpolation.Interpolate;
+
+            var crusher = go.transform.Find("Crusher");
+            if (crusher == null)
+            {
+                var co = new GameObject("Crusher");
+                co.transform.SetParent(go.transform, false);
+                crusher = co.transform;
+            }
+
+            g.rb    = rb;
+            g.rbs   = new Il2CppReferenceArray<Rigidbody>(1); g.rbs[0] = rb;
+            g.colls = new Il2CppReferenceArray<Collider>(colls.Length);
+            for (int i = 0; i < colls.Length; i++) if (colls[i] != null) g.colls[i] = colls[i];
+            g.crusher = crusher;
+            g.type    = isHat ? GrabableType.hat : GrabableType.questItem;
+
+            if (isHat && g is Hat hat)
+            {
+                hat.enableOnWear  = Array.Empty<GameObject>();
+                hat.disableOnWear = Array.Empty<GameObject>();
+            }
+
+            var ptsR  = new Il2CppSystem.Collections.Generic.List<Vector3>();
+            var rotsR = new Il2CppSystem.Collections.Generic.List<Quaternion>();
+            var ptsL  = new Il2CppSystem.Collections.Generic.List<Vector3>();
+            var rotsL = new Il2CppSystem.Collections.Generic.List<Quaternion>();
+            ptsR.Add(Vector3.zero);  rotsR.Add(Quaternion.identity);
+            ptsL.Add(Vector3.zero);  rotsL.Add(Quaternion.identity);
+            g.grabLocPtsR  = ptsR;  g.grabLocRotsR = rotsR;
+            g.grabLocPtsL  = ptsL;  g.grabLocRotsL = rotsL;
+        }
+
+        static void RemoveGrabableComponents(GameObject go)
+        {
+            var hat = go.GetComponent<Hat>();
+            if (hat != null) DestroyImmediate(hat);
+            else
+            {
+                var grabable = go.GetComponent<Grabable>();
+                if (grabable != null) DestroyImmediate(grabable);
+            }
+            var rb = go.GetComponent<Rigidbody>();
+            if (rb != null) DestroyImmediate(rb);
+            var crusher = go.transform.Find("Crusher");
+            if (crusher != null) DestroyImmediate(crusher.gameObject);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+
         public void RemoveAll()
         {
             while (_objects.Count > 0)
                 Remove(_objects[_objects.Count - 1]);
+            foreach (var root in _groupRoots.Values)
+                if (root != null) Destroy(root);
+            _groupRoots.Clear();
+            _nextGroupId = 1;
         }
     }
 }

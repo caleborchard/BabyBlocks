@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using Il2Cpp;
 using UnityEngine;
 
@@ -27,7 +28,7 @@ namespace BabyBlocks
         static int        _hoveredAxis = -1;
         static bool       _pivotLocked;
 
-        public static bool IsTypingInUI => PropMetadataPanel.IsTypingInUI;
+        public static bool IsTypingInUI => PropMetadataPanel.IsTypingInUI || ObjImportWindow.IsTypingInUI;
         public static bool IsDragging   => _isDragging;
 
         static readonly List<LevelEditorObject> _dragObjects = new();
@@ -70,7 +71,7 @@ namespace BabyBlocks
             _selection.Clear();
             if (obj != null)
             {
-                _selection.Add(obj);
+                AddSelectionWithGroup(obj);
                 selectedObject = obj;
                 if (!GizmoRenderer.IsReady) GizmoRenderer.Init();
                 GizmoRenderer.LogSelectionBoundsInfo(obj);
@@ -84,18 +85,42 @@ namespace BabyBlocks
         static void ToggleSelection(LevelEditorObject obj)
         {
             if (obj == null) return;
-            if (!_selection.Contains(obj))
+            var groupMembers = GetLogicalGroupSelection(obj);
+            bool anySelected = groupMembers.Any(m => m != null && _selection.Contains(m));
+
+            if (!anySelected)
             {
-                _selection.Add(obj);
+                foreach (var m in groupMembers)
+                    if (m != null && !_selection.Contains(m)) _selection.Add(m);
                 selectedObject = obj;
             }
             else
             {
-                _selection.Remove(obj);
+                foreach (var m in groupMembers)
+                    _selection.Remove(m);
                 if (selectedObject == obj)
                     selectedObject = _selection.Count > 0 ? _selection[_selection.Count - 1] : null;
             }
             if (_selection.Count > 0 && !GizmoRenderer.IsReady) GizmoRenderer.Init();
+        }
+
+        static void AddSelectionWithGroup(LevelEditorObject obj)
+        {
+            foreach (var m in GetLogicalGroupSelection(obj))
+                if (m != null && !_selection.Contains(m)) _selection.Add(m);
+        }
+
+        static IEnumerable<LevelEditorObject> GetLogicalGroupSelection(LevelEditorObject obj)
+        {
+            if (obj == null) yield break;
+            var mgr = LevelEditorManager.Instance;
+            if (mgr != null && obj.groupId > 0)
+            {
+                foreach (var m in mgr.GetLogicalGroupMembers(obj.groupId))
+                    yield return m;
+                yield break;
+            }
+            yield return obj;
         }
 
         static void ClearSelection()
@@ -113,7 +138,7 @@ namespace BabyBlocks
                 PropLibrary.ProcessUnloadQueue();
             }
 
-            bool blockShortcuts = IsTypingInUI;
+            bool blockShortcuts = IsTypingInUI || Core.IsKeyboardCaptured;
             bool overUI = IsPointerOverUI();
 
             if (!blockShortcuts && Input.GetKeyDown(KeyCode.Space) && selectedObject != null)
@@ -208,6 +233,8 @@ namespace BabyBlocks
             PropPalette.DrawGUI(Event.current);
             PropMetadataPanel.DrawGUI(selectedObject);
             SaveLoadWindow.DrawGUI(Event.current);
+            PhysicsWindow.DrawGUI(Event.current);
+            ObjImportWindow.DrawGUI(Event.current);
 
             string tool  = currentTool == ToolMode.Translate ? "MOVE"
                          : currentTool == ToolMode.Scale     ? "SCALE" : "ROTATE";
@@ -244,6 +271,8 @@ namespace BabyBlocks
             if (PropPalette.PanelRect.Contains(mouse)) return true;
             if (PropMetadataPanel.ContainsPoint(mouse)) return true;
             if (SaveLoadWindow.ContainsPoint(mouse)) return true;
+            if (PhysicsWindow.ContainsPoint(mouse)) return true;
+            if (ObjImportWindow.ContainsPoint(mouse)) return true;
             return false;
         }
 
@@ -279,7 +308,7 @@ namespace BabyBlocks
 
             if (chosen == null)
             {
-                if (Physics.Raycast(ray, out var hit, 2000f, ~GizmoRenderer.Mask, QueryTriggerInteraction.Collide))
+                if (Physics.Raycast(ray, out var hit, 2000f, ~GizmoRenderer.Mask))
                 {
                     var leo = hit.collider.GetComponent<LevelEditorObject>()
                            ?? hit.collider.GetComponentInParent<LevelEditorObject>();
@@ -471,12 +500,16 @@ namespace BabyBlocks
                         var rel = _dragStartPositions[i] - _dragPivot;
                         obj.transform.position = _dragPivot + deltaRot * rel;
                     }
+
+                    SyncDraggedPhysicsTransforms();
                 }
                 else if (selectedObject != null)
                 {
                     selectedObject.transform.rotation = deltaRot * _dragStartRot;
                     var rel = _dragStartPos - _dragPivot;
                     selectedObject.transform.position = _dragPivot + deltaRot * rel;
+
+                    SyncDraggedPhysicsTransforms();
                 }
                 return;
             }
@@ -498,14 +531,7 @@ namespace BabyBlocks
                     var   scaleDir       = (cam.transform.right + cam.transform.up).normalized;
                     float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, scaleDir, cam);
                     float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
-                    for (int i = 0; i < _dragObjects.Count; i++)
-                    {
-                        var obj = _dragObjects[i];
-                        if (obj == null) continue;
-                        var sc = _dragStartScales[i] * factor;
-                        if (_snapEnabled) sc = SnapVector(sc);
-                        obj.transform.localScale = sc;
-                    }
+                    ApplyScaleToDragObjects(factor, factor, factor, true, true, true);
                 }
                 else { ApplyTranslation(delta); }
                 return;
@@ -527,16 +553,13 @@ namespace BabyBlocks
                         var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
                         float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localDiag, cam);
                         float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
-                        for (int i = 0; i < _dragObjects.Count; i++)
-                        {
-                            var obj = _dragObjects[i];
-                            if (obj == null) continue;
-                            var sc   = _dragStartScales[i];
-                            sc[aIdx] = Mathf.Max(0.001f, _dragStartScales[i][aIdx] * factor);
-                            sc[bIdx] = Mathf.Max(0.001f, _dragStartScales[i][bIdx] * factor);
-                            if (_snapEnabled) sc = SnapVector(sc);
-                            obj.transform.localScale = sc;
-                        }
+                        ApplyScaleToDragObjects(
+                            aIdx == 0 || bIdx == 0 ? factor : 1f,
+                            aIdx == 1 || bIdx == 1 ? factor : 1f,
+                            aIdx == 2 || bIdx == 2 ? factor : 1f,
+                            aIdx == 0 || bIdx == 0,
+                            aIdx == 1 || bIdx == 1,
+                            aIdx == 2 || bIdx == 2);
                     }
                 }
                 else
@@ -567,6 +590,8 @@ namespace BabyBlocks
                                 if (_snapEnabled) pos = SnapVector(pos);
                                 obj.transform.position = pos;
                             }
+
+                            SyncDraggedPhysicsTransforms();
                         }
                         else { ApplyTranslation(delta); } // fallback: plane nearly edge-on
                     }
@@ -585,21 +610,131 @@ namespace BabyBlocks
                 var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
                 float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localAxis, cam);
                 float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
-                for (int i = 0; i < _dragObjects.Count; i++)
-                {
-                    var obj = _dragObjects[i];
-                    if (obj == null) continue;
-                    var sc = _dragStartScales[i];
-                    sc[_dragAxis] = Mathf.Max(0.001f, _dragStartScales[i][_dragAxis] * factor);
-                    if (_snapEnabled) sc = SnapVector(sc);
-                    obj.transform.localScale = sc;
-                }
+                ApplyScaleToDragObjects(
+                    _dragAxis == 0 ? factor : 1f,
+                    _dragAxis == 1 ? factor : 1f,
+                    _dragAxis == 2 ? factor : 1f,
+                    _dragAxis == 0,
+                    _dragAxis == 1,
+                    _dragAxis == 2);
                 return;
             }
 
             var ax = LocalMode ? selectedObject.transform.rotation * AxisVec(_dragAxis)
                                : AxisVec(_dragAxis);
             ApplyTranslation(ax * Vector3.Dot(delta, ax));
+        }
+
+        public static void SetPhysicsMode(PhysicsMode mode)
+        {
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null || _selection.Count == 0) return;
+
+            var targets = _selection.Where(o => o != null).Distinct().ToList();
+            if (targets.Count == 0) return;
+
+            foreach (var obj in targets)
+                if (obj.physicsMode != PhysicsMode.Static) mgr.ClearPhysics(obj);
+            if (mode == PhysicsMode.Static) return;
+
+            int sharedLogicalGroup  = targets.All(o => o.groupId > 0 && o.groupId == targets[0].groupId)
+                ? targets[0].groupId : 0;
+            int sharedPhysicsGroup  = targets.All(o => o.physicsGroupId > 0 && o.physicsGroupId == targets[0].physicsGroupId)
+                ? targets[0].physicsGroupId : 0;
+
+            bool multi = targets.Count > 1;
+            if (multi && sharedLogicalGroup <= 0) sharedLogicalGroup = mgr.AllocateGroupId();
+
+            if (mode == PhysicsMode.Grabable || mode == PhysicsMode.Hat || mode == PhysicsMode.Rigidbody)
+            {
+                if (multi && sharedPhysicsGroup <= 0)
+                    sharedPhysicsGroup = sharedLogicalGroup > 0 ? sharedLogicalGroup : mgr.AllocateGroupId();
+                if (sharedLogicalGroup <= 0 && sharedPhysicsGroup > 0)
+                    sharedLogicalGroup = sharedPhysicsGroup;
+            }
+
+            foreach (var obj in targets)
+            {
+                if (sharedLogicalGroup > 0 || multi) obj.groupId = sharedLogicalGroup;
+                if (mode == PhysicsMode.Grabable || mode == PhysicsMode.Hat || mode == PhysicsMode.Rigidbody)
+                    obj.physicsGroupId = multi ? sharedPhysicsGroup : obj.physicsGroupId;
+                else
+                    obj.physicsGroupId = 0;
+                obj.physicsMode = mode;
+            }
+
+            if (mode == PhysicsMode.Grabable || mode == PhysicsMode.Hat)
+            {
+                if (multi) mgr.ActivatePhysicsGroup(targets, mode);
+                else       mgr.ActivatePhysics(targets[0]);
+            }
+            else if (mode == PhysicsMode.Rigidbody)
+            {
+                if (multi) mgr.ActivateRigidbodyGroup(targets);
+                else       mgr.ActivatePhysics(targets[0]);
+            }
+            else
+            {
+                foreach (var obj in targets) mgr.ActivatePhysics(obj);
+            }
+        }
+
+        public static void SetHatHairAmount(float hairAmount)
+        {
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null || _selection.Count == 0) return;
+            hairAmount = Mathf.Clamp01(hairAmount);
+            foreach (var obj in _selection)
+            {
+                if (obj == null || obj.physicsMode != PhysicsMode.Hat) continue;
+                obj.hatHairAmt = hairAmount;
+                mgr.SyncHatHairAmount(obj);
+            }
+        }
+
+        public static void GroupSelection()
+        {
+            var mgr = LevelEditorManager.Instance;
+            var targets = _selection.Where(o => o != null).Distinct().ToList();
+            if (mgr == null || targets.Count == 0) return;
+
+            bool mixedPhysicsModes = targets.Select(o => o.physicsMode).Distinct().Count() > 1;
+            if (mixedPhysicsModes)
+            {
+                foreach (var obj in targets)
+                {
+                    if (obj.physicsMode != PhysicsMode.Static) mgr.ClearPhysics(obj);
+                    obj.physicsMode    = PhysicsMode.Static;
+                    obj.physicsGroupId = 0;
+                }
+            }
+
+            var existingGroups = new HashSet<int>(targets.Where(o => o.groupId > 0).Select(o => o.groupId));
+            foreach (var gid in existingGroups) mgr.DissolveGroup(gid);
+
+            int groupId = mgr.AllocateGroupId();
+            foreach (var obj in targets) obj.groupId = groupId;
+            mgr.EnsureStaticGroupRoot(groupId, targets);
+            Select(targets[0]);
+        }
+
+        public static void UngroupSelection()
+        {
+            var targets = _selection.Where(o => o != null).Distinct().ToList();
+            if (targets.Count == 0) return;
+
+            var mgr = LevelEditorManager.Instance;
+            if (mgr != null)
+            {
+                var groupsToClear = new HashSet<int>(targets.Where(o => o.groupId > 0).Select(o => o.groupId));
+                foreach (var gid in groupsToClear) mgr.DissolveGroup(gid);
+            }
+            else
+            {
+                foreach (var obj in targets) obj.groupId = 0;
+            }
+
+            selectedObject = targets[0];
         }
 
         static void DeleteSelected()
@@ -730,7 +865,57 @@ namespace BabyBlocks
                 if (_snapEnabled) pos = SnapVector(pos);
                 obj.transform.position = pos;
             }
+
+            SyncDraggedPhysicsTransforms();
         }
+
+        static void ApplyScaleToDragObjects(float xFactor, float yFactor, float zFactor,
+            bool scaleX, bool scaleY, bool scaleZ)
+        {
+            var basis = LocalMode && selectedObject != null
+                ? selectedObject.transform.rotation
+                : Quaternion.identity;
+
+            for (int i = 0; i < _dragObjects.Count; i++)
+            {
+                var obj = _dragObjects[i];
+                if (obj == null) continue;
+
+                var start = _dragStartScales[i];
+                var final = new Vector3(
+                    scaleX ? Mathf.Max(0.001f, start.x * xFactor) : start.x,
+                    scaleY ? Mathf.Max(0.001f, start.y * yFactor) : start.y,
+                    scaleZ ? Mathf.Max(0.001f, start.z * zFactor) : start.z);
+
+                if (_snapEnabled) final = SnapVector(final);
+                obj.transform.localScale = final;
+
+                var rel = _dragStartPositions[i] - _dragPivot;
+                var localRel = Quaternion.Inverse(basis) * rel;
+                if (scaleX) localRel.x *= SafeScaleRatio(start.x, final.x);
+                if (scaleY) localRel.y *= SafeScaleRatio(start.y, final.y);
+                if (scaleZ) localRel.z *= SafeScaleRatio(start.z, final.z);
+                obj.transform.position = _dragPivot + (basis * localRel);
+            }
+
+            SyncDraggedPhysicsTransforms();
+        }
+
+        static void SyncDraggedPhysicsTransforms()
+        {
+            for (int i = 0; i < _dragObjects.Count; i++)
+            {
+                var obj = _dragObjects[i];
+                if (obj != null && obj.physicsMode != PhysicsMode.Static)
+                {
+                    Physics.SyncTransforms();
+                    return;
+                }
+            }
+        }
+
+        static float SafeScaleRatio(float start, float final)
+            => Mathf.Abs(start) < 0.00001f ? 1f : final / start;
 
         static Vector3 SnapVector(Vector3 v)
         {
