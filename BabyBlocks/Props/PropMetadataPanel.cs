@@ -229,7 +229,7 @@ namespace BabyBlocks
             }
             GUILayout.Space(4f);
 
-            _mainScroll = GUILayout.BeginScrollView(_mainScroll, GUILayout.ExpandHeight(true));
+            _mainScroll = GUILayout.BeginScrollView(_mainScroll, false, false, GUIStyle.none, GUI.skin.verticalScrollbar, GUILayout.ExpandHeight(true));
 
             if (string.IsNullOrEmpty(_propId))
             {
@@ -239,10 +239,10 @@ namespace BabyBlocks
                 return;
             }
 
+            GUILayout.BeginVertical(GUILayout.Width(375f));
+
             GUILayout.Label("Selected ID (click to copy)");
-            var idContent = new GUIContent(_propId ?? string.Empty);
-            var idRect = GUILayoutUtility.GetRect(idContent, GUI.skin.textField);
-            if (GUI.Button(idRect, idContent, GUI.skin.textField))
+            if (GUILayout.Button(_propId ?? string.Empty, GUI.skin.textField))
                 GUIUtility.systemCopyBuffer = _propId ?? string.Empty;
 
             var newExclude = GUILayout.Toggle(_excluded, "Exclude item");
@@ -337,7 +337,7 @@ namespace BabyBlocks
 
             if (_showSurfaceTypeDropdown)
             {
-                _surfaceTypeScroll = GUILayout.BeginScrollView(_surfaceTypeScroll, GUILayout.Height(120f));
+                _surfaceTypeScroll = GUILayout.BeginScrollView(_surfaceTypeScroll, GUILayout.Height(120f), GUILayout.Width(375f));
                 foreach (var tag in KnownSurfaceTags)
                 {
                     string lbl = string.IsNullOrEmpty(tag) ? "(none — game default)" : tag;
@@ -374,7 +374,7 @@ namespace BabyBlocks
 
             if (_showRendererDropdown)
             {
-                _rendererScroll = GUILayout.BeginScrollView(_rendererScroll, GUILayout.Height(RendererListH));
+                _rendererScroll = GUILayout.BeginScrollView(_rendererScroll, GUILayout.Height(RendererListH), GUILayout.Width(375f));
                 for (int i = 0; i < _rendererEntries.Count; i++)
                 {
                     var entry = _rendererEntries[i];
@@ -499,7 +499,7 @@ namespace BabyBlocks
                     GUILayout.Label("Search");
                     _materialSearch = GUILayout.TextField(_materialSearch ?? string.Empty);
 
-                    _materialScroll = GUILayout.BeginScrollView(_materialScroll, GUILayout.Height(MaterialListH));
+                    _materialScroll = GUILayout.BeginScrollView(_materialScroll, GUILayout.Height(MaterialListH), GUILayout.Width(375f));
                     int selectedIndex = GetMaterialIndex(_selectedMaterialName);
                     string search = _materialSearch != null ? _materialSearch.Trim() : string.Empty;
                     bool hasSearch = !string.IsNullOrEmpty(search);
@@ -554,7 +554,7 @@ namespace BabyBlocks
                     {
                         GUILayout.Label("Search");
                         _slotDropdownSearch = GUILayout.TextField(_slotDropdownSearch ?? string.Empty);
-                        _slotDropdownScroll = GUILayout.BeginScrollView(_slotDropdownScroll, GUILayout.Height(MaterialListH));
+                        _slotDropdownScroll = GUILayout.BeginScrollView(_slotDropdownScroll, GUILayout.Height(MaterialListH), GUILayout.Width(375f));
                         string slotSearch = _slotDropdownSearch != null ? _slotDropdownSearch.Trim() : string.Empty;
                         bool hasSlotSearch = !string.IsNullOrEmpty(slotSearch);
                         for (int i = 0; i < _materialLabels.Count; i++)
@@ -620,7 +620,7 @@ namespace BabyBlocks
                     _showGrassTypeDropdown = !_showGrassTypeDropdown;
                 if (_showGrassTypeDropdown)
                 {
-                    _grassTypeScroll = GUILayout.BeginScrollView(_grassTypeScroll, GUILayout.Height(120f));
+                    _grassTypeScroll = GUILayout.BeginScrollView(_grassTypeScroll, GUILayout.Height(120f), GUILayout.Width(375f));
                     foreach (var (lbl, val) in KnownGrassTypes)
                     {
                         string btnLbl = val == _soundGrassType ? "> " + lbl : lbl;
@@ -647,6 +647,7 @@ namespace BabyBlocks
                 ? $"Index: {_index}"
                 : "Index: (not set)");
 
+            GUILayout.EndVertical();
             GUILayout.EndScrollView();
             GUILayout.EndVertical();
         }
@@ -1049,14 +1050,14 @@ namespace BabyBlocks
 
                 bool hasPerTexUV = baseMat.HasProperty("_PerTexUVScaleRotation0");
 
-                MelonLogger.Msg(
+                BBLog.Msg(
                     $"[PropMetadata] MicroSplat base: '{baseMat.name}' shader: '{baseMat.shader.name}' " +
                     $"controlSlots: {controlProps.Length} layers: {layerCount} hasPerTexUV: {hasPerTexUV}");
 
                 if (hasPerTexUV)
                 {
                     var v0 = baseMat.GetVector("_PerTexUVScaleRotation0");
-                    MelonLogger.Msg($"[PropMetadata] _PerTexUVScaleRotation0 = ({v0.x:F4},{v0.y:F4},{v0.z:F4},{v0.w:F4})");
+                    BBLog.Msg($"[PropMetadata] _PerTexUVScaleRotation0 = ({v0.x:F4},{v0.y:F4},{v0.z:F4},{v0.w:F4})");
                 }
 
                 const float UVScaleMultiplier = 8f; // terrain layers tile at world scale; multiply to fit props
@@ -1106,7 +1107,7 @@ namespace BabyBlocks
                 }
 
                 if (_microSplatLayerMats.Count > 0)
-                    MelonLogger.Msg($"[PropMetadata] Built {_microSplatLayerMats.Count} MicroSplat layer materials.");
+                    BBLog.Msg($"[PropMetadata] Built {_microSplatLayerMats.Count} MicroSplat layer materials.");
                 else
                     MelonLogger.Warning("[PropMetadata] MicroSplat base material found but no layer materials could be created.");
             }
@@ -1921,7 +1922,7 @@ namespace BabyBlocks
         static void EnsureWindowRect()
         {
             if (_windowInitialized) return;
-            float width = 400f;
+            float width = 410f;
             float height = 700f;
             float x = Screen.width - width - 10f;
             if (x < 10f) x = 10f;
@@ -2476,7 +2477,7 @@ namespace BabyBlocks
                 if (!_savePathLogged)
                 {
                     _savePathLogged = true;
-                    MelonLogger.Msg($"[PropMetadata] Saved to {SavePath}");
+                    BBLog.Msg($"[PropMetadata] Saved to {SavePath}");
                 }
             }
             catch (Exception e)

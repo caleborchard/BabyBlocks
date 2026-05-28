@@ -317,7 +317,7 @@ namespace BabyBlocks
         static void UnloadPropData(PropInfo info)
         {
             if (!info.isLoaded && !info.HasMesh && info._addressableAsset == null) return;
-            MelonLogger.Msg($"[PropLibrary] Unloading \"{info.displayName}\" — no live instances.");
+            BBLog.Msg($"[PropLibrary] Unloading \"{info.displayName}\" — no live instances.");
 
             LevelEditorManager.ReleasePhysicsMeshes(info);
 
@@ -368,7 +368,7 @@ namespace BabyBlocks
                     _gpuiScannedNames.Add(baseName);
                     added++;
                 }
-                MelonLogger.Msg($"[PropLibrary] GPUI cache loaded: {cached.Count} props.");
+                BBLog.Msg($"[PropLibrary] GPUI cache loaded: {cached.Count} props.");
             }
 
             var loaded = TryGetLoadedProps();
@@ -473,8 +473,8 @@ namespace BabyBlocks
             PropMetadataPanel.MigratePropIdsToCanonical();
             if (added > 0) BuildFiltered();
             if (backfilledFromCatalog > 0)
-                MelonLogger.Msg($"[PropLibrary] GPUI catalog backfill added: {backfilledFromCatalog} props.");
-            MelonLogger.Msg($"[PropLibrary] GPUI scan complete: {added} props added.");
+                BBLog.Msg($"[PropLibrary] GPUI catalog backfill added: {backfilledFromCatalog} props.");
+            BBLog.Msg($"[PropLibrary] GPUI scan complete: {added} props added.");
         }
 
         static Dictionary<string, string> BuildGpuiVisualLookup()
@@ -624,11 +624,11 @@ namespace BabyBlocks
                 }
 
                 if (scenes.Count > 0)
-                    MelonLogger.Msg($"[PropLibrary] Catalog hint for \"{fileName}\": scenes → {string.Join(", ", scenes)}");
+                    BBLog.Msg($"[PropLibrary] Catalog hint for \"{fileName}\": scenes → {string.Join(", ", scenes)}");
                 else if (bundles.Count > 0)
-                    MelonLogger.Msg($"[PropLibrary] Catalog hint for \"{fileName}\": bundles → {string.Join(", ", System.Linq.Enumerable.Take(bundles, 5))} {(bundles.Count > 5 ? $"(+{bundles.Count - 5} more)" : "")}");
+                    BBLog.Msg($"[PropLibrary] Catalog hint for \"{fileName}\": bundles → {string.Join(", ", System.Linq.Enumerable.Take(bundles, 5))} {(bundles.Count > 5 ? $"(+{bundles.Count - 5} more)" : "")}");
                 else
-                    MelonLogger.Msg($"[PropLibrary] Catalog hint: \"{fileName}\" not found in catalog text.");
+                    BBLog.Msg($"[PropLibrary] Catalog hint: \"{fileName}\" not found in catalog text.");
             }
             catch (Exception e)
             {
@@ -1001,7 +1001,7 @@ namespace BabyBlocks
             string target = NormalizePropName(NormalizeIdToName(info.id));
             int sceneCount = SceneManager.sceneCount;
 
-            MelonLogger.Msg($"[PropLibrary] Scene scan for \"{target}\": {sceneCount} scene(s) loaded.");
+            BBLog.Msg($"[PropLibrary] Scene scan for \"{target}\": {sceneCount} scene(s) loaded.");
 
             for (int s = 0; s < sceneCount; s++)
             {
@@ -1009,13 +1009,13 @@ namespace BabyBlocks
                 try { scene = SceneManager.GetSceneAt(s); }
                 catch (Exception e) { MelonLogger.Warning($"[PropLibrary] GetSceneAt({s}) threw: {e.Message}"); continue; }
 
-                if (!scene.isLoaded) { MelonLogger.Msg($"[PropLibrary]   Scene[{s}] \"{scene.name}\" not loaded, skipping."); continue; }
+                if (!scene.isLoaded) { BBLog.Msg($"[PropLibrary]   Scene[{s}] \"{scene.name}\" not loaded, skipping."); continue; }
 
                 GameObject[] roots;
                 try { roots = scene.GetRootGameObjects(); }
                 catch (Exception e) { MelonLogger.Warning($"[PropLibrary]   GetRootGameObjects threw for \"{scene.name}\": {e.Message}"); continue; }
 
-                MelonLogger.Msg($"[PropLibrary]   Scene[{s}] \"{scene.name}\": {roots.Length} root(s).");
+                BBLog.Msg($"[PropLibrary]   Scene[{s}] \"{scene.name}\": {roots.Length} root(s).");
 
                 foreach (var root in roots)
                 {
@@ -1028,7 +1028,7 @@ namespace BabyBlocks
                         {
                             info.isLoaded  = true;
                             info.isInvalid = false;
-                            MelonLogger.Msg($"[PropLibrary] Found \"{info.displayName}\" in scene \"{scene.name}\" (root).");
+                            BBLog.Msg($"[PropLibrary] Found \"{info.displayName}\" in scene \"{scene.name}\" (root).");
                             return true;
                         }
                         info.parts.Clear();
@@ -1050,7 +1050,7 @@ namespace BabyBlocks
                         {
                             info.isLoaded  = true;
                             info.isInvalid = false;
-                            MelonLogger.Msg($"[PropLibrary] Found \"{info.displayName}\" in scene \"{scene.name}\" (child of \"{root.name}\").");
+                            BBLog.Msg($"[PropLibrary] Found \"{info.displayName}\" in scene \"{scene.name}\" (child of \"{root.name}\").");
                             return true;
                         }
                         info.parts.Clear();
@@ -1059,7 +1059,7 @@ namespace BabyBlocks
                 }
             }
 
-            MelonLogger.Msg($"[PropLibrary] Scene scan: \"{target}\" not found in any loaded scene.");
+            BBLog.Msg($"[PropLibrary] Scene scan: \"{target}\" not found in any loaded scene.");
             return false;
         }
 
@@ -1092,7 +1092,7 @@ namespace BabyBlocks
                     }
                 }
 
-                MelonLogger.Msg($"[PropLibrary] Built GPUI player-path lookup: {_gpuiPlayerPaths.Count} entries.");
+                BBLog.Msg($"[PropLibrary] Built GPUI player-path lookup: {_gpuiPlayerPaths.Count} entries.");
             }
             catch (Exception e)
             {
@@ -1184,7 +1184,7 @@ namespace BabyBlocks
                 var handle = Addressables.LoadAssetAsync<Material>(matPath);
                 var mat = handle.WaitForCompletion();
                 if (mat != null)
-                    MelonLogger.Msg($"[PropLibrary] Loaded material \"{cleanName}\" from catalog: {matPath}");
+                    BBLog.Msg($"[PropLibrary] Loaded material \"{cleanName}\" from catalog: {matPath}");
                 else
                     MelonLogger.Warning($"[PropLibrary] Catalog path found but load returned null for \"{cleanName}\": {matPath}");
                 return mat;
@@ -1250,7 +1250,7 @@ namespace BabyBlocks
                 // Sentinel so the next session's cache load can skip this scan.
                 _materialCatalogPaths["__IDX__"] = "1";
                 SaveMaterialPathCache();
-                MelonLogger.Msg($"[PropLibrary] Full catalog material index built: {names.Count} material(s) found.");
+                BBLog.Msg($"[PropLibrary] Full catalog material index built: {names.Count} material(s) found.");
             }
             catch (Exception e)
             {
@@ -1364,7 +1364,7 @@ namespace BabyBlocks
 
         static void LoadGpuiPropData(PropInfo info)
         {
-            MelonLogger.Msg($"[PropLibrary] GPUI \"{info.displayName}\": visualPath=\"{info.visualPath}\" prefabName=\"{info.gpuiPrefabName}\"");
+            BBLog.Msg($"[PropLibrary] GPUI \"{info.displayName}\": visualPath=\"{info.visualPath}\" prefabName=\"{info.gpuiPrefabName}\"");
 
             if (!string.IsNullOrEmpty(info.visualPath))
             {
@@ -1379,7 +1379,7 @@ namespace BabyBlocks
                             visualGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
                         try   { ExtractPartsFromInstance(instance, info); }
                         finally { UnityEngine.Object.Destroy(instance); }
-                        MelonLogger.Msg($"[PropLibrary] GPUI \"{info.displayName}\" visual: extracted {info.parts.Count} part(s).");
+                        BBLog.Msg($"[PropLibrary] GPUI \"{info.displayName}\" visual: extracted {info.parts.Count} part(s).");
                     }
                     else
                     {
@@ -1393,7 +1393,7 @@ namespace BabyBlocks
             }
             else
             {
-                MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" has no visualPath — cannot load visual.");
+                BBLog.Msg($"[PropLibrary] GPUI \"{info.displayName}\" has no visualPath — cannot load visual.");
             }
 
             if (!info.HasMesh && !string.IsNullOrEmpty(info.gpuiPrefabName))
@@ -1417,11 +1417,11 @@ namespace BabyBlocks
                             try   { ExtractPartsFromColliders(instance, info); }
                             catch { }
                             UnityEngine.Object.Destroy(instance);
-                            MelonLogger.Msg($"[PropLibrary] GPUI \"{info.displayName}\" collider fallback: extracted {info.parts.Count} part(s).");
+                            BBLog.Msg($"[PropLibrary] GPUI \"{info.displayName}\" collider fallback: extracted {info.parts.Count} part(s).");
                             break;
                         }
                         if (!found)
-                            MelonLogger.Warning($"[PropLibrary] GPUI \"{info.displayName}\" collider fallback: \"{target}\" not found in loadedProps ({loaded.Length} entries).");
+                            BBLog.Msg($"[PropLibrary] GPUI \"{info.displayName}\" collider fallback: \"{target}\" not found in loadedProps ({loaded.Length} entries).");
                     }
                     else
                     {
@@ -1451,7 +1451,7 @@ namespace BabyBlocks
                             try   { ExtractPartsFromColliders(inst, info); }
                             catch { }
                             UnityEngine.Object.Destroy(inst);
-                            MelonLogger.Msg($"[PropLibrary] GPUI \"{info.displayName}\" addressable player: {info.parts.Count} part(s) from {playerPath}");
+                            BBLog.Msg($"[PropLibrary] GPUI \"{info.displayName}\" addressable player: {info.parts.Count} part(s) from {playerPath}");
                         }
                         else
                         {
@@ -1469,7 +1469,7 @@ namespace BabyBlocks
                 }
             }
 
-            MelonLogger.Msg($"[PropLibrary] GPUI \"{info.displayName}\" done: HasMesh={info.HasMesh}");
+            BBLog.Msg($"[PropLibrary] GPUI \"{info.displayName}\" done: HasMesh={info.HasMesh}");
             info.isLoaded  = true;
             info.isInvalid = !info.HasMesh;
         }

@@ -162,6 +162,13 @@ namespace BabyBlocks
         }
     }
 
+    // Verbose diagnostic logging
+    internal static class BBLog
+    {
+        internal static bool Verbose = false;
+        internal static void Msg(string msg) { if (Verbose) MelonLogger.Msg(msg); }
+    }
+
     // Applies per-prop hat offset overrides on top of the default head placement.
     [HarmonyPatch(typeof(PlayerMovement), "PlaceCurrentHatOnHead")]
     class PlaceCurrentHatOnHeadPatch

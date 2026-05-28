@@ -74,7 +74,7 @@ namespace BabyBlocks
                 AddSelectionWithGroup(obj);
                 selectedObject = obj;
                 if (!GizmoRenderer.IsReady) GizmoRenderer.Init();
-                GizmoRenderer.LogSelectionBoundsInfo(obj);
+                // GizmoRenderer.LogSelectionBoundsInfo(obj);
             }
             else
             {
