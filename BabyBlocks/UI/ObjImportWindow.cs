@@ -13,7 +13,7 @@ namespace BabyBlocks
     {
         // Flip to true to enable this feature. When false the window is never drawn
         // and ContainsPoint / IsTypingInUI are always false — zero runtime cost.
-        public static bool Enabled = true;
+        public static bool Enabled = false;
 
         const float WinW    = 370f;
         const float WinH    = 150f;

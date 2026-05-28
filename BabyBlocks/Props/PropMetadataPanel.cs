@@ -245,9 +245,12 @@ namespace BabyBlocks
             if (GUI.Button(idRect, idContent, GUI.skin.textField))
                 GUIUtility.systemCopyBuffer = _propId ?? string.Empty;
 
-            GUILayout.Label(_index > 0
-                ? $"Index: {_index}"
-                : "Index: (not set)");
+            var newExclude = GUILayout.Toggle(_excluded, "Exclude item");
+            if (newExclude != _excluded)
+            {
+                _excluded = newExclude;
+                MarkDirty();
+            }
 
             GUILayout.Space(4f);
 
@@ -326,12 +329,33 @@ namespace BabyBlocks
                 }
             }
 
-            var newExclude = GUILayout.Toggle(_excluded, "Exclude item");
-            if (newExclude != _excluded)
+            GUILayout.Space(4f);
+            GUILayout.Label("Surface type (traction / footstep audio)");
+            string surfaceLabel = string.IsNullOrEmpty(_surfaceType) ? "(none — game default)" : _surfaceType;
+            if (GUILayout.Button(surfaceLabel, GUILayout.Height(22f)))
+                _showSurfaceTypeDropdown = !_showSurfaceTypeDropdown;
+
+            if (_showSurfaceTypeDropdown)
             {
-                _excluded = newExclude;
-                MarkDirty();
+                _surfaceTypeScroll = GUILayout.BeginScrollView(_surfaceTypeScroll, GUILayout.Height(120f));
+                foreach (var tag in KnownSurfaceTags)
+                {
+                    string lbl = string.IsNullOrEmpty(tag) ? "(none — game default)" : tag;
+                    if (string.Equals(tag, _surfaceType, StringComparison.Ordinal))
+                        lbl = "> " + lbl;
+                    EnsureMaterialButtonStyle();
+                    if (GUILayout.Button(lbl, _materialButtonStyle))
+                    {
+                        _surfaceType = tag;
+                        _showSurfaceTypeDropdown = false;
+                        ApplySurfaceType(_selectedLEO, tag);
+                        MarkDirty();
+                    }
+                }
+                GUILayout.EndScrollView();
             }
+
+            GUILayout.Space(8f);
 
             var newUseMeshCol = GUILayout.Toggle(_useRenderMeshCollider, "Use render mesh as collider");
             if (newUseMeshCol != _useRenderMeshCollider)
@@ -344,60 +368,37 @@ namespace BabyBlocks
                 _dirty = false;
             }
 
-            var newIsBush = GUILayout.Toggle(_isBush, "Is Bush");
-            if (newIsBush != _isBush)
+            GUILayout.Label("Components");
+            if (GUILayout.Button(_showRendererDropdown ? "Hide components" : "Show components"))
+                _showRendererDropdown = !_showRendererDropdown;
+
+            if (_showRendererDropdown)
             {
-                _isBush = newIsBush;
-                ApplyBushCollider(_selectedLEO, newIsBush);
-                ApplyCurrent();
-                _dirty = false;
-            }
-            if (_isBush)
-            {
-                GUILayout.Label($"  Bush sphere radius: {_bushRadius:F3} (local)");
-                GUILayout.Label("  Grass type (sound)");
-                if (GUILayout.Button(GrassTypeName(_soundGrassType), GUILayout.Height(22f)))
-                    _showGrassTypeDropdown = !_showGrassTypeDropdown;
-                if (_showGrassTypeDropdown)
+                _rendererScroll = GUILayout.BeginScrollView(_rendererScroll, GUILayout.Height(RendererListH));
+                for (int i = 0; i < _rendererEntries.Count; i++)
                 {
-                    _grassTypeScroll = GUILayout.BeginScrollView(_grassTypeScroll, GUILayout.Height(120f));
-                    foreach (var (lbl, val) in KnownGrassTypes)
+                    var entry = _rendererEntries[i];
+                    bool newEnabled = GUILayout.Toggle(entry.enabled, entry.path);
+                    if (newEnabled != entry.enabled)
                     {
-                        string btnLbl = val == _soundGrassType ? "> " + lbl : lbl;
-                        EnsureMaterialButtonStyle();
-                        if (GUILayout.Button(btnLbl, _materialButtonStyle))
-                        {
-                            _soundGrassType = val;
-                            _showGrassTypeDropdown = false;
-                            if (_selectedLEO != null)
-                            {
-                                BushAudioTracker.Unregister(_selectedLEO.transform);
-                                BushAudioTracker.Register(_selectedLEO.transform, _bushRadius, _soundGrassType);
-                            }
-                            ApplyCurrent();
-                            _dirty = false;
-                        }
+                        entry.enabled = newEnabled;
+                        if (entry.renderer != null) entry.renderer.enabled = newEnabled;
+                        else if (entry.collider != null) entry.collider.enabled = newEnabled;
+                        if (!newEnabled) _disabledRendererPaths.Add(entry.path);
+                        else _disabledRendererPaths.Remove(entry.path);
+                        MarkDirty();
                     }
-                    GUILayout.EndScrollView();
                 }
+                GUILayout.EndScrollView();
             }
 
-            var newKeepOrig = GUILayout.Toggle(_keepOriginalHierarchy, "Keep original hierarchy");
-            if (newKeepOrig != _keepOriginalHierarchy)
-            {
-                _keepOriginalHierarchy = newKeepOrig;
-                MarkDirty();
-            }
+            GUILayout.Space(8f);
 
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Ignore collider submeshes (0-based):", GUILayout.Width(230f));
-            string newIgnored = GUILayout.TextField(_colliderIgnoredSubmeshes ?? string.Empty);
-            if (!string.Equals(newIgnored, _colliderIgnoredSubmeshes, StringComparison.Ordinal))
-            {
-                _colliderIgnoredSubmeshes = newIgnored;
-                MarkDirty();
-            }
-            GUILayout.EndHorizontal();
+            EnsureMaterialList();
+
+            int effectiveSlotCount = _multiMaterialEnabled
+                ? Math.Max(_forcedMaterialSlots, _maxMaterialSlots)
+                : _maxMaterialSlots;
 
             var newMultiMat = GUILayout.Toggle(_multiMaterialEnabled, "Multiple materials");
             if (newMultiMat != _multiMaterialEnabled)
@@ -459,61 +460,39 @@ namespace BabyBlocks
                 GUILayout.EndHorizontal();
             }
 
-            GUILayout.Space(4f);
-
-            int effectiveSlotCount = _multiMaterialEnabled
-                ? Math.Max(_forcedMaterialSlots, _maxMaterialSlots)
-                : _maxMaterialSlots;
-
-            if (effectiveSlotCount <= 1)
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Ignore collider submeshes (0-based):", GUILayout.Width(230f));
+            string newIgnored = GUILayout.TextField(_colliderIgnoredSubmeshes ?? string.Empty);
+            if (!string.Equals(newIgnored, _colliderIgnoredSubmeshes, StringComparison.Ordinal))
             {
-                GUILayout.Label("Current material: " + (string.IsNullOrEmpty(_defaultMaterialName) ? "(unknown)" : _defaultMaterialName));
+                _colliderIgnoredSubmeshes = newIgnored;
+                MarkDirty();
             }
-            else
-            {
-                var matLabelSb = new System.Text.StringBuilder("Current materials: ");
-                for (int s = 0; s < Math.Min(_perSlotDefault.Count, effectiveSlotCount); s++)
-                {
-                    if (s > 0) matLabelSb.Append(", ");
-                    string n = _perSlotDefault[s];
-                    matLabelSb.Append(string.IsNullOrEmpty(n) ? "(none)" : n);
-                }
-                GUILayout.Label(matLabelSb.ToString());
-            }
-
-            GUILayout.Label("Components");
-            if (GUILayout.Button(_showRendererDropdown ? "Hide components" : "Show components"))
-                _showRendererDropdown = !_showRendererDropdown;
-
-            if (_showRendererDropdown)
-            {
-                _rendererScroll = GUILayout.BeginScrollView(_rendererScroll, GUILayout.Height(RendererListH));
-                for (int i = 0; i < _rendererEntries.Count; i++)
-                {
-                    var entry = _rendererEntries[i];
-                    bool newEnabled = GUILayout.Toggle(entry.enabled, entry.path);
-                    if (newEnabled != entry.enabled)
-                    {
-                        entry.enabled = newEnabled;
-                        if (entry.renderer != null) entry.renderer.enabled = newEnabled;
-                        else if (entry.collider != null) entry.collider.enabled = newEnabled;
-                        if (!newEnabled) _disabledRendererPaths.Add(entry.path);
-                        else _disabledRendererPaths.Remove(entry.path);
-                        MarkDirty();
-                    }
-                }
-                GUILayout.EndScrollView();
-            }
-
-            EnsureMaterialList();
+            GUILayout.EndHorizontal();
 
             if (effectiveSlotCount <= 1)
             {
                 GUILayout.Label("Override material");
+                GUILayout.BeginHorizontal();
                 string overrideLabel = GetOverrideLabel();
                 GUI.SetNextControlName(OverrideField);
                 if (GUILayout.Button(overrideLabel, GUILayout.Height(22f)))
                     _showMaterialDropdown = !_showMaterialDropdown;
+                if (GUILayout.Button("Reset", GUILayout.Height(22f), GUILayout.Width(50f)))
+                {
+                    _selectedMaterialName = _defaultMaterialName ?? string.Empty;
+                    _overrideMaterialName = string.Empty;
+                    _showMaterialDropdown = false;
+                    _materialExplicitlyChosen = false;
+                    // Prefer applying by name so we use the live Material object from _materialByName
+                    // rather than _selectedDefaultMaterials, which may be contaminated by a prior override.
+                    if (!string.IsNullOrEmpty(_defaultMaterialName))
+                        ApplyPreviewMaterial(_defaultMaterialName);
+                    else
+                        ApplyPreviewMaterial(string.Empty);
+                    MarkDirty();
+                }
+                GUILayout.EndHorizontal();
 
                 if (_showMaterialDropdown)
                 {
@@ -544,21 +523,6 @@ namespace BabyBlocks
                         }
                     }
                     GUILayout.EndScrollView();
-                }
-
-                if (GUILayout.Button("Reset to default material"))
-                {
-                    _selectedMaterialName = _defaultMaterialName ?? string.Empty;
-                    _overrideMaterialName = string.Empty;
-                    _showMaterialDropdown = false;
-                    _materialExplicitlyChosen = false;
-                    // Prefer applying by name so we use the live Material object from _materialByName
-                    // rather than _selectedDefaultMaterials, which may be contaminated by a prior override.
-                    if (!string.IsNullOrEmpty(_defaultMaterialName))
-                        ApplyPreviewMaterial(_defaultMaterialName);
-                    else
-                        ApplyPreviewMaterial(string.Empty);
-                    MarkDirty();
                 }
             }
             else
@@ -631,31 +595,57 @@ namespace BabyBlocks
                 }
             }
 
-            GUILayout.Space(4f);
-            GUILayout.Label("Surface type (traction / footstep audio)");
-            string surfaceLabel = string.IsNullOrEmpty(_surfaceType) ? "(none — game default)" : _surfaceType;
-            if (GUILayout.Button(surfaceLabel, GUILayout.Height(22f)))
-                _showSurfaceTypeDropdown = !_showSurfaceTypeDropdown;
+            GUILayout.Space(8f);
 
-            if (_showSurfaceTypeDropdown)
+            var newKeepOrig = GUILayout.Toggle(_keepOriginalHierarchy, "Keep original hierarchy");
+            if (newKeepOrig != _keepOriginalHierarchy)
             {
-                _surfaceTypeScroll = GUILayout.BeginScrollView(_surfaceTypeScroll, GUILayout.Height(120f));
-                foreach (var tag in KnownSurfaceTags)
-                {
-                    string lbl = string.IsNullOrEmpty(tag) ? "(none — game default)" : tag;
-                    if (string.Equals(tag, _surfaceType, StringComparison.Ordinal))
-                        lbl = "> " + lbl;
-                    EnsureMaterialButtonStyle();
-                    if (GUILayout.Button(lbl, _materialButtonStyle))
-                    {
-                        _surfaceType = tag;
-                        _showSurfaceTypeDropdown = false;
-                        ApplySurfaceType(_selectedLEO, tag);
-                        MarkDirty();
-                    }
-                }
-                GUILayout.EndScrollView();
+                _keepOriginalHierarchy = newKeepOrig;
+                MarkDirty();
             }
+
+            var newIsBush = GUILayout.Toggle(_isBush, "Is Bush");
+            if (newIsBush != _isBush)
+            {
+                _isBush = newIsBush;
+                ApplyBushCollider(_selectedLEO, newIsBush);
+                ApplyCurrent();
+                _dirty = false;
+            }
+            if (_isBush)
+            {
+                GUILayout.Label($"  Bush sphere radius: {_bushRadius:F3} (local)");
+                GUILayout.Label("  Grass type (sound)");
+                if (GUILayout.Button(GrassTypeName(_soundGrassType), GUILayout.Height(22f)))
+                    _showGrassTypeDropdown = !_showGrassTypeDropdown;
+                if (_showGrassTypeDropdown)
+                {
+                    _grassTypeScroll = GUILayout.BeginScrollView(_grassTypeScroll, GUILayout.Height(120f));
+                    foreach (var (lbl, val) in KnownGrassTypes)
+                    {
+                        string btnLbl = val == _soundGrassType ? "> " + lbl : lbl;
+                        EnsureMaterialButtonStyle();
+                        if (GUILayout.Button(btnLbl, _materialButtonStyle))
+                        {
+                            _soundGrassType = val;
+                            _showGrassTypeDropdown = false;
+                            if (_selectedLEO != null)
+                            {
+                                BushAudioTracker.Unregister(_selectedLEO.transform);
+                                BushAudioTracker.Register(_selectedLEO.transform, _bushRadius, _soundGrassType);
+                            }
+                            ApplyCurrent();
+                            _dirty = false;
+                        }
+                    }
+                    GUILayout.EndScrollView();
+                }
+            }
+
+            GUILayout.Space(4f);
+            GUILayout.Label(_index > 0
+                ? $"Index: {_index}"
+                : "Index: (not set)");
 
             GUILayout.EndScrollView();
             GUILayout.EndVertical();
@@ -1932,7 +1922,7 @@ namespace BabyBlocks
         {
             if (_windowInitialized) return;
             float width = 400f;
-            float height = 560f;
+            float height = 700f;
             float x = Screen.width - width - 10f;
             if (x < 10f) x = 10f;
             _windowRect = new Rect(x, 10f, width, height);
