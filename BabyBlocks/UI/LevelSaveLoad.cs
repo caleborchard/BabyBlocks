@@ -1,0 +1,355 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using MelonLoader;
+using UnityEngine;
+
+namespace BabyBlocks
+{
+    // Binary .bbb format
+    //
+    // File header:
+    //   Magic    : 3 bytes  { 0x42, 0x42, 0x42 }  ("BBB")
+    //   Version  : 1 byte
+    //   Count    : int32    (number of objects)
+    //
+    // Per object (version 5):
+    //   MetaIndex    : int32    (PropMetadataPanel index — the sole prop reference)
+    //   ChunkIndex   : byte     (0..63 for chunked props, 255 for physics objects)
+    //   Pos.x/y/z    : 3 × float32
+    //   Rot.x/y/z    : 3 × float32 (w reconstructed)
+    //   Scale.x/y/z  : 3 × float32
+    //   PhysicsType  : byte     (0=static, 1=rigidbody, 2=grabable, 3=hat)
+    //   GroupId      : byte     (0=no logical group)
+    //   PhysGroupId  : byte     (0=no physics group)
+    //   HatHairAmt   : float32  (hat hair-cut amount 0..1)
+    //   GrabOffPos.xyz: 3 × float32  (hand-local grab offset)
+    //   GrabOffRot.xyz: 3 × float32  (hand-local grab rotation, Euler degrees)
+    //   HatOffPos.xyz : 3 × float32  (additive hat head offset)
+    //   HatOffRot.xyz : 3 × float32  (additive hat head rotation, Euler degrees)
+    //
+    // Version 4 (legacy): same without grab/hat offset fields.
+    // Version 3 (legacy): same without PhysicsType/GroupId/HatHairAmt.
+    // Version 2 (legacy): MetaIndex + full quaternion + scale.
+    // Version 1 (legacy): PropId string + MetaIndex int32 + same transform.
+    static class LevelSaveLoad
+    {
+        static readonly byte[] Magic = { 0x42, 0x42, 0x42 };
+        const byte FormatVersion = 5;
+
+        struct SaveRecord
+        {
+            public LevelEditorObject obj;
+            public int metaIndex;
+            public int chunkIndex;
+            public Vector3 position;
+            public Quaternion rotation;
+            public Vector3 scale;
+            public PhysicsMode physicsType;
+            public int groupId;
+            public int physicsGroupId;
+            public float hatHairAmt;
+            public Vector3 grabOffsetPos;
+            public Vector3 grabOffsetRot;
+            public Vector3 hatOffsetPos;
+            public Vector3 hatOffsetRot;
+        }
+
+        public static bool Save(string path)
+        {
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null)
+            {
+                MelonLogger.Warning("[SaveLoad] LevelEditorManager not ready.");
+                return false;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                using var fs = File.Open(path, FileMode.Create, FileAccess.Write);
+                using var w  = new BinaryWriter(fs, Encoding.UTF8, leaveOpen: false);
+
+                w.Write(Magic);
+                w.Write(FormatVersion);
+
+                var records = BuildSortedRecords(mgr);
+                w.Write(records.Count);
+
+                for (int i = 0; i < records.Count; i++)
+                    WriteRecord(w, records[i]);
+
+                MelonLogger.Msg($"[SaveLoad] Saved {records.Count} object(s) → {path}");
+                return true;
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[SaveLoad] Save failed: {e.Message}");
+                return false;
+            }
+        }
+
+        public static (bool ok, int count, string error) Load(string path)
+        {
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null)
+                return (false, 0, "Level editor not ready.");
+
+            if (!File.Exists(path))
+                return (false, 0, "File not found.");
+
+            try
+            {
+                LevelEditor.Select(null);
+                using var fs = File.Open(path, FileMode.Open, FileAccess.Read);
+                using var r  = new BinaryReader(fs, Encoding.UTF8, leaveOpen: false);
+
+                var magic = r.ReadBytes(3);
+                if (magic.Length < 3 || magic[0] != 0x42 || magic[1] != 0x42 || magic[2] != 0x42)
+                    return (false, 0, "Not a .bbb file.");
+
+                byte version = r.ReadByte();
+                if (version > 5)
+                    return (false, 0, $"Unsupported format version {version}.");
+
+                int count = r.ReadInt32();
+                int spawned = 0;
+
+                mgr.RemoveAll();
+
+                for (int i = 0; i < count; i++)
+                {
+                    string propId;
+                    int chunkIndex = -1;
+                    if (version == 1)
+                    {
+                        // Legacy: string propId + metaIndex (discarded — use propId directly).
+                        propId = ReadLegacyString(r);
+                        r.ReadInt32();
+                    }
+                    else if (version == 2)
+                    {
+                        int metaIndex = r.ReadInt32();
+                        propId = PropMetadataPanel.FindIdByIndex(metaIndex);
+                        if (string.IsNullOrEmpty(propId))
+                        {
+                            MelonLogger.Warning($"[SaveLoad] No prop for index {metaIndex}");
+                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // pos
+                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // rot
+                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // scale
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        int metaIndex = r.ReadInt32();
+                        chunkIndex = r.ReadByte();
+                        propId = PropMetadataPanel.FindIdByIndex(metaIndex);
+                        if (string.IsNullOrEmpty(propId))
+                        {
+                            MelonLogger.Warning($"[SaveLoad] No prop for index {metaIndex}");
+                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // pos
+                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // rot (compact)
+                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // scale
+                            if (version >= 4)
+                            {
+                                r.ReadByte(); // physicsType
+                                r.ReadByte(); // groupId
+                                r.ReadByte(); // physicsGroupId
+                                r.ReadSingle(); // hatHairAmt
+                            }
+                            if (version >= 5)
+                            {
+                                for (int k = 0; k < 12; k++) r.ReadSingle(); // grab/hat offsets
+                            }
+                            continue;
+                        }
+                    }
+
+                    var pos   = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    var rot   = (version >= 3) ? ReadCompactRotation(r)
+                                               : new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    var scale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+
+                    PhysicsMode physicsType      = PhysicsMode.Static;
+                    int recordGroupId            = 0;
+                    int recordPhysicsGroupId     = 0;
+                    float hatHairAmt             = 0f;
+                    var grabOffsetPos = Vector3.zero;
+                    var grabOffsetRot = Vector3.zero;
+                    var hatOffsetPos  = Vector3.zero;
+                    var hatOffsetRot  = Vector3.zero;
+                    if (version >= 4)
+                    {
+                        byte rawPhysics = r.ReadByte();
+                        physicsType = Enum.IsDefined(typeof(PhysicsMode), (int)rawPhysics)
+                            ? (PhysicsMode)rawPhysics : PhysicsMode.Static;
+                        recordGroupId        = r.ReadByte();
+                        recordPhysicsGroupId = r.ReadByte();
+                        hatHairAmt           = Mathf.Clamp01(r.ReadSingle());
+                    }
+                    if (version >= 5)
+                    {
+                        grabOffsetPos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                        grabOffsetRot = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                        hatOffsetPos  = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                        hatOffsetRot  = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    }
+
+                    var info = PropLibrary.FindById(propId);
+                    if (info == null)
+                    {
+                        MelonLogger.Warning($"[SaveLoad] Prop not found: {propId}");
+                        continue;
+                    }
+
+                    var leo = mgr.SpawnFromPropInfo(info, pos);
+                    if (leo == null) continue;
+
+                    leo.transform.rotation   = rot;
+                    leo.transform.localScale = scale;
+                    mgr.SyncLoopBase(leo);
+                    if (version >= 3 && chunkIndex >= 0)
+                    {
+                        if (chunkIndex == 255)
+                        {
+                            leo.chunkIndex = 255;
+                            leo.chunkCoord = new Vector2Int(-1, -1);
+                        }
+                        else
+                        {
+                            int safeChunk = Mathf.Clamp(chunkIndex, 0, 63);
+                            leo.chunkIndex = safeChunk;
+                            leo.chunkCoord = new Vector2Int(safeChunk % 8, safeChunk / 8);
+                        }
+                    }
+                    leo.physicsMode      = physicsType;
+                    leo.groupId          = recordGroupId;
+                    leo.physicsGroupId   = recordPhysicsGroupId;
+                    leo.hatHairAmt       = hatHairAmt;
+                    leo.grabOffsetPos    = grabOffsetPos;
+                    leo.grabOffsetRot    = grabOffsetRot;
+                    leo.hatOffsetPos     = hatOffsetPos;
+                    leo.hatOffsetRot     = hatOffsetRot;
+                    spawned++;
+                }
+
+                mgr.ApplyPhysicsGroups();
+                mgr.SyncLoadedHatHairValues();
+
+                MelonLogger.Msg($"[SaveLoad] Loaded {spawned}/{count} object(s) from {path}");
+                return (true, spawned, null);
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[SaveLoad] Load failed: {e.Message}");
+                return (false, 0, e.Message);
+            }
+        }
+
+        // Version 1 backward-compat: int32 byte-length followed by UTF-8 bytes.
+        static string ReadLegacyString(BinaryReader r)
+        {
+            int len = r.ReadInt32();
+            if (len <= 0) return "";
+            return Encoding.UTF8.GetString(r.ReadBytes(len));
+        }
+
+        static List<SaveRecord> BuildSortedRecords(LevelEditorManager mgr)
+        {
+            var records = new List<SaveRecord>();
+            if (mgr == null) return records;
+
+            foreach (var leo in mgr.Objects)
+            {
+                if (leo == null || string.IsNullOrEmpty(leo.addressableKey)) continue;
+                int metaIndex = PropMetadataPanel.GetMetaIndex(leo.addressableKey);
+                if (metaIndex <= 0) continue;
+
+                var position = leo.hasLoopBasePosition ? leo.loopBasePosition : leo.transform.position;
+                records.Add(new SaveRecord
+                {
+                    obj = leo,
+                    metaIndex = metaIndex,
+                    chunkIndex = leo.physicsMode == PhysicsMode.Static
+                        ? LevelEditorManager.GetChunkIndex(position)
+                        : 255,
+                    position = position,
+                    rotation = CanonicalizeRotation(leo.transform.rotation),
+                    scale = leo.transform.localScale,
+                    physicsType      = leo.physicsMode,
+                    groupId          = leo.groupId,
+                    physicsGroupId   = leo.physicsGroupId,
+                    hatHairAmt       = leo.hatHairAmt,
+                    grabOffsetPos    = leo.grabOffsetPos,
+                    grabOffsetRot    = leo.grabOffsetRot,
+                    hatOffsetPos     = leo.hatOffsetPos,
+                    hatOffsetRot     = leo.hatOffsetRot,
+                });
+            }
+
+            records.Sort(CompareRecords);
+            return records;
+        }
+
+        static int CompareRecords(SaveRecord a, SaveRecord b)
+        {
+            int chunkCompare = a.chunkIndex.CompareTo(b.chunkIndex);
+            if (chunkCompare != 0) return chunkCompare;
+
+            int zCompare = a.position.z.CompareTo(b.position.z);
+            if (zCompare != 0) return zCompare;
+
+            int xCompare = a.position.x.CompareTo(b.position.x);
+            if (xCompare != 0) return xCompare;
+
+            int yCompare = a.position.y.CompareTo(b.position.y);
+            if (yCompare != 0) return yCompare;
+
+            return string.Compare(a.obj?.addressableKey, b.obj?.addressableKey, StringComparison.Ordinal);
+        }
+
+        static void WriteRecord(BinaryWriter w, SaveRecord record)
+        {
+            w.Write(record.metaIndex);
+            w.Write((byte)Mathf.Clamp(record.chunkIndex, 0, 255));
+            w.Write(record.position.x);  w.Write(record.position.y);  w.Write(record.position.z);
+            WriteCompactRotation(w, record.rotation);
+            w.Write(record.scale.x); w.Write(record.scale.y); w.Write(record.scale.z);
+            w.Write((byte)record.physicsType);
+            w.Write((byte)Mathf.Clamp(record.groupId, 0, 255));
+            w.Write((byte)Mathf.Clamp(record.physicsGroupId, 0, 255));
+            w.Write(Mathf.Clamp01(record.hatHairAmt));
+            w.Write(record.grabOffsetPos.x); w.Write(record.grabOffsetPos.y); w.Write(record.grabOffsetPos.z);
+            w.Write(record.grabOffsetRot.x); w.Write(record.grabOffsetRot.y); w.Write(record.grabOffsetRot.z);
+            w.Write(record.hatOffsetPos.x);  w.Write(record.hatOffsetPos.y);  w.Write(record.hatOffsetPos.z);
+            w.Write(record.hatOffsetRot.x);  w.Write(record.hatOffsetRot.y);  w.Write(record.hatOffsetRot.z);
+        }
+
+        static void WriteCompactRotation(BinaryWriter w, Quaternion rotation)
+        {
+            rotation = CanonicalizeRotation(rotation);
+            w.Write(rotation.x);
+            w.Write(rotation.y);
+            w.Write(rotation.z);
+        }
+
+        static Quaternion ReadCompactRotation(BinaryReader r)
+        {
+            float x = r.ReadSingle();
+            float y = r.ReadSingle();
+            float z = r.ReadSingle();
+            float w = 1f - (x * x + y * y + z * z);
+            w = w > 0f ? Mathf.Sqrt(w) : 0f;
+            return new Quaternion(x, y, z, w);
+        }
+
+        static Quaternion CanonicalizeRotation(Quaternion rotation)
+        {
+            if (rotation.w < 0f)
+                rotation = new Quaternion(-rotation.x, -rotation.y, -rotation.z, -rotation.w);
+            return rotation;
+        }
+    }
+}

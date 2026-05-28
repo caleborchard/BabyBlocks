@@ -8,35 +8,6 @@ using UnityEngine;
 
 namespace BabyBlocks
 {
-    [Serializable]
-    public class PropExtraInfo
-    {
-        public string id;
-        public string displayName;
-        public string category;
-        public bool excluded;
-        public bool useRenderMeshCollider;
-        public string colliderIgnoredSubmeshes;
-        public string overrideMaterialId;
-        public string nativeMaterialName; // true original material, stored when first override is applied
-        public string materialSourcePropId; // prop whose asset contains the override material
-        public string surfaceType;
-        public int index;
-        public List<string> disabledRenderers = new();
-        public List<string> perSlotMaterialOverrides;
-        public int forcedMaterialSlots; // 0 = auto-detect; >1 = manual multi-slot
-        public bool isBush;
-        public float bushRadius;
-        public int soundGrassType = 1;
-    }
-
-    [Serializable]
-    class PropExtraInfoSave
-    {
-        public int nextIndex = 1;
-        public List<PropExtraInfo> items = new();
-    }
-
     static class PropMetadataPanel
     {
         public static bool Enabled = true;
@@ -2188,7 +2159,7 @@ namespace BabyBlocks
             // when the metadata panel UI has never been shown (e.g. non-debug mode or first launch).
             AddMicroSplatLayerMaterials();
 
-            // --- Per-slot overrides ---
+            // Per-slot overrides
             var overrides = info.perSlotMaterialOverrides;
             if (overrides != null && overrides.Count > 0)
             {
@@ -2224,7 +2195,7 @@ namespace BabyBlocks
                 return;
             }
 
-            // --- Single-slot override (overrideMaterialId) ---
+            // Single-slot override (overrideMaterialId)
             // This is the common case for props with one material slot: the override is stored
             // in overrideMaterialId, not perSlotMaterialOverrides. ApplyPreviewMaterial applies
             // the same material to every slot of every renderer, so we mirror that here.

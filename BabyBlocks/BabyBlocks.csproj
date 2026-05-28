@@ -685,19 +685,25 @@
 
 	<ItemGroup>
 		<Compile Include="Core.cs" />
-		<Compile Include="Components.cs" />
-		<Compile Include="PropLibrary.cs" />
-		<Compile Include="PropMetadataPanel.cs" />
-		<Compile Include="GizmoRenderer.cs" />
-		<Compile Include="PropPalette.cs" />
-		<Compile Include="LevelEditorHistory.cs" />
-		<Compile Include="LevelEditorManager.cs" />
-		<Compile Include="LevelEditor.cs" />
-		<Compile Include="SceneHierarchyScanner.cs" />
-		<Compile Include="PrimitiveMeshGen.cs" />
-		<Compile Include="SaveLoadWindow.cs" />
-		<Compile Include="PhysicsWindow.cs" />
-		<Compile Include="ObjImportWindow.cs" />
+		<Compile Include="Components\LevelEditorObject.cs" />
+		<Compile Include="Components\GizmoHandle.cs" />
+		<Compile Include="Editor\FlyCamController.cs" />
+		<Compile Include="Editor\GizmoRenderer.cs" />
+		<Compile Include="Editor\LevelEditor.cs" />
+		<Compile Include="Editor\LevelEditorManager.cs" />
+		<Compile Include="Editor\LevelEditorHistory.cs" />
+		<Compile Include="Props\PropData.cs" />
+		<Compile Include="Props\PropExtraInfo.cs" />
+		<Compile Include="Props\PropLibrary.cs" />
+		<Compile Include="Props\PropMetadataPanel.cs" />
+		<Compile Include="Props\PrimitiveMeshGen.cs" />
+		<Compile Include="UI\LevelSaveLoad.cs" />
+		<Compile Include="UI\SaveLoadWindow.cs" />
+		<Compile Include="UI\PropPalette.cs" />
+		<Compile Include="UI\PhysicsWindow.cs" />
+		<Compile Include="UI\ObjImportWindow.cs" />
+		<Compile Include="Debug\RendererPicker.cs" />
+		<Compile Include="Debug\SceneHierarchyScanner.cs" />
 	</ItemGroup>
 
 	<ItemGroup>

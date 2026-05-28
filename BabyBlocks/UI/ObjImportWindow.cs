@@ -13,7 +13,7 @@ namespace BabyBlocks
     {
         // Flip to true to enable this feature. When false the window is never drawn
         // and ContainsPoint / IsTypingInUI are always false — zero runtime cost.
-        public static bool Enabled = false;
+        public static bool Enabled = true;
 
         const float WinW    = 370f;
         const float WinH    = 150f;
@@ -125,8 +125,9 @@ namespace BabyBlocks
                 {
                     leo.transform.localScale = Vector3.one * 0.5f;
                     leo.loopBaseScale = leo.transform.localScale;
+                    RegisterChunkColliders(leo.gameObject);
+                    PropMetadataPanel.ApplySurfaceType(leo, "Rock");
                 }
-                if (leo != null) RegisterChunkColliders(leo.gameObject);
                 _status = $"Spawned '{name}'.";
             }
             catch (Exception ex)
@@ -173,6 +174,7 @@ namespace BabyBlocks
                         leo.transform.localScale = Vector3.one * 0.5f;
                         leo.loopBaseScale = leo.transform.localScale;
                         RegisterChunkColliders(leo.gameObject);
+                        PropMetadataPanel.ApplySurfaceType(leo, "Rock");
                         imported++;
                     }
                 }
@@ -210,7 +212,8 @@ namespace BabyBlocks
                 if (_chunkColliders[i] == null) _chunkColliders.RemoveAt(i);
         }
 
-        // ── PropInfo builder ─────────────────────────────────────────────────────
+
+        // PropInfo builder
 
         static PropInfo BuildPropInfo(string objPath, string name)
         {
@@ -244,7 +247,8 @@ namespace BabyBlocks
             return info;
         }
 
-        // ── OBJ file parser ──────────────────────────────────────────────────────
+
+        // OBJ file parser
 
         class MatGroup
         {
@@ -354,7 +358,8 @@ namespace BabyBlocks
             return result;
         }
 
-        // ── Per-group mesh builder ───────────────────────────────────────────────
+
+        // Per-group mesh builder
 
         static (Mesh mesh, Material mat) BuildPartMesh(
             List<int[]>      tris,
@@ -443,7 +448,8 @@ namespace BabyBlocks
             return (mesh, BuildMaterial(def, matName));
         }
 
-        // ── MTL parser ───────────────────────────────────────────────────────────
+
+        // MTL parser
 
         struct MtlDef
         {

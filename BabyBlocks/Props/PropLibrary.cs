@@ -12,63 +12,10 @@ using MelonLoader.Utils;
 
 namespace BabyBlocks
 {
-    public class PropMeshPart
-    {
-        public Mesh       mesh;
-        public Material[] materials;
-        public Vector3    localPosition;
-        public Quaternion localRotation;
-        public Vector3    localScale;
-    }
-
-    public class PropColliderPart
-    {
-        public enum ColliderType { Mesh, Box, Sphere, Capsule }
-        public ColliderType type;
-        public Mesh  mesh;
-        public bool  convex;
-        public Vector3 center;
-        public Vector3 size;
-        public float radius;
-        public float height;
-        public int   direction;
-        public Vector3    localPosition;
-        public Quaternion localRotation;
-        public Vector3    localScale;
-    }
-
-    public class PropInfo
-    {
-        public readonly string id;
-        public          string displayName;
-
-        public List<PropMeshPart>      parts         = new();
-        public List<PropColliderPart>  colliderParts = new();
-        public bool HasColliderParts => colliderParts != null && colliderParts.Count > 0;
-        public bool               isLoaded;
-        public bool               isInvalid;
-
-        public int gpuiIndex = -1;
-        public bool IsGpui => gpuiIndex >= 0;
-        public string visualPath     = "";
-        public string gpuiPrefabName = "";
-
-        public bool HasMesh => parts != null && parts.Count > 0;
-        public bool IsPrimitive => id.StartsWith("primitive://", StringComparison.Ordinal);
-
-        // Holds the Addressables-loaded asset (Mesh or GameObject prefab) so it can be
-        // properly released when the prop is unloaded. Null for BestRegion-sourced props.
-        internal UnityEngine.Object _addressableAsset;
-
-        public PropInfo(string key, string name = null)
-        {
-            id = key;
-            displayName = name ?? key;
-        }
-    }
-
     public static class PropLibrary
     {
+        internal const string NegativeCollisionPropId = "special://negative-hole";
+
         static readonly List<PropInfo> _all = new();
         static readonly List<PropInfo> _filtered = new();
         static readonly Dictionary<string, PropInfo> _byId = new(StringComparer.Ordinal);
@@ -246,6 +193,10 @@ namespace BabyBlocks
                 _all.Add(pi);
                 _byId[id] = pi;
             }
+
+            var holeProp = new PropInfo(NegativeCollisionPropId, "Hole");
+            _all.Add(holeProp);
+            _byId[holeProp.id] = holeProp;
 
             int primitiveCount = _all.Count;
 
@@ -977,6 +928,12 @@ namespace BabyBlocks
             if (info.IsPrimitive)
             {
                 LoadPrimitive(info);
+                return;
+            }
+
+            if (IsNegativeCollisionProp(info.id))
+            {
+                LoadNegativeCollisionProp(info);
                 return;
             }
 
@@ -1914,6 +1871,40 @@ namespace BabyBlocks
                 info.isLoaded  = true;
                 info.isInvalid = true;
             }
+        }
+
+        static void LoadNegativeCollisionProp(PropInfo info)
+        {
+            try
+            {
+                var tempGo = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                var mesh = tempGo.GetComponent<MeshFilter>()?.sharedMesh;
+                var tempMr = tempGo.GetComponent<MeshRenderer>();
+                var defMats = tempMr != null ? tempMr.sharedMaterials : null;
+                UnityEngine.Object.Destroy(tempGo);
+
+                info.parts.Add(new PropMeshPart
+                {
+                    mesh          = mesh,
+                    materials     = defMats,
+                    localPosition = Vector3.zero,
+                    localRotation = Quaternion.identity,
+                    localScale    = Vector3.one,
+                });
+
+                info.isLoaded  = true;
+                info.isInvalid = false;
+            }
+            catch
+            {
+                info.isLoaded  = true;
+                info.isInvalid = true;
+            }
+        }
+
+        public static bool IsNegativeCollisionProp(string id)
+        {
+            return !string.IsNullOrEmpty(id) && string.Equals(id, NegativeCollisionPropId, StringComparison.Ordinal);
         }
 
         static void AddPart(PropInfo info, Mesh mesh, Material[] materials, Transform t, Transform rootT)

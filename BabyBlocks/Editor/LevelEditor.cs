@@ -28,7 +28,7 @@ namespace BabyBlocks
         static int        _hoveredAxis = -1;
         static bool       _pivotLocked;
 
-        public static bool IsTypingInUI => PropMetadataPanel.IsTypingInUI || ObjImportWindow.IsTypingInUI;
+        public static bool IsTypingInUI => PropMetadataPanel.IsTypingInUI || ObjImportWindow.IsTypingInUI || PhysicsWindow.IsTypingInUI;
         public static bool IsDragging   => _isDragging;
 
         static readonly List<LevelEditorObject> _dragObjects = new();
@@ -427,7 +427,7 @@ namespace BabyBlocks
             if (currentTool == ToolMode.Scale)
                 _rawMouseAccum += new Vector2(Input.GetAxis("Mouse X"), Input.GetAxis("Mouse Y")) * 10f;
 
-            // ── FREE ROTATE (velocity-based; mirrors Unity's FreeRotate.cs) ──────────
+            // FREE ROTATE (velocity-based; mirrors Unity's FreeRotate.cs)
             // Each frame: build a rotation axis perpendicular to the mouse-drag direction
             // in screen space and accumulate it.  Applied from drag-start so the total
             // rotation is always relative to the original orientation.
@@ -474,7 +474,7 @@ namespace BabyBlocks
                 return;
             }
 
-            // ── RING ROTATE ──────────────────────────────────────────────────────────
+            // RING ROTATE
             if (currentTool == ToolMode.Rotate)
             {
                 var rotRay   = cam.ScreenPointToRay(Input.mousePosition);
@@ -514,13 +514,13 @@ namespace BabyBlocks
                 return;
             }
 
-            // ── TRANSLATE + SCALE: ray-plane intersection ────────────────────────────
+            // TRANSLATE + SCALE: ray-plane intersection
             var ray   = cam.ScreenPointToRay(Input.mousePosition);
             var plane = new Plane(_dragPlaneNormal, _dragPivot);
             if (!plane.Raycast(ray, out float enter)) return;
             var delta = ray.GetPoint(enter) - _dragStartHit;
 
-            // ── AXIS 3 (uniform sphere) ───────────────────────────────────────────────
+            // AXIS 3 (uniform sphere)
             if (_dragAxis == 3)
             {
                 if (currentTool == ToolMode.Scale)
@@ -537,7 +537,7 @@ namespace BabyBlocks
                 return;
             }
 
-            // ── AXES 4-6 (plane handles) ──────────────────────────────────────────────
+            // AXES 4-6 (plane handles)
             if (_dragAxis >= 4)
             {
                 if (currentTool == ToolMode.Scale)
@@ -600,7 +600,7 @@ namespace BabyBlocks
                 return;
             }
 
-            // ── AXES 0-2 (single-axis arrows) ─────────────────────────────────────────
+            // AXES 0-2 (single-axis arrows)
             if (currentTool == ToolMode.Scale)
             {
                 // Project onto the effective arrow direction (accounts for camera-side flip).
@@ -689,6 +689,30 @@ namespace BabyBlocks
                 if (obj == null || obj.physicsMode != PhysicsMode.Hat) continue;
                 obj.hatHairAmt = hairAmount;
                 mgr.SyncHatHairAmount(obj);
+            }
+        }
+
+        public static void SetGrabOffset(Vector3 pos, Vector3 rotEuler)
+        {
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null || _selection.Count == 0) return;
+            foreach (var obj in _selection)
+            {
+                if (obj == null || obj.physicsMode != PhysicsMode.Grabable) continue;
+                obj.grabOffsetPos = pos;
+                obj.grabOffsetRot = rotEuler;
+                mgr.SyncGrabOffset(obj);
+            }
+        }
+
+        public static void SetHatOffset(Vector3 pos, Vector3 rotEuler)
+        {
+            if (_selection.Count == 0) return;
+            foreach (var obj in _selection)
+            {
+                if (obj == null || obj.physicsMode != PhysicsMode.Hat) continue;
+                obj.hatOffsetPos = pos;
+                obj.hatOffsetRot = rotEuler;
             }
         }
 

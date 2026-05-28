@@ -1,3 +1,4 @@
+using System.Globalization;
 using UnityEngine;
 
 namespace BabyBlocks
@@ -6,7 +7,7 @@ namespace BabyBlocks
     // shows the current physics mode and group, and exposes Group/Ungroup buttons.
     static class PhysicsWindow
     {
-        const float WinW    = 170f;
+        const float WinW    = 210f;
         const float HeaderH = 30f;
         const float Pad     = 7f;
         const float LineH   = 22f;
@@ -16,17 +17,31 @@ namespace BabyBlocks
         static bool    _dragging;
         static Vector2 _dragOffset;
 
+        // Text field state for grab/hat offsets
+        static string[] _grabPosStr = { "0", "0", "0" };
+        static string[] _grabRotStr = { "0", "0", "0" };
+        static string[] _hatPosStr  = { "0", "0", "0" };
+        static string[] _hatRotStr  = { "0", "0", "0" };
+        static LevelEditorObject _lastPrimary;
+
+        public static bool IsTypingInUI { get; private set; }
+
         static void EnsureInit()
         {
             if (_initialized) return;
             _initialized = true;
-            float h = ComputeHeight(false, false);
+            float h = ComputeHeight(false, false, false, false);
             _windowRect = new Rect(Screen.width - 320f - WinW - 10f,
                                    Screen.height - h - 40f, WinW, h);
         }
 
-        static float ComputeHeight(bool showGroup, bool showHatHair)
-            => HeaderH + Pad + LineH + (showHatHair ? LineH + 24f : 0f) + (showGroup ? LineH : 0f) + LineH + LineH + Pad;
+        static float ComputeHeight(bool showGroup, bool showHatHair, bool showGrabOffset, bool showHatOffset)
+            => HeaderH + Pad + LineH
+             + (showHatHair    ? LineH + 24f : 0f)
+             + (showGrabOffset ? 3 * LineH   : 0f)
+             + (showHatOffset  ? 3 * LineH   : 0f)
+             + (showGroup      ? LineH       : 0f)
+             + LineH + LineH + Pad;
 
         public static bool ContainsPoint(Vector2 guiPoint) =>
             _initialized && _windowRect.Contains(guiPoint);
@@ -59,9 +74,19 @@ namespace BabyBlocks
                 if (obj.groupId > 0) anyGroup = true;
             }
 
-            bool showGroup   = hasSelection && sharedGroup > 0;
-            bool showHatHair = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Hat;
-            float winH = ComputeHeight(showGroup, showHatHair);
+            bool showGroup      = hasSelection && sharedGroup > 0;
+            bool showHatHair    = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Hat;
+            bool showGrabOffset = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Grabable;
+            bool showHatOffset  = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Hat;
+
+            // Sync text field strings when the selected object changes
+            if (primary != _lastPrimary)
+            {
+                _lastPrimary = primary;
+                SyncStrings(primary);
+            }
+
+            float winH = ComputeHeight(showGroup, showHatHair, showGrabOffset, showHatOffset);
             _windowRect.width  = WinW;
             _windowRect.height = winH;
             _windowRect.x = Mathf.Clamp(_windowRect.x, 0f, Screen.width  - WinW);
@@ -115,6 +140,45 @@ namespace BabyBlocks
                 y += 24f;
             }
 
+            if (showGrabOffset)
+            {
+                GUI.Label(new Rect(x, y, w, LineH), "Grab Offset");
+                y += LineH;
+
+                var newGrabPos = Vec3Row(x, y, w, "Pos", primary.grabOffsetPos, _grabPosStr,
+                                        "grab_px", "grab_py", "grab_pz");
+                y += LineH;
+                var newGrabRot = Vec3Row(x, y, w, "Rot", primary.grabOffsetRot, _grabRotStr,
+                                        "grab_rx", "grab_ry", "grab_rz");
+                y += LineH;
+
+                if (newGrabPos != primary.grabOffsetPos || newGrabRot != primary.grabOffsetRot)
+                    LevelEditor.SetGrabOffset(newGrabPos, newGrabRot);
+            }
+
+            if (showHatOffset)
+            {
+                GUI.Label(new Rect(x, y, w, LineH), "Hat Offset");
+                y += LineH;
+
+                var newHatPos = Vec3Row(x, y, w, "Pos", primary.hatOffsetPos, _hatPosStr,
+                                       "hat_px", "hat_py", "hat_pz");
+                y += LineH;
+                var newHatRot = Vec3Row(x, y, w, "Rot", primary.hatOffsetRot, _hatRotStr,
+                                       "hat_rx", "hat_ry", "hat_rz");
+                y += LineH;
+
+                if (newHatPos != primary.hatOffsetPos || newHatRot != primary.hatOffsetRot)
+                    LevelEditor.SetHatOffset(newHatPos, newHatRot);
+            }
+
+            // Track whether any offset field is focused (blocks editor shortcuts)
+            var focused = GUI.GetNameOfFocusedControl();
+            IsTypingInUI = focused == "grab_px" || focused == "grab_py" || focused == "grab_pz"
+                        || focused == "grab_rx" || focused == "grab_ry" || focused == "grab_rz"
+                        || focused == "hat_px"  || focused == "hat_py"  || focused == "hat_pz"
+                        || focused == "hat_rx"  || focused == "hat_ry"  || focused == "hat_rz";
+
             if (showGroup)
             {
                 GUI.Label(new Rect(x, y, w, LineH), $"Group: {sharedGroup}");
@@ -141,6 +205,57 @@ namespace BabyBlocks
             if (GUI.Button(new Rect(x + halfW + 6f, y, halfW, LineH), "Ungroup"))
                 LevelEditor.UngroupSelection();
             GUI.enabled = true;
+        }
+
+        // Draws a labelled row of three float text fields. Returns the parsed Vector3.
+        static Vector3 Vec3Row(float x, float y, float w, string label,
+                               Vector3 current, string[] strs,
+                               string ctrlX, string ctrlY, string ctrlZ)
+        {
+            const float LabelW = 28f;
+            const float Gap    = 3f;
+            float fw = (w - LabelW - Gap * 2f) / 3f;
+
+            GUI.Label(new Rect(x, y + 2f, LabelW, LineH), label);
+
+            float fx = x + LabelW;
+            GUI.SetNextControlName(ctrlX);
+            strs[0] = GUI.TextField(new Rect(fx, y + 1f, fw, LineH - 2f), strs[0]);
+            fx += fw + Gap;
+            GUI.SetNextControlName(ctrlY);
+            strs[1] = GUI.TextField(new Rect(fx, y + 1f, fw, LineH - 2f), strs[1]);
+            fx += fw + Gap;
+            GUI.SetNextControlName(ctrlZ);
+            strs[2] = GUI.TextField(new Rect(fx, y + 1f, fw, LineH - 2f), strs[2]);
+
+            float vx = TryParseFloat(strs[0], current.x);
+            float vy = TryParseFloat(strs[1], current.y);
+            float vz = TryParseFloat(strs[2], current.z);
+            return new Vector3(vx, vy, vz);
+        }
+
+        static float TryParseFloat(string s, float fallback)
+            => float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+        static void SyncStrings(LevelEditorObject primary)
+        {
+            if (primary == null)
+            {
+                for (int i = 0; i < 3; i++)
+                    _grabPosStr[i] = _grabRotStr[i] = _hatPosStr[i] = _hatRotStr[i] = "0";
+                return;
+            }
+            FormatVec(primary.grabOffsetPos, _grabPosStr);
+            FormatVec(primary.grabOffsetRot, _grabRotStr);
+            FormatVec(primary.hatOffsetPos,  _hatPosStr);
+            FormatVec(primary.hatOffsetRot,  _hatRotStr);
+        }
+
+        static void FormatVec(Vector3 v, string[] strs)
+        {
+            strs[0] = v.x.ToString("F3", CultureInfo.InvariantCulture);
+            strs[1] = v.y.ToString("F3", CultureInfo.InvariantCulture);
+            strs[2] = v.z.ToString("F3", CultureInfo.InvariantCulture);
         }
 
         static void CycleMode(PhysicsMode? current)

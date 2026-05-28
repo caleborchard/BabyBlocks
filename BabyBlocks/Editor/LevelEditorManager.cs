@@ -4,6 +4,7 @@ using System.Linq;
 using Il2Cpp;
 using Il2CppInterop.Runtime.Attributes;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using Il2CppNWH.DWP2.WaterObjects;
 using MelonLoader;
 using UnityEngine;
 
@@ -38,7 +39,7 @@ namespace BabyBlocks
         [HideFromIl2Cpp]
         internal IReadOnlyList<LevelEditorObject> Objects => _objects;
 
-        // ── Group-root helpers ────────────────────────────────────────────────────
+        // Group-root helpers
         GameObject GetGroupRoot(int groupId)
         {
             if (groupId <= 0) return null;
@@ -55,7 +56,6 @@ namespace BabyBlocks
             DontDestroyOnLoad(gameObject);
 
             _propsContainer = new GameObject("Baby Blocks");
-            DontDestroyOnLoad(_propsContainer);
 
             if (!PropLibrary.IsInitialized) PropLibrary.Init();
         }
@@ -510,14 +510,14 @@ namespace BabyBlocks
             // near the player (z≈289) while the virtual fly cam is at the edit site (z≈801),
             // causing every object to ghost-loop to the wrong position.
             var player = PlayerMovement.me;
-            if (player != null && Core.flyCamActive && player.flyCam != null)
+            if (player != null && FlyCamController.FlyCamActive && player.flyCam != null)
                 return player.flyCam.transform;
 
             var mainCam = Camera.main;
             return mainCam != null ? mainCam.transform : null;
         }
 
-        // ── Physics-state helpers (Update) ───────────────────────────────────────
+        // Physics-state helpers
 
         Vector3 GetPlayerReferencePosition(Transform reference)
         {
@@ -572,7 +572,7 @@ namespace BabyBlocks
             obj.chunkCoord = new Vector2Int(-1, -1);
         }
 
-        // ── Physics group support ─────────────────────────────────────────────────
+        // Physics group support
 
         public int AllocateGroupId() => _nextGroupId++;
 
@@ -911,6 +911,7 @@ namespace BabyBlocks
                 var colls = leo.gameObject.GetComponentsInChildren<Collider>(true);
                 AddGrabableComponent(leo.gameObject, leo.physicsMode == PhysicsMode.Hat, colls);
                 SyncHatHairAmount(leo);
+                if (leo.physicsMode == PhysicsMode.Grabable) SyncGrabOffset(leo);
                 MarkPhysicsChunkIndependent(leo);
                 leo.isPhysicsManaged = true;
             }
@@ -937,6 +938,7 @@ namespace BabyBlocks
             {
                 AddGrabableComponent(leo.gameObject, leo.physicsMode == PhysicsMode.Hat, colls);
                 SyncHatHairAmount(leo);
+                if (leo.physicsMode == PhysicsMode.Grabable) SyncGrabOffset(leo);
             }
             MarkPhysicsChunkIndependent(leo);
             leo.isPhysicsManaged = true;
@@ -1012,6 +1014,7 @@ namespace BabyBlocks
                 }
                 AddGrabableComponent(existingRoot, mode == PhysicsMode.Hat, colls2.ToArray());
                 if (mode == PhysicsMode.Hat && members.Count > 0) SyncHatHairAmount(members[0]);
+                if (mode == PhysicsMode.Grabable && members.Count > 0) SyncGrabOffset(members[0]);
                 foreach (var m in members) MarkPhysicsChunkIndependent(m);
                 return;
             }
@@ -1033,6 +1036,7 @@ namespace BabyBlocks
             }
             AddGrabableComponent(root, mode == PhysicsMode.Hat, colls.ToArray());
             if (mode == PhysicsMode.Hat && members.Count > 0) SyncHatHairAmount(members[0]);
+            if (mode == PhysicsMode.Grabable && members.Count > 0) SyncGrabOffset(members[0]);
             foreach (var m in members) MarkPhysicsChunkIndependent(m);
             if (gid > 0) SetGroupRoot(gid, root);
         }
@@ -1048,6 +1052,27 @@ namespace BabyBlocks
                 while (p != null && hat == null) { hat = p.GetComponent<Hat>(); p = p.parent; }
             }
             if (hat != null) hat.hairAmt = Mathf.Clamp01(leo.hatHairAmt);
+        }
+
+        [HideFromIl2Cpp]
+        internal void SyncGrabOffset(LevelEditorObject leo)
+        {
+            if (leo == null) return;
+            Grabable g = leo.GetComponent<Grabable>();
+            if (g == null)
+            {
+                var p = leo.transform.parent;
+                while (p != null && g == null) { g = p.GetComponent<Grabable>(); p = p.parent; }
+            }
+            if (g == null) return;
+            var ptsR  = new Il2CppSystem.Collections.Generic.List<Vector3>();
+            var rotsR = new Il2CppSystem.Collections.Generic.List<Quaternion>();
+            var ptsL  = new Il2CppSystem.Collections.Generic.List<Vector3>();
+            var rotsL = new Il2CppSystem.Collections.Generic.List<Quaternion>();
+            ptsR.Add(leo.grabOffsetPos); rotsR.Add(Quaternion.Euler(leo.grabOffsetRot));
+            ptsL.Add(leo.grabOffsetPos); rotsL.Add(Quaternion.Euler(leo.grabOffsetRot));
+            g.grabLocPtsR = ptsR; g.grabLocRotsR = rotsR;
+            g.grabLocPtsL = ptsL; g.grabLocRotsL = rotsL;
         }
 
         [HideFromIl2Cpp]
@@ -1221,6 +1246,44 @@ namespace BabyBlocks
             ptsL.Add(Vector3.zero);  rotsL.Add(Quaternion.identity);
             g.grabLocPtsR  = ptsR;  g.grabLocRotsR = rotsR;
             g.grabLocPtsL  = ptsL;  g.grabLocRotsL = rotsL;
+
+            AddFloater(go);
+        }
+
+        static void AddFloater(GameObject go)
+        {
+            if (go == null) return;
+
+            var existing = go.transform.Find("Floater");
+            if (existing != null) DestroyImmediate(existing.gameObject);
+
+            Mesh readableMesh = null;
+            var sourceMf = go.GetComponentInChildren<MeshFilter>();
+            if (sourceMf?.sharedMesh != null)
+                readableMesh = BuildPhysicsMesh(sourceMf.sharedMesh);
+
+            if (readableMesh == null)
+            {
+                MelonLogger.Warning("[BabyBlocks] AddFloater: could not build readable mesh, skipping Floater.");
+                return;
+            }
+
+            var floater = new GameObject("Floater");
+            floater.SetActive(false);
+            floater.transform.SetParent(go.transform, false);
+            floater.layer = go.layer;
+
+            var mf = floater.AddComponent<MeshFilter>();
+            mf.sharedMesh = readableMesh;
+
+            var wo = floater.AddComponent<WaterObject>();
+            wo.convexifyMesh         = true;
+            wo.simplifyMesh          = true;
+            wo.targetTriangleCount   = 16;
+            wo.calculateWaterNormals = true;
+            wo.GenerateSimMesh();
+
+            floater.SetActive(true);
         }
 
         static void RemoveGrabableComponents(GameObject go)
@@ -1236,9 +1299,10 @@ namespace BabyBlocks
             if (rb != null) DestroyImmediate(rb);
             var crusher = go.transform.Find("Crusher");
             if (crusher != null) DestroyImmediate(crusher.gameObject);
+            var floater = go.transform.Find("Floater");
+            if (floater != null) DestroyImmediate(floater.gameObject);
         }
 
-        // ─────────────────────────────────────────────────────────────────────────
 
         public void RemoveAll()
         {

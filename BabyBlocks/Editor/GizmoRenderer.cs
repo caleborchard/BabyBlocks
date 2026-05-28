@@ -97,10 +97,8 @@ namespace BabyBlocks
         public static bool IsReady => _root != null && _overlayCam != null;
         public static Vector3 PivotPosition => _pivotPos;
 
-        /// <summary>
-        /// Returns the effective pivot rotation for axis i, accounting for the camera-side flip.
-        /// PivotRots[i] * FlipArrowQ reverses the arrow direction (used by scale drag logic).
-        /// </summary>
+        // Returns the effective pivot rotation for axis i, accounting for the camera-side flip.
+        // PivotRots[i] * FlipArrowQ reverses the arrow direction (used by scale drag logic).
         public static Quaternion GetEffectivePivotRot(int i) =>
             i >= 0 && i < 3 && _axisFlipped[i] ? PivotRots[i] * FlipArrowQ : PivotRots[i];
 
@@ -143,7 +141,7 @@ namespace BabyBlocks
             if (_arrowHandles != null) _arrowHandles.SetActive(!rotating);
             if (_ringHandles  != null) _ringHandles.SetActive(rotating);
 
-            // ── Per-axis camera-side flip ──────────────────────────────────────────
+            // Per-axis camera-side flip
             // For each arrow axis: if the arrow points away from the camera, flip it
             // 180° so the handle is always on the camera-facing side.
             // Rotate mode uses world-aligned rings and is never flipped.
@@ -183,7 +181,6 @@ namespace BabyBlocks
             }
         }
 
-        // -----------------------------------------------------------------------
         // WARNING: Camera recovery — modify with caution.
         // In the past, attempting to rebuild or reconfigure the overlay camera
         // inside Sync() (called every frame) caused erratic behaviour when
@@ -193,13 +190,11 @@ namespace BabyBlocks
         //   • Do NOT touch cullingMask, depth, or farClipPlane every frame.
         //   • Keep this call outside of Sync() — LevelEditor.Update() calls it
         //     once per frame before Sync() runs.
-        // -----------------------------------------------------------------------
         public static void EnsureCamera()
         {
             if (_root != null && _overlayCam == null)
                 _overlayCam = BuildCam(100f, 500000f, CameraClearFlags.Depth);
         }
-        // -----------------------------------------------------------------------
 
         public static void SetActive(bool on)
         {
@@ -337,7 +332,7 @@ namespace BabyBlocks
 
             _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.Always);
 
-            // ── TRANSLATE DRAG FAST PATH ─────────────────────────────────────────────
+            // Translate drag fast path
             // Reuse the cached combined shell drawn at a translation offset.
             // Stencil marks are refreshed (cheap component lookups, no mesh work).
             if (_outlineTranslateDrag
@@ -363,7 +358,7 @@ namespace BabyBlocks
                 return;
             }
 
-            // ── NORMAL PATH ──────────────────────────────────────────────────────────
+            // Normal path
             _combinedOutlineCombines.Clear();
             _outlineMarks.Clear();
             int outlineSignature = 17;
@@ -642,7 +637,7 @@ namespace BabyBlocks
             _freeRotMat = new Material(freeRotShader);
             _freeRotMat.color = new Color(1f, 1f, 1f, 0.14f);
             _freeRotMat.SetInt("_ZTest", 8); // Always
-            _freeRotMat.renderQueue = GizmoQueue - 1; // draw before rings so rings read on top
+            _freeRotMat.renderQueue = GizmoQueue - 1; // draw before rings so rings render on top
 
             _freeRotHoverMat = new Material(freeRotShader);
             _freeRotHoverMat.color = new Color(0.8f, 0.9f, 1f, 0.28f);
@@ -964,7 +959,6 @@ namespace BabyBlocks
                 }
             }
 
-            // What does GetSelectionBoundsCenter actually return?
             var fakeSel = new List<LevelEditorObject> { obj };
             var computed = GetSelectionBoundsCenter(fakeSel);
             MelonLogger.Msg($"[BoundsLog]   GetSelectionBoundsCenter result = {computed}");

@@ -36,12 +36,13 @@ namespace BabyBlocks
         public bool editorFreezeIsKinematic;
         public bool editorFreezeUseGravity;
         public RigidbodyConstraints editorFreezeConstraints;
-    }
 
-    public class GizmoHandle : MonoBehaviour
-    {
-        public GizmoHandle(IntPtr ptr) : base(ptr) { }
-        // 0=X, 1=Y, 2=Z, 3=free sphere, 4=XY, 5=YZ, 6=XZ
-        public int axisIndex;
+        // Grabable: offset (in hand-local space) where the object sits when held
+        public Vector3 grabOffsetPos = Vector3.zero;
+        public Vector3 grabOffsetRot = Vector3.zero; // Euler degrees
+
+        // Hat: additive offset on top of the default head placement
+        public Vector3 hatOffsetPos = Vector3.zero;
+        public Vector3 hatOffsetRot = Vector3.zero; // Euler degrees
     }
 }
