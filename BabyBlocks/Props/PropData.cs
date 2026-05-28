@@ -49,6 +49,8 @@ namespace BabyBlocks
 
         // Holds the Addressables-loaded asset so it can be released when the prop is unloaded.
         internal UnityEngine.Object _addressableAsset;
+        // Original prefab/template kept for keepOriginalHierarchy spawning (bones, rigidbodies, etc.).
+        internal GameObject sourcePrefab;
 
         public PropInfo(string key, string name = null)
         {

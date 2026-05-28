@@ -982,6 +982,7 @@ namespace BabyBlocks
 
                     if (info.HasMesh)
                     {
+                        info.sourcePrefab = go;
                         info.isLoaded  = true;
                         info.isInvalid = false;
                         return true;
@@ -1486,6 +1487,7 @@ namespace BabyBlocks
                 return false; // asset not available; let caller retry later
 
             info._addressableAsset = prefab;
+            info.sourcePrefab = prefab;
             var instance = UnityEngine.Object.Instantiate(prefab, new Vector3(0f, -99999f, 0f), Quaternion.identity);
             try { ExtractPartsFromInstance(instance, info); }
             finally { UnityEngine.Object.Destroy(instance); }

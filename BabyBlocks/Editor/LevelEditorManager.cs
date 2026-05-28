@@ -64,36 +64,48 @@ namespace BabyBlocks
         internal LevelEditorObject SpawnFromPropInfo(PropInfo info, Vector3 position)
         {
             PropLibrary.LoadPropData(info);
-            if (!info.HasMesh)
+            bool keepHierarchy = info.sourcePrefab != null && PropMetadataPanel.GetKeepOriginalHierarchy(info.id);
+
+            if (!keepHierarchy && !info.HasMesh)
             {
                 MelonLogger.Warning($"[LevelEditorManager] Cannot spawn {info.displayName}: no mesh.");
                 return null;
             }
 
-            var root = new GameObject($"LEO_{info.displayName}");
-            root.transform.position = position;
-            root.layer = PropLayer;
-            if (_propsContainer != null)
-                root.transform.SetParent(_propsContainer.transform, true);
-
-            for (int i = 0; i < info.parts.Count; i++)
+            GameObject root;
+            if (keepHierarchy)
             {
-                var part  = info.parts[i];
-                var child = new GameObject($"Part_{i}");
-                child.transform.SetParent(root.transform, false);
-                child.transform.localPosition = part.localPosition;
-                child.transform.localRotation = part.localRotation;
-                child.transform.localScale    = part.localScale;
-                child.layer = PropLayer;
+                root = UnityEngine.Object.Instantiate(info.sourcePrefab, position, Quaternion.identity);
+                root.name = $"LEO_{info.displayName}";
+                foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                    t.gameObject.layer = PropLayer;
+            }
+            else
+            {
+                root = new GameObject($"LEO_{info.displayName}");
+                root.transform.position = position;
+                root.layer = PropLayer;
+                for (int i = 0; i < info.parts.Count; i++)
+                {
+                    var part  = info.parts[i];
+                    var child = new GameObject($"Part_{i}");
+                    child.transform.SetParent(root.transform, false);
+                    child.transform.localPosition = part.localPosition;
+                    child.transform.localRotation = part.localRotation;
+                    child.transform.localScale    = part.localScale;
+                    child.layer = PropLayer;
 
-                var mf = child.AddComponent<MeshFilter>();
-                mf.sharedMesh = part.mesh;
+                    var mf = child.AddComponent<MeshFilter>();
+                    mf.sharedMesh = part.mesh;
 
-                var mr = child.AddComponent<MeshRenderer>();
-                if (part.materials != null) mr.sharedMaterials = part.materials;
+                    var mr = child.AddComponent<MeshRenderer>();
+                    if (part.materials != null) mr.sharedMaterials = part.materials;
+                }
+                ApplyColliderParts(root, info, PropMetadataPanel.GetUseRenderMeshCollider(info.id));
             }
 
-            ApplyColliderParts(root, info, PropMetadataPanel.GetUseRenderMeshCollider(info.id));
+            if (_propsContainer != null)
+                root.transform.SetParent(_propsContainer.transform, true);
 
             string surfaceTag = PropMetadataPanel.GetSurfaceType(info.id);
             if (!string.IsNullOrEmpty(surfaceTag))

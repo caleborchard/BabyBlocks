@@ -702,8 +702,6 @@
 		<Compile Include="UI\PropPalette.cs" />
 		<Compile Include="UI\PhysicsWindow.cs" />
 		<Compile Include="UI\ObjImportWindow.cs" />
-		<Compile Include="Debug\RendererPicker.cs" />
-		<Compile Include="Debug\SceneHierarchyScanner.cs" />
 	</ItemGroup>
 
 	<ItemGroup>

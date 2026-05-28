@@ -95,6 +95,7 @@ namespace BabyBlocks
         static bool _isBush;
         static float _bushRadius;
         static int _soundGrassType = 1;
+        static bool _keepOriginalHierarchy;
         static bool _showGrassTypeDropdown;
         static Vector2 _grassTypeScroll;
 
@@ -379,6 +380,13 @@ namespace BabyBlocks
                     }
                     GUILayout.EndScrollView();
                 }
+            }
+
+            var newKeepOrig = GUILayout.Toggle(_keepOriginalHierarchy, "Keep original hierarchy");
+            if (newKeepOrig != _keepOriginalHierarchy)
+            {
+                _keepOriginalHierarchy = newKeepOrig;
+                MarkDirty();
             }
 
             GUILayout.BeginHorizontal();
@@ -1136,7 +1144,8 @@ namespace BabyBlocks
                 int slotCountToSave = _multiMaterialEnabled ? _forcedMaterialSlots : 0;
                 var multiInfo = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
                     string.Empty, _defaultMaterialName, string.Empty, _surfaceType, _disabledRendererPaths,
-                    _colliderIgnoredSubmeshes, perSlotToSave, slotCountToSave, _isBush, _bushRadius, _soundGrassType);
+                    _colliderIgnoredSubmeshes, perSlotToSave, slotCountToSave, _isBush, _bushRadius, _soundGrassType,
+                    _keepOriginalHierarchy);
                 if (multiInfo != null)
                     _index = multiInfo.index;
                 _materialExplicitlyChosen = false;
@@ -1147,7 +1156,8 @@ namespace BabyBlocks
             _knownMaterialSources.TryGetValue(overrideToSave ?? string.Empty, out string srcPropId);
             var info = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
                 overrideToSave, _defaultMaterialName, srcPropId, _surfaceType, _disabledRendererPaths,
-                _colliderIgnoredSubmeshes, null, 0, _isBush, _bushRadius, _soundGrassType);
+                _colliderIgnoredSubmeshes, null, 0, _isBush, _bushRadius, _soundGrassType,
+                _keepOriginalHierarchy);
             if (info != null)
                 _index = info.index;
             _overrideMaterialName = overrideToSave ?? string.Empty;
@@ -1202,6 +1212,7 @@ namespace BabyBlocks
             _bushRadius = 0f;
             _soundGrassType = 1;
             _showGrassTypeDropdown = false;
+            _keepOriginalHierarchy = false;
             _index = -1;
             _dirty = false;
             _materialExplicitlyChosen = false;
@@ -1236,6 +1247,7 @@ namespace BabyBlocks
                 _isBush = info.isBush;
                 _bushRadius = info.bushRadius;
                 _soundGrassType = info.soundGrassType;
+                _keepOriginalHierarchy = info.keepOriginalHierarchy;
                 _index = info.index;
                 if (info.disabledRenderers != null)
                 {
@@ -1661,6 +1673,13 @@ namespace BabyBlocks
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return false;
             return _byId.TryGetValue(id, out var info) && info.isBush;
+        }
+
+        public static bool GetKeepOriginalHierarchy(string id)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id)) return false;
+            return _byId.TryGetValue(id, out var info) && info.keepOriginalHierarchy;
         }
 
         // Tracks editor bush spheres so the GetGrassAt Harmony patch can return a grass type
@@ -2317,7 +2336,8 @@ namespace BabyBlocks
             string nativeMaterialName, string materialSourcePropId, string surfaceType,
             HashSet<string> disabledRenderers, string colliderIgnoredSubmeshes,
             List<string> perSlotOverrides = null, int forcedMaterialSlots = 0,
-            bool isBush = false, float bushRadius = 0f, int soundGrassType = 1)
+            bool isBush = false, float bushRadius = 0f, int soundGrassType = 1,
+            bool keepOriginalHierarchy = false)
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return null;
@@ -2332,7 +2352,8 @@ namespace BabyBlocks
                     || !string.IsNullOrEmpty(colliderIgnoredSubmeshes)
                     || HasNonEmptySlot(perSlotOverrides)
                     || forcedMaterialSlots > 1
-                    || isBush;
+                    || isBush
+                    || keepOriginalHierarchy;
 
             if (!_byId.TryGetValue(id, out var info))
             {
@@ -2356,6 +2377,7 @@ namespace BabyBlocks
                 info.isBush                   = false;
                 info.bushRadius               = 0f;
                 info.soundGrassType           = 1;
+                info.keepOriginalHierarchy    = false;
                 info.index                    = 0;
             }
             else
@@ -2393,6 +2415,7 @@ namespace BabyBlocks
                 info.isBush = isBush;
                 info.bushRadius = bushRadius;
                 info.soundGrassType = soundGrassType;
+                info.keepOriginalHierarchy = keepOriginalHierarchy;
             }
 
             Save();
@@ -2527,6 +2550,8 @@ namespace BabyBlocks
                         sb.Append("      \"bushRadius\": ").Append(item.bushRadius.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)).Append(",\n");
                         sb.Append("      \"soundGrassType\": ").Append(item.soundGrassType).Append(",\n");
                     }
+                    if (item.keepOriginalHierarchy)
+                        sb.Append("      \"keepOriginalHierarchy\": true,\n");
                     sb.Append("      \"index\": ").Append(item.index).Append("\n");
                 }
                 sb.Append("    }");
@@ -2625,7 +2650,8 @@ namespace BabyBlocks
                     forcedMaterialSlots = ExtractInt(obj, "forcedMaterialSlots", 0),
                     isBush = ExtractBool(obj, "isBush"),
                     bushRadius = ExtractFloat(obj, "bushRadius", 0f),
-                    soundGrassType = ExtractInt(obj, "soundGrassType", 1)
+                    soundGrassType = ExtractInt(obj, "soundGrassType", 1),
+                    keepOriginalHierarchy = ExtractBool(obj, "keepOriginalHierarchy")
                 };
                 if (!string.IsNullOrEmpty(item.id))
                     data.items.Add(item);
