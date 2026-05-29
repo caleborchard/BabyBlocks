@@ -337,7 +337,7 @@ namespace BabyBlocks
 
             if (_showSurfaceTypeDropdown)
             {
-                _surfaceTypeScroll = GUILayout.BeginScrollView(_surfaceTypeScroll, GUILayout.Height(120f), GUILayout.Width(375f));
+                _surfaceTypeScroll = GUILayout.BeginScrollView(_surfaceTypeScroll, GUILayout.Height(120f));
                 foreach (var tag in KnownSurfaceTags)
                 {
                     string lbl = string.IsNullOrEmpty(tag) ? "(none — game default)" : tag;
@@ -374,7 +374,7 @@ namespace BabyBlocks
 
             if (_showRendererDropdown)
             {
-                _rendererScroll = GUILayout.BeginScrollView(_rendererScroll, GUILayout.Height(RendererListH), GUILayout.Width(375f));
+                _rendererScroll = GUILayout.BeginScrollView(_rendererScroll, GUILayout.Height(RendererListH));
                 for (int i = 0; i < _rendererEntries.Count; i++)
                 {
                     var entry = _rendererEntries[i];
@@ -499,7 +499,7 @@ namespace BabyBlocks
                     GUILayout.Label("Search");
                     _materialSearch = GUILayout.TextField(_materialSearch ?? string.Empty);
 
-                    _materialScroll = GUILayout.BeginScrollView(_materialScroll, GUILayout.Height(MaterialListH), GUILayout.Width(375f));
+                    _materialScroll = GUILayout.BeginScrollView(_materialScroll, GUILayout.Height(MaterialListH));
                     int selectedIndex = GetMaterialIndex(_selectedMaterialName);
                     string search = _materialSearch != null ? _materialSearch.Trim() : string.Empty;
                     bool hasSearch = !string.IsNullOrEmpty(search);
@@ -554,7 +554,7 @@ namespace BabyBlocks
                     {
                         GUILayout.Label("Search");
                         _slotDropdownSearch = GUILayout.TextField(_slotDropdownSearch ?? string.Empty);
-                        _slotDropdownScroll = GUILayout.BeginScrollView(_slotDropdownScroll, GUILayout.Height(MaterialListH), GUILayout.Width(375f));
+                        _slotDropdownScroll = GUILayout.BeginScrollView(_slotDropdownScroll, GUILayout.Height(MaterialListH));
                         string slotSearch = _slotDropdownSearch != null ? _slotDropdownSearch.Trim() : string.Empty;
                         bool hasSlotSearch = !string.IsNullOrEmpty(slotSearch);
                         for (int i = 0; i < _materialLabels.Count; i++)
@@ -620,7 +620,7 @@ namespace BabyBlocks
                     _showGrassTypeDropdown = !_showGrassTypeDropdown;
                 if (_showGrassTypeDropdown)
                 {
-                    _grassTypeScroll = GUILayout.BeginScrollView(_grassTypeScroll, GUILayout.Height(120f), GUILayout.Width(375f));
+                    _grassTypeScroll = GUILayout.BeginScrollView(_grassTypeScroll, GUILayout.Height(120f));
                     foreach (var (lbl, val) in KnownGrassTypes)
                     {
                         string btnLbl = val == _soundGrassType ? "> " + lbl : lbl;
@@ -688,7 +688,8 @@ namespace BabyBlocks
         }
 
         static bool ShouldHideMaterial(string name) =>
-            name.IndexOf("Imposter", StringComparison.OrdinalIgnoreCase) >= 0;
+            name.IndexOf("Imposter", StringComparison.OrdinalIgnoreCase) >= 0
+            || name.IndexOf("Impostor", StringComparison.OrdinalIgnoreCase) >= 0;
 
         static void SortMaterialList()
         {
@@ -942,6 +943,7 @@ namespace BabyBlocks
                 }
             }
         }
+
 
         static void AddRendererMaterialsToList()
         {
@@ -1313,6 +1315,7 @@ namespace BabyBlocks
                     {
                         var m = allMats[i];
                         if (m == null || string.IsNullOrEmpty(m.name)) continue;
+                        if (ShouldHideMaterial(m.name)) continue;
                         if (_materialByName.ContainsKey(m.name)) continue;
                         string shaderName = m.shader != null ? m.shader.name : string.Empty;
                         string label = string.IsNullOrEmpty(shaderName)

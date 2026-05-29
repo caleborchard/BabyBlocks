@@ -221,50 +221,58 @@ namespace BabyBlocks
         {
             _filtered.Clear();
 
+            bool hasSearch = !string.IsNullOrEmpty(SearchText);
+
             if (Core.DebugMode)
             {
-                if (string.IsNullOrEmpty(SearchText))
-                {
-                    foreach (var p in _all) _filtered.Add(p);
-                    return;
-                }
                 foreach (var p in _all)
                 {
-                    if (p.displayName.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0
-                        || p.id.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0)
-                        _filtered.Add(p);
+                    if (hasSearch
+                        && p.displayName.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0
+                        && p.id.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+                    _filtered.Add(p);
                 }
-                return;
             }
-
-            // Non-debug: only props that have a category in metadata, filtered by selected category.
-            string selectedCategory = PropPalette.SelectedCategory;
-            bool hasSearch = !string.IsNullOrEmpty(SearchText);
-            foreach (var p in _all)
+            else
             {
-                if (!PropMetadataPanel.HasCategory(p.id)) continue;
-                string cat = PropMetadataPanel.GetCategory(p.id);
-                if (selectedCategory != null)
+                // Non-debug: only props that have a category in metadata, filtered by selected category.
+                string selectedCategory = PropPalette.SelectedCategory;
+                foreach (var p in _all)
                 {
-                    if (!string.Equals(cat, selectedCategory, StringComparison.OrdinalIgnoreCase))
+                    if (!PropMetadataPanel.HasCategory(p.id)) continue;
+                    string cat = PropMetadataPanel.GetCategory(p.id);
+                    if (selectedCategory != null
+                        && !string.Equals(cat, selectedCategory, StringComparison.OrdinalIgnoreCase))
                         continue;
+                    if (hasSearch)
+                    {
+                        string displayName = PropMetadataPanel.GetDisplayName(p.id) ?? p.displayName;
+                        if (displayName.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0
+                            && p.id.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0
+                            && (cat == null || cat.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0))
+                            continue;
+                    }
+                    _filtered.Add(p);
                 }
-                if (hasSearch)
-                {
-                    string displayName = PropMetadataPanel.GetDisplayName(p.id) ?? p.displayName;
-                    if (displayName.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0
-                        && p.id.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0
-                        && (cat == null || cat.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0))
-                        continue;
-                }
-                _filtered.Add(p);
             }
 
-            // Sort alphabetically by metadata displayName within the filtered set.
+            // Sort alphabetically by the string that is actually displayed.
+            // Debug mode displays raw prop.displayName, so sort by that (underscores treated as spaces).
+            // Non-debug mode displays the metadata display name, so sort by that.
             _filtered.Sort((a, b) =>
             {
-                string nameA = PropMetadataPanel.GetDisplayName(a.id) ?? a.displayName;
-                string nameB = PropMetadataPanel.GetDisplayName(b.id) ?? b.displayName;
+                string nameA, nameB;
+                if (Core.DebugMode)
+                {
+                    nameA = a.displayName.Replace("_", " ").Trim();
+                    nameB = b.displayName.Replace("_", " ").Trim();
+                }
+                else
+                {
+                    nameA = PropMetadataPanel.GetDisplayName(a.id) ?? a.displayName;
+                    nameB = PropMetadataPanel.GetDisplayName(b.id) ?? b.displayName;
+                }
                 return NaturalStringCompare(nameA, nameB);
             });
         }
@@ -372,6 +380,8 @@ namespace BabyBlocks
             }
 
             var loaded = TryGetLoadedProps();
+            BBLog.Msg($"[PropLibrary] ScanGpuiProps: loadedProps count={loaded?.Length ?? -1}");
+
             if (loaded == null || loaded.Length == 0)
             {
                 PropMetadataPanel.MigratePropIdsToCanonical();
@@ -472,8 +482,7 @@ namespace BabyBlocks
             SaveGpuiCache(catalogPath, cacheEntries);
             PropMetadataPanel.MigratePropIdsToCanonical();
             if (added > 0) BuildFiltered();
-            if (backfilledFromCatalog > 0)
-                BBLog.Msg($"[PropLibrary] GPUI catalog backfill added: {backfilledFromCatalog} props.");
+            BBLog.Msg($"[PropLibrary] GPUI catalog backfill added: {backfilledFromCatalog} props.");
             BBLog.Msg($"[PropLibrary] GPUI scan complete: {added} props added.");
         }
 
@@ -1586,6 +1595,7 @@ namespace BabyBlocks
 
             return null;
         }
+
 
         static bool TryGetBestRegion(out object brl)
         {
