@@ -888,10 +888,46 @@ namespace BabyBlocks
                 if (ShouldHideMaterial(name)) continue;
                 if (!alreadyListed.Add(name)) continue;
                 _materialNames.Add(name);
-                _materialLabels.Add(name); // shader label unknown until the material is actually loaded
+                _materialLabels.Add(name);
                 anyCatalogAdded = true;
             }
+
+            // Prop-embedded material index: names discovered by loading every prop once.
+            // On the first session this starts a background coroutine; on subsequent sessions
+            // the names are already in the cache and added here immediately.
+            PropLibrary.IndexAllPropMaterials();
+            foreach (var kvp in PropLibrary.PropMaterialSources)
+            {
+                string name = kvp.Key;
+                if (name == "__IDX__") continue;
+                if (ShouldHideMaterial(name)) continue;
+                if (!alreadyListed.Add(name)) continue;
+                _materialNames.Add(name);
+                _materialLabels.Add(name);
+                anyCatalogAdded = true;
+            }
+
             if (anyCatalogAdded) SortMaterialList();
+        }
+
+        // Called by PropLibrary when the background prop material scan finishes on first run,
+        // so newly discovered names are added to the already-open material list.
+        public static void OnPropMaterialIndexReady()
+        {
+            if (!_materialsLoaded) return; // list not built yet; EnsureMaterialSources will pick it up when it runs
+            var alreadyListed = new HashSet<string>(_materialNames, StringComparer.OrdinalIgnoreCase);
+            bool any = false;
+            foreach (var kvp in PropLibrary.PropMaterialSources)
+            {
+                string name = kvp.Key;
+                if (name == "__IDX__") continue;
+                if (ShouldHideMaterial(name)) continue;
+                if (!alreadyListed.Add(name)) continue;
+                _materialNames.Add(name);
+                _materialLabels.Add(name);
+                any = true;
+            }
+            if (any) SortMaterialList();
         }
 
         // Returns the first material name found in the prop's parts that is NOT the override.
