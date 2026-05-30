@@ -26,6 +26,7 @@ namespace BabyBlocks
         static readonly HashSet<string> _gpuiScannedNames = new(StringComparer.OrdinalIgnoreCase);
         static Dictionary<string, string> _gpuiPlayerPaths; // prefabName → full catalog path
         static readonly Dictionary<string, string> _materialCatalogPaths = new(StringComparer.OrdinalIgnoreCase); // materialName → full catalog path
+        static readonly Dictionary<string, string> _materialPathToKey    = new(StringComparer.OrdinalIgnoreCase); // catalog path → assigned key (prevents double-numbering the same path)
         static bool _catalogIndexed; // true once IndexAllCatalogMaterials has run (or cache proves it already did)
         static readonly Dictionary<string, string> _propMaterialSources = new(StringComparer.OrdinalIgnoreCase); // materialName → propId
         static bool _propMaterialsIndexed; // true once IndexAllPropMaterials has run (or cache proves it already did)
@@ -89,6 +90,7 @@ namespace BabyBlocks
                         if (p.Length >= 2 && !string.IsNullOrEmpty(p[0]) && !string.IsNullOrEmpty(p[1]))
                         {
                             _materialCatalogPaths[p[0]] = p[1];
+                            _materialPathToKey[p[1]] = p[0];
                             if (p[0] == "__IDX__") _catalogIndexed = true;
                         }
                     }
@@ -1153,6 +1155,13 @@ namespace BabyBlocks
         // The resolved catalog path is cached in GpuiCache.txt so catalog scanning is skipped on future launches.
         public static Material TryLoadMaterialByName(string materialName)
         {
+            return TryLoadMaterialByName(materialName, null);
+        }
+
+        // Source-aware fallback: if a saved prop source is known, try to resolve the material from
+        // that prop's embedded parts before falling back to the catalog/name cache.
+        public static Material TryLoadMaterialByName(string materialName, string sourcePropId)
+        {
             if (string.IsNullOrEmpty(materialName)) return null;
             try
             {
@@ -1163,6 +1172,15 @@ namespace BabyBlocks
                 string cleanName = materialName;
                 while (cleanName.EndsWith(InstanceSuffix, StringComparison.Ordinal))
                     cleanName = cleanName.Substring(0, cleanName.Length - InstanceSuffix.Length);
+
+                if (!string.IsNullOrEmpty(sourcePropId))
+                {
+                    var embedded = TryLoadPropEmbeddedMaterial(cleanName);
+                    if (embedded == null && !string.Equals(cleanName, materialName, StringComparison.Ordinal))
+                        embedded = TryLoadPropEmbeddedMaterial(materialName);
+                    if (embedded != null)
+                        return embedded;
+                }
 
                 // Check in-memory cache first under both the original and clean name.
                 if (!_materialCatalogPaths.TryGetValue(materialName, out string matPath)
@@ -1258,8 +1276,7 @@ namespace BabyBlocks
                 if (!File.Exists(catalogFile)) return names;
                 string json = File.ReadAllText(catalogFile);
 
-                IndexMaterialPathsInText(json, names);
-
+                string decoded = string.Empty;
                 int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
                 if (kdIdx >= 0)
                 {
@@ -1267,10 +1284,24 @@ namespace BabyBlocks
                     int ve = json.IndexOf('"', vs);
                     if (vs > 0 && ve > vs)
                     {
-                        string decoded = Encoding.UTF8.GetString(Convert.FromBase64String(json.Substring(vs, ve - vs)));
-                        IndexMaterialPathsInText(decoded, names);
+                        try { decoded = Encoding.UTF8.GetString(Convert.FromBase64String(json.Substring(vs, ve - vs))); }
+                        catch { }
                     }
                 }
+
+                // Phase 1: standalone .mat files whose filename has NO _N suffix.
+                // These claim their plain names first so they are never bumped to a number.
+                ScanStandaloneMatFiles(json,    names, suffixedOnly: false);
+                ScanStandaloneMatFiles(decoded, names, suffixedOnly: false);
+
+                // Phase 2: standalone .mat files whose filename ends with _N (Unity dedup copies).
+                // Their base name is already in the dict so they become "Name 2", "Name 3", etc.
+                ScanStandaloneMatFiles(json,    names, suffixedOnly: true);
+                ScanStandaloneMatFiles(decoded, names, suffixedOnly: true);
+
+                // Phase 3: FBX/prefab sub-assets. Only fills names not already claimed above.
+                ScanSubAssets(json,    names);
+                ScanSubAssets(decoded, names);
 
                 // Sentinel so the next session's cache load can skip this scan.
                 _materialCatalogPaths["__IDX__"] = "1";
@@ -1282,6 +1313,108 @@ namespace BabyBlocks
                 MelonLogger.Warning($"[PropLibrary] IndexAllCatalogMaterials failed: {e.Message}");
             }
             return names;
+        }
+
+        static bool TryStripUnityDupSuffix(string name, out string baseName)
+        {
+            int u = name.LastIndexOf('_');
+            if (u > 0)
+            {
+                bool allDigits = true;
+                for (int k = u + 1; k < name.Length; k++)
+                    if (!char.IsDigit(name[k])) { allDigits = false; break; }
+                if (allDigits && u + 1 < name.Length)
+                {
+                    baseName = name.Substring(0, u);
+                    return true;
+                }
+            }
+            baseName = name;
+            return false;
+        }
+
+        static void ScanStandaloneMatFiles(string text, List<string> result, bool suffixedOnly)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            const string MatExt = ".mat";
+            int len = text.Length;
+            for (int i = 0; i < len; )
+            {
+                int pos = text.IndexOf(MatExt, i, StringComparison.OrdinalIgnoreCase);
+                if (pos < 0) break;
+                int end = pos + MatExt.Length;
+                if (end < len && char.IsLetterOrDigit(text[end])) { i = end; continue; }
+
+                int start = pos;
+                while (start > 0 && text[start - 1] != '"' && text[start - 1] != '\0' && text[start - 1] >= ' ')
+                    start--;
+
+                string path = text.Substring(start, end - start);
+                if (!path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)) { i = end; continue; }
+                if (_materialPathToKey.ContainsKey(path)) { i = end; continue; }
+
+                int slash = path.LastIndexOf('/');
+                if (slash < 0) { i = end; continue; }
+                string name = path.Substring(slash + 1, path.Length - slash - 1 - MatExt.Length);
+                if (name.Length == 0) { i = end; continue; }
+
+                bool hasDupSuffix = TryStripUnityDupSuffix(name, out string baseName);
+                if (hasDupSuffix != suffixedOnly) { i = end; continue; }
+
+                string key;
+                if (hasDupSuffix && _materialCatalogPaths.ContainsKey(baseName))
+                {
+                    key = $"{baseName} 2";
+                    int dup = 3;
+                    while (_materialCatalogPaths.ContainsKey(key))
+                        key = $"{baseName} {dup++}";
+                }
+                else
+                {
+                    key = name;
+                    int dup = 2;
+                    while (_materialCatalogPaths.ContainsKey(key))
+                        key = $"{name} {dup++}";
+                }
+
+                _materialCatalogPaths[key] = path;
+                _materialPathToKey[path] = key;
+                result.Add(key);
+                i = end;
+            }
+        }
+
+        static void ScanSubAssets(string text, List<string> result)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            int len = text.Length;
+            for (int j = 0; j < len; )
+            {
+                int open = text.IndexOf('[', j);
+                if (open < 0) break;
+                int close = text.IndexOf(']', open + 1);
+                if (close < 0) break;
+
+                string name = text.Substring(open + 1, close - open - 1);
+                if (name.Length >= 2 && name.Length <= 100
+                    && name.IndexOf('/') < 0 && name.IndexOf('\\') < 0)
+                {
+                    int start = open;
+                    while (start > 0 && text[start - 1] != '"' && text[start - 1] != '\0' && text[start - 1] >= ' ')
+                        start--;
+
+                    string path = text.Substring(start, close - start + 1);
+                    if (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)
+                        && !_materialPathToKey.ContainsKey(path)
+                        && !_materialCatalogPaths.ContainsKey(name))
+                    {
+                        _materialCatalogPaths[name] = path;
+                        _materialPathToKey[path] = name;
+                        result.Add(name);
+                    }
+                }
+                j = close + 1;
+            }
         }
 
         // Starts a background coroutine that loads every prop, extracts embedded material names,
@@ -1352,73 +1485,41 @@ namespace BabyBlocks
             return null;
         }
 
-        static void IndexMaterialPathsInText(string text, List<string> result)
-        {
-            int len = text.Length;
-
-            // Pass 1: standalone .mat assets — e.g. Assets/Materials/SomeMaterial.mat
-            const string MatExt = ".mat";
-            for (int i = 0; i < len; )
-            {
-                int pos = text.IndexOf(MatExt, i, StringComparison.OrdinalIgnoreCase);
-                if (pos < 0) break;
-                int end = pos + MatExt.Length;
-                // Skip if .mat is the start of a longer extension (e.g. ".material").
-                if (end < len && char.IsLetterOrDigit(text[end])) { i = end; continue; }
-
-                int start = pos;
-                while (start > 0 && text[start - 1] != '"' && text[start - 1] != '\0' && text[start - 1] >= ' ')
-                    start--;
-
-                string path = text.Substring(start, end - start);
-                if (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
-                {
-                    int slash = path.LastIndexOf('/');
-                    if (slash >= 0)
-                    {
-                        string name = path.Substring(slash + 1, path.Length - slash - 1 - MatExt.Length);
-                        if (name.Length > 0 && !_materialCatalogPaths.ContainsKey(name))
-                        {
-                            _materialCatalogPaths[name] = path;
-                            result.Add(name);
-                        }
-                    }
-                }
-                i = end;
-            }
-
-            // Pass 2: FBX/prefab sub-assets — e.g. Assets/Meshes/File.fbx[MaterialName]
-            for (int j = 0; j < len; )
-            {
-                int open = text.IndexOf('[', j);
-                if (open < 0) break;
-                int close = text.IndexOf(']', open + 1);
-                if (close < 0) break;
-
-                string name = text.Substring(open + 1, close - open - 1);
-                if (name.Length >= 2 && name.Length <= 100
-                    && name.IndexOf('/') < 0 && name.IndexOf('\\') < 0)
-                {
-                    int start = open;
-                    while (start > 0 && text[start - 1] != '"' && text[start - 1] != '\0' && text[start - 1] >= ' ')
-                        start--;
-
-                    string path = text.Substring(start, close - start + 1);
-                    if (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)
-                        && !_materialCatalogPaths.ContainsKey(name))
-                    {
-                        _materialCatalogPaths[name] = path;
-                        result.Add(name);
-                    }
-                }
-                j = close + 1;
-            }
-        }
 
         static string FindMaterialPath(string text, string materialName)
         {
-            // Pass 1: standalone .mat asset — e.g. Assets/Materials/Foo.mat
-            string suffix = "/" + materialName + ".mat";
+            // If materialName is a numbered variant ("Foo 2"), try the _N-suffixed file first
+            // ("Foo_0.mat" for n=2, "Foo_1.mat" for n=3, …) since that's how ScanStandaloneMatFiles
+            // maps them. Fall back to plain-name scanning if not found.
+            string baseName = materialName;
+            int targetN = 1;
+            int lastSpace = materialName.LastIndexOf(' ');
+            if (lastSpace > 0 && int.TryParse(materialName.Substring(lastSpace + 1), out int parsed) && parsed >= 2)
+            {
+                baseName = materialName.Substring(0, lastSpace);
+                targetN = parsed;
+            }
+
+            if (targetN >= 2)
+            {
+                string dupSuffix = "/" + baseName + "_" + (targetN - 2) + ".mat";
+                int k = 0;
+                while (k < text.Length)
+                {
+                    int idx = text.IndexOf(dupSuffix, k, StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0) break;
+                    int end2 = idx + dupSuffix.Length;
+                    int start2 = idx;
+                    while (start2 > 0 && text[start2 - 1] != '"' && text[start2 - 1] != '\0' && text[start2 - 1] >= ' ')
+                        start2--;
+                    string p2 = text.Substring(start2, end2 - start2);
+                    if (p2.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)) return p2;
+                    k = end2;
+                }
+            }
+
+            // Pass 1: standalone .mat asset by plain name — e.g. Assets/Materials/Foo.mat
+            string suffix = "/" + baseName + ".mat";
             int i = 0;
             while (i < text.Length)
             {
@@ -1435,21 +1536,23 @@ namespace BabyBlocks
             }
 
             // Pass 2: FBX sub-asset — e.g. Assets/Meshes/File.fbx[MaterialName]
-            // Unity embeds materials inside FBX files; their Addressables key uses bracket notation.
-            string subSuffix = "[" + materialName + "]";
-            int j = 0;
-            while (j < text.Length)
+            if (targetN == 1)
             {
-                int idx = text.IndexOf(subSuffix, j, StringComparison.OrdinalIgnoreCase);
-                if (idx < 0) break;
-                int end = idx + subSuffix.Length;
-                int start = idx;
-                while (start > 0 && text[start - 1] != '"' && text[start - 1] != '\0' && text[start - 1] >= ' ')
-                    start--;
-                string path = text.Substring(start, end - start);
-                if (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
-                    return path;
-                j = end;
+                string subSuffix = "[" + baseName + "]";
+                int j = 0;
+                while (j < text.Length)
+                {
+                    int idx = text.IndexOf(subSuffix, j, StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0) break;
+                    int end = idx + subSuffix.Length;
+                    int start = idx;
+                    while (start > 0 && text[start - 1] != '"' && text[start - 1] != '\0' && text[start - 1] >= ' ')
+                        start--;
+                    string path = text.Substring(start, end - start);
+                    if (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                        return path;
+                    j = end;
+                }
             }
 
             return null;

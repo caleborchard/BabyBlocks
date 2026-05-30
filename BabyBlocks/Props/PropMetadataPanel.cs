@@ -52,9 +52,28 @@ namespace BabyBlocks
         static readonly List<string> _materialNames  = new();
         static readonly List<string> _materialLabels = new();
         static readonly Dictionary<string, Material> _materialByName = new(StringComparer.OrdinalIgnoreCase);
+        // Owned clones of scene-specific material variants captured across all visited areas.
+        // _sceneVariantMats: (baseName, texSig) → clone, for dedup during capture.
+        // _sceneVariantByDisplayName: displayName → clone, for O(1) lookup without touching .name on Il2Cpp objects.
+        // _materialSnapshotByInstance: instanceId → shallow clone/sig taken on first sight for that
+        //   specific material instance. Using instance ids avoids false flip-flops when multiple
+        //   different materials share the same name at the same time.
+        static readonly Dictionary<(string baseName, string texSig), Material> _sceneVariantMats = new();
+        static readonly Dictionary<string, Material> _sceneVariantByDisplayName = new(StringComparer.OrdinalIgnoreCase);
+        static readonly Dictionary<int, (string baseName, Material clone, string sig)> _materialSnapshotByInstance = new();
+        static readonly Dictionary<string, Material> _sceneCurrentByName = new(StringComparer.OrdinalIgnoreCase);
+        // Live references to materials we're watching for texture-state changes.
+        // Populated once by the initial full scan; subsequent checks iterate only this set.
+        static readonly Dictionary<int, Material> _watchedLiveMaterials = new();
+        // Instance IDs of every Material we created (snapshots + variant clones).
+        // The main EnsureMaterialList scan skips these so our clones never shadow the live material.
+        static readonly HashSet<int> _ownedMaterialIds = new();
         static bool _materialsLoaded;
+        static bool _initialVariantScanDone;
+        static float _lastVariantScanTime = -999f;
+        const float VariantScanInterval = 5f;
 
-        static bool _showRendererDropdown;
+static bool _showRendererDropdown;
         static Vector2 _rendererScroll;
         static readonly List<RendererEntry> _rendererEntries = new();
 
@@ -691,7 +710,39 @@ namespace BabyBlocks
             name.IndexOf("Imposter", StringComparison.OrdinalIgnoreCase) >= 0
             || name.IndexOf("Impostor", StringComparison.OrdinalIgnoreCase) >= 0;
 
-        static void SortMaterialList()
+        // Returns true when displayName is a numbered duplicate ("Foo 2", "Foo 3", …).
+        static bool IsNumberedVariant(string name)
+        {
+            int s = name.LastIndexOf(' ');
+            return s > 0 && int.TryParse(name.Substring(s + 1), out int n) && n >= 2;
+        }
+
+        // Returns "  (filename.mat)" from the catalog path for a numbered variant, or empty string.
+        static string CatalogFileHint(string displayName)
+        {
+            if (!PropLibrary.MaterialCatalogPaths.TryGetValue(displayName, out string path)) return string.Empty;
+            string fileName = Path.GetFileName(path);
+            return string.IsNullOrEmpty(fileName) ? string.Empty : $"  ({fileName})";
+        }
+
+        static bool ShouldSkipSceneVariantCapture(Material m)
+        {
+            if (m == null || string.IsNullOrEmpty(m.name)) return true;
+            if (ShouldHideMaterial(m.name)) return true;
+
+            // Skip classes of materials that change instance ID constantly and are not
+            // area-variant materials we care about tracking.
+            if (m.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) return true;
+            if (m.name.StartsWith("Hidden/", StringComparison.OrdinalIgnoreCase)) return true;
+            if (m.name.IndexOf("MegaProxy", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            if (m.name.IndexOf("TVE Material", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            if (m.name.IndexOf("TVE Texture", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            if (m.name.IndexOf("(TVE", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            if (m.name.EndsWith("(Clone)", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+static void SortMaterialList()
         {
             if (_materialNames.Count <= 2) return;
             var pairs = new List<(string name, string label)>(_materialNames.Count - 1);
@@ -705,8 +756,197 @@ namespace BabyBlocks
             }
         }
 
+        // Called on scene load. Immediately scans for material instances that share a name but
+        // have different textures (scene-variant materials), clones each new variant into
+        // _sceneVariantMats, then invalidates the display list so variants are registered on
+        // the next palette open.
+        public static void InvalidateMaterialCache()
+        {
+            _materialsLoaded = false;
+            _lastVariantScanTime = -999f; // force immediate re-scan on next palette open
+            _sceneCurrentByName.Clear();
+        }
+
+        // Builds a signature string from all texture properties on a material so we can detect
+        // when a material's texture state changes between areas (even with non-standard shaders
+        // that don't use _MainTex, which makes mainTexture return null).
+        static string GetTextureSig(Material m)
+        {
+            try
+            {
+                var names = m.GetTexturePropertyNames();
+                if (names == null || names.Length == 0) return string.Empty;
+                var sb = new System.Text.StringBuilder();
+                foreach (var prop in names)
+                {
+                    var tex = m.GetTexture(prop);
+                    if (tex != null) sb.Append(tex.name).Append('\n');
+                }
+                return sb.ToString();
+            }
+            catch { return string.Empty; }
+        }
+
+        // Returns the first non-empty texture name on a material, for use in display names.
+        static string GetFirstTextureName(Material m)
+        {
+            try
+            {
+                var names = m.GetTexturePropertyNames();
+                if (names == null) return string.Empty;
+                foreach (var prop in names)
+                {
+                    var tex = m.GetTexture(prop);
+                    if (tex != null && !string.IsNullOrEmpty(tex.name)) return tex.name;
+                }
+            }
+            catch { }
+            return string.Empty;
+        }
+
+        // On every palette open: for each visible material in memory, compare its current texture
+        // sig against the snapshot taken on first sight. If the sig has changed, we now have two
+        // distinct texture states — register both as variants. Uses only shallow clones (no GPU
+        // readback) so it's cheap even with thousands of materials in memory.
+        static void CaptureSceneVariants()
+        {
+            float now = Time.realtimeSinceStartup;
+            if (now - _lastVariantScanTime < VariantScanInterval) return;
+            _lastVariantScanTime = now;
+
+            try
+            {
+                if (!_initialVariantScanDone)
+                {
+                    // First call: full scan to populate the watched-materials set.
+                    _initialVariantScanDone = true;
+                    var mats = Resources.FindObjectsOfTypeAll<Material>();
+                    if (mats == null) return;
+                    for (int i = 0; i < mats.Length; i++)
+                    {
+                        try
+                        {
+                            var m = mats[i];
+                            if (ShouldSkipSceneVariantCapture(m)) continue;
+                            if (_ownedMaterialIds.Contains(m.GetInstanceID())) continue;
+                            _watchedLiveMaterials[m.GetInstanceID()] = m;
+                            CheckMaterialVariant(m);
+                        }
+                        catch { }
+                    }
+                }
+                else
+                {
+                    // Subsequent calls: only re-check watched materials — no FindObjectsOfTypeAll.
+                    foreach (var kvp in _watchedLiveMaterials)
+                    {
+                        try
+                        {
+                            var m = kvp.Value;
+                            if (m == null) continue;
+                            CheckMaterialVariant(m);
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[PropMetadata] CaptureSceneVariants failed: {e.Message}");
+            }
+        }
+
+        static void CheckMaterialVariant(Material m)
+        {
+            int instanceId = m.GetInstanceID();
+            _sceneCurrentByName[m.name] = m;
+            string sig = GetTextureSig(m);
+
+            if (!_materialSnapshotByInstance.TryGetValue(instanceId, out var snap)
+                || !string.Equals(snap.baseName, m.name, StringComparison.Ordinal))
+            {
+                var snapClone = new Material(m);
+                _ownedMaterialIds.Add(snapClone.GetInstanceID());
+                _materialSnapshotByInstance[instanceId] = (m.name, snapClone, sig);
+                return;
+            }
+
+            if (string.Equals(sig, snap.sig, StringComparison.Ordinal)) return;
+
+            RegisterVariant(snap.baseName, snap.clone, snap.sig);
+            RegisterVariant(m.name, m, sig);
+
+            var updatedClone = new Material(m);
+            _ownedMaterialIds.Add(updatedClone.GetInstanceID());
+            _materialSnapshotByInstance[instanceId] = (m.name, updatedClone, sig);
+        }
+
+        static void RegisterVariant(string baseName, Material source, string sig)
+        {
+            var key = (baseName, sig);
+            if (_sceneVariantMats.ContainsKey(key)) return;
+
+            // Count existing variants for this base name to pick the next number.
+            // First variant keeps the plain base name (covered by the live scan in _materialByName).
+            // Subsequent variants get a numeric suffix: "Name 2", "Name 3", …
+            int existingCount = 0;
+            foreach (var k in _sceneVariantMats.Keys)
+                if (string.Equals(k.baseName, baseName, StringComparison.OrdinalIgnoreCase))
+                    existingCount++;
+
+            string displayName = existingCount == 0 ? baseName : $"{baseName} {existingCount + 1}";
+            int n = 2;
+            while (_sceneVariantByDisplayName.ContainsKey(displayName))
+                displayName = $"{baseName} {existingCount + n++}";
+
+            var clone = new Material(source) { name = displayName };
+            _ownedMaterialIds.Add(clone.GetInstanceID());
+            _sceneVariantMats[key] = clone;
+            _sceneVariantByDisplayName[displayName] = clone;
+        }
+
+        // Re-registers owned scene-variant clones into the display lists.
+        // Mirrors the AddMicroSplatLayerMaterials pattern.
+        static void AddSceneVariantMaterials()
+        {
+            // Count distinct texture states per base name.
+            var countByBase = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var key in _sceneVariantMats.Keys)
+            {
+                countByBase.TryGetValue(key.baseName, out int c);
+                countByBase[key.baseName] = c + 1;
+            }
+
+            // Iterate by key so we always have the real base name, not a parsed display name.
+            foreach (var kvp in _sceneVariantMats)
+            {
+                string baseName = kvp.Key.baseName;
+                var mat = kvp.Value;
+                if (mat == null) continue;
+                string displayName = mat.name;
+
+                if (_materialByName.ContainsKey(displayName)) continue;
+
+                // Only show in the list if this material has 2+ distinct captured states.
+                if (!countByBase.TryGetValue(baseName, out int stateCount) || stateCount < 2) continue;
+
+                string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
+                string label = string.IsNullOrEmpty(shaderName) ? displayName : $"{displayName}  [{shaderName}]";
+                _materialNames.Add(displayName);
+                _materialLabels.Add(label);
+                _materialByName[displayName] = mat;
+            }
+        }
+
         static void EnsureMaterialList()
         {
+            // Run the variant capture before the guard. CaptureSceneVariants is self-rate-limited
+            // and on subsequent calls only iterates the small watched-materials set (not all memory).
+            int variantsBefore = _sceneVariantMats.Count;
+            CaptureSceneVariants();
+            if (_sceneVariantMats.Count != variantsBefore)
+                _materialsLoaded = false; // new variants found — force a list rebuild
+
             if (_materialsLoaded) return;
             _materialsLoaded = true;
             _materialNames.Clear();
@@ -720,26 +960,31 @@ namespace BabyBlocks
                 var mats = Resources.FindObjectsOfTypeAll<Material>();
                 if (mats != null)
                 {
-                    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var seenCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                     for (int i = 0; i < mats.Length; i++)
                     {
                         var m = mats[i];
                         if (m == null || string.IsNullOrEmpty(m.name)) continue;
-                        if (!seen.Add(m.name)) continue;
+                        if (_ownedMaterialIds.Contains(m.GetInstanceID())) continue; // skip our own clones
                         if (ShouldHideMaterial(m.name)) continue;
+                        seenCount.TryGetValue(m.name, out int count);
+                        seenCount[m.name] = count + 1;
+                        string displayName = count == 0 ? m.name : $"{m.name} {count + 1}";
+                        if (_materialByName.ContainsKey(displayName)) continue;
                         string shaderName = m.shader != null ? m.shader.name : string.Empty;
+                        string hint = count > 0 ? CatalogFileHint(displayName) : string.Empty;
                         string label = string.IsNullOrEmpty(shaderName)
-                            ? m.name
-                            : $"{m.name}  [{shaderName}]";
-                        _materialNames.Add(m.name);
+                            ? $"{displayName}{hint}"
+                            : $"{displayName}  [{shaderName}]{hint}";
+                        _materialNames.Add(displayName);
                         _materialLabels.Add(label);
-                        _materialByName[m.name] = m;
+                        _materialByName[displayName] = m;
                     }
                 }
 
                 AddMicroSplatLayerMaterials();
+                AddSceneVariantMaterials();
 
-                // Sort by label but keep names and labels in sync.
                 if (_materialNames.Count > 2)
                 {
                     var pairs = new List<(string name, string label)>(_materialNames.Count - 1);
@@ -887,8 +1132,11 @@ namespace BabyBlocks
                 if (name == "__IDX__") continue;
                 if (ShouldHideMaterial(name)) continue;
                 if (!alreadyListed.Add(name)) continue;
+                string catalogLabel = IsNumberedVariant(name)
+                    ? $"{name}  ({Path.GetFileName(kvp.Value)})"
+                    : name;
                 _materialNames.Add(name);
-                _materialLabels.Add(name);
+                _materialLabels.Add(catalogLabel);
                 anyCatalogAdded = true;
             }
 
@@ -1367,12 +1615,15 @@ namespace BabyBlocks
                 // Single-slot: if the override is still absent after the Resources scan, try the
                 // catalog. This handles saved names with "(Instance)" suffixes where the scan
                 // added the material under the clean name but the saved name still has no entry.
+                // Scene-variant clones are runtime-only and won't be in the catalog — skip them.
+                bool isVariantKey = _sceneVariantByDisplayName.ContainsKey(_overrideMaterialName);
                 if (!string.IsNullOrEmpty(_overrideMaterialName) && !_materialByName.ContainsKey(_overrideMaterialName)
-                    && !_overrideMaterialName.StartsWith("[MicroSplat]", StringComparison.Ordinal))
+                    && !_overrideMaterialName.StartsWith("[MicroSplat]", StringComparison.Ordinal)
+                    && !isVariantKey)
                 {
                     try
                     {
-                        var mat = PropLibrary.TryLoadMaterialByName(_overrideMaterialName);
+                        var mat = PropLibrary.TryLoadMaterialByName(_overrideMaterialName, info.materialSourcePropId);
                         if (mat != null)
                         {
                             if (!_materialByName.ContainsKey(mat.name))
@@ -1401,9 +1652,11 @@ namespace BabyBlocks
                     string slotMat = s < _perSlotSelected.Count ? _perSlotSelected[s] : string.Empty;
                     if (string.IsNullOrEmpty(slotMat) || _materialByName.ContainsKey(slotMat)) continue;
                     if (slotMat.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
+                    // Scene-variant clones are runtime-only; skip catalog lookup for them.
+                    if (_sceneVariantByDisplayName.ContainsKey(slotMat)) continue;
                     try
                     {
-                        var mat = PropLibrary.TryLoadMaterialByName(slotMat);
+                        var mat = PropLibrary.TryLoadMaterialByName(slotMat, info.materialSourcePropId);
                         if (mat == null) continue;
                         if (!_materialByName.ContainsKey(mat.name))
                         {
@@ -1833,7 +2086,7 @@ namespace BabyBlocks
 
             if (!_materialByName.TryGetValue(materialName, out var mat) || mat == null)
             {
-                mat = PropLibrary.TryLoadMaterialByName(materialName);
+                mat = PropLibrary.TryLoadMaterialByName(materialName, GetKnownMaterialSource(materialName));
                 if (mat != null)
                 {
                     if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
@@ -1904,7 +2157,7 @@ namespace BabyBlocks
                 {
                     if (!_materialByName.TryGetValue(materialName, out var mat) || mat == null)
                     {
-                        mat = PropLibrary.TryLoadMaterialByName(materialName);
+                        mat = PropLibrary.TryLoadMaterialByName(materialName, GetKnownMaterialSource(materialName));
                         if (mat != null)
                         {
                             if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
@@ -2222,7 +2475,7 @@ namespace BabyBlocks
                         || string.Equals(matName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    var mat = ResolveMaterial(matName);
+                    var mat = ResolveMaterial(matName, info.materialSourcePropId);
                     if (mat == null) continue;
 
                     for (int i = 0; i < renderers.Length; i++)
@@ -2254,7 +2507,7 @@ namespace BabyBlocks
                 return;
 
             {
-                var singleMat = ResolveMaterial(singleOverride);
+                var singleMat = ResolveMaterial(singleOverride, info.materialSourcePropId);
                 if (singleMat == null) return;
 
                 var renderers = root.GetComponentsInChildren<Renderer>(true);
@@ -2276,20 +2529,73 @@ namespace BabyBlocks
 
         // Looks up a material by name in the in-memory cache, falling back to a catalog load.
         // Caches the result so subsequent spawns of the same prop don't re-hit the catalog.
-        static Material ResolveMaterial(string matName)
+        static string GetKnownMaterialSource(string materialName)
+        {
+            if (string.IsNullOrEmpty(materialName)) return string.Empty;
+            return _knownMaterialSources.TryGetValue(materialName, out var sourcePropId) ? sourcePropId : string.Empty;
+        }
+
+        static Material ResolveMaterial(string matName, string sourcePropId = null)
         {
             if (string.IsNullOrEmpty(matName)) return null;
+            if (_sceneCurrentByName.TryGetValue(matName, out var liveMat) && liveMat != null)
+            {
+                _materialByName[matName] = liveMat;
+                return liveMat;
+            }
             if (_materialByName.TryGetValue(matName, out var mat) && mat != null) return mat;
 
-            mat = PropLibrary.TryLoadMaterialByName(matName);
+            // Scene-variant clones are looked up by display name — no .name access on Il2Cpp objects.
+            if (_sceneVariantByDisplayName.TryGetValue(matName, out var clone) && clone != null)
+            {
+                _materialByName[matName] = clone;
+                return clone;
+            }
+            if (_sceneVariantByDisplayName.ContainsKey(matName))
+            {
+                // Captured but clone is gone — fall back to base name without a catalog scan.
+                int paren = matName.LastIndexOf(" (", StringComparison.Ordinal);
+                string baseName = paren > 0 ? matName.Substring(0, paren) : matName;
+                if (_materialByName.TryGetValue(baseName, out mat) && mat != null) return mat;
+                mat = PropLibrary.TryLoadMaterialByName(baseName, sourcePropId);
+                if (mat != null && !_materialByName.ContainsKey(baseName)) _materialByName[baseName] = mat;
+                return mat;
+            }
+
+            // If the name looks like a variant display name ("Base (something)") but isn't in
+            // _sceneVariantByDisplayName, skip the catalog scan and fall back to the base name.
+            int lastParen = matName.LastIndexOf(" (", StringComparison.Ordinal);
+            if (lastParen > 0 && matName.EndsWith(")", StringComparison.Ordinal))
+            {
+                string baseName = matName.Substring(0, lastParen);
+                if (_materialByName.TryGetValue(baseName, out mat) && mat != null) return mat;
+                mat = PropLibrary.TryLoadMaterialByName(baseName, sourcePropId);
+                if (mat != null)
+                {
+                    if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
+                    if (!_materialByName.ContainsKey(baseName)) _materialByName[baseName] = mat;
+                }
+                return mat;
+            }
+
+            mat = PropLibrary.TryLoadMaterialByName(matName, sourcePropId);
             if (mat == null) return null;
 
             if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
-            // Also cache under the original saved name in case it differs (e.g. "(Instance)" suffix).
             if (!string.Equals(mat.name, matName, StringComparison.OrdinalIgnoreCase)
                 && !_materialByName.ContainsKey(matName))
                 _materialByName[matName] = mat;
             return mat;
+        }
+
+        // Returns a material from the in-memory cache by exact name, or null if not found.
+        // Used by MaterialInspectorPanel so it benefits from the already-built material list.
+        public static Material TryGetMaterialByName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            if (_materialByName.TryGetValue(name, out var mat) && mat != null) return mat;
+            if (_sceneVariantByDisplayName.TryGetValue(name, out mat) && mat != null) return mat;
+            return null;
         }
 
         public static bool HasMetadata(string id)

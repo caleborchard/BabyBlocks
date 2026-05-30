@@ -89,6 +89,11 @@ namespace BabyBlocks
             new HarmonyLib.Harmony("BabyBlocks.Patches").PatchAll();
         }
 
+        public override void OnSceneWasLoaded(int buildIndex, string sceneName)
+        {
+            PropMetadataPanel.InvalidateMaterialCache();
+        }
+
         public override void OnUpdate() => FlyCamController.OnUpdate();
 
         public override void OnGUI() => FlyCamController.OnGUI();

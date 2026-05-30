@@ -224,9 +224,25 @@ namespace BabyBlocks
                 int pageCount   = total > 0 ? Mathf.CeilToInt(total / (float)visible) : 0;
                 int currentPage = total > 0 ? (_scrollOffset / visible) + 1 : 0;
                 GUI.color = new Color(0.75f, 0.75f, 0.75f, 1f);
-                GUI.Label(
-                    new Rect(10f + Pad, 10f + Pad + visible * (ItemH + Pad) + 2f, ItemW, 18f),
-                    $"{currentPage}/{pageCount}");
+                var pageLabelRect = new Rect(10f + Pad, 10f + Pad + visible * (ItemH + Pad) + 2f, ItemW, 18f);
+                GUI.Label(pageLabelRect, $"{currentPage}/{pageCount}");
+
+                if (Core.DebugMode && total > 0)
+                {
+                    int pageStart = _scrollOffset;
+                    int pageEnd   = Mathf.Min(_scrollOffset + visible, total);
+                    bool allChecked = true;
+                    for (int i = pageStart; i < pageEnd; i++)
+                    {
+                        if (!PropMetadataPanel.HasMetadata(props[i].id)) { allChecked = false; break; }
+                    }
+                    if (allChecked)
+                    {
+                        GUI.color = new Color(0.4f, 1f, 0.4f, 0.95f);
+                        GUI.Label(new Rect(pageLabelRect.x + 38f, pageLabelRect.y, 16f, 18f), "✓");
+                    }
+                }
+
                 GUI.color = Color.white;
             }
 

@@ -235,6 +235,7 @@ namespace BabyBlocks
             SaveLoadWindow.DrawGUI(Event.current);
             PhysicsWindow.DrawGUI(Event.current);
             ObjImportWindow.DrawGUI(Event.current);
+            MaterialInspectorPanel.DrawGUI();
 
             string tool  = currentTool == ToolMode.Translate ? "MOVE"
                          : currentTool == ToolMode.Scale     ? "SCALE" : "ROTATE";
@@ -243,6 +244,17 @@ namespace BabyBlocks
             string msg   = selectedObject != null
                 ? $"LEVEL EDITOR  [{tool}] [{space}]{snapTag}  |  Space=cycle tool  T=local/global  Y=snap  Del=delete  |  R=teleport mode  `=exit to player  |  LMB=teleport  RMB=orbit"
                 : $"LEVEL EDITOR  |  Drag a prop from the palette onto the terrain  |  R=edit mode  `=exit to player  |  LMB=teleport  RMB=orbit";
+
+            if (Core.DebugMode)
+            {
+                var allProps = PropLibrary.FilteredProps;
+                int totalProps   = allProps.Count;
+                int checkedProps = 0;
+                for (int i = 0; i < totalProps; i++)
+                    if (PropMetadataPanel.HasMetadata(allProps[i].id)) checkedProps++;
+                float pct = totalProps > 0 ? checkedProps * 100f / totalProps : 0f;
+                msg += $"  |  {checkedProps}/{totalProps}  ({pct:F1}%)";
+            }
 
             float barW = Screen.width - 20f;
             GUI.color = new Color(0f, 0f, 0f, 0.6f);
