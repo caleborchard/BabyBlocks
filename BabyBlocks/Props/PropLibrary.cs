@@ -28,11 +28,7 @@ namespace BabyBlocks
         static readonly Dictionary<string, string> _materialCatalogPaths = new(StringComparer.OrdinalIgnoreCase); // materialName → full catalog path
         static readonly Dictionary<string, string> _materialPathToKey    = new(StringComparer.OrdinalIgnoreCase); // catalog path → assigned key (prevents double-numbering the same path)
         static bool _catalogIndexed; // true once IndexAllCatalogMaterials has run (or cache proves it already did)
-        static readonly Dictionary<string, string> _propMaterialSources = new(StringComparer.OrdinalIgnoreCase); // materialName → propId
-        static bool _propMaterialsIndexed; // true once IndexAllPropMaterials has run (or cache proves it already did)
-
         public static IReadOnlyDictionary<string, string> MaterialCatalogPaths => _materialCatalogPaths;
-        public static IReadOnlyDictionary<string, string> PropMaterialSources  => _propMaterialSources;
 
         static readonly Dictionary<string, int>   _refCounts    = new(StringComparer.Ordinal); // propId → live instance count
         static readonly Dictionary<string, float> _zeroRefTime  = new(StringComparer.Ordinal); // propId → Time.realtimeSinceStartup when count hit 0
@@ -94,15 +90,6 @@ namespace BabyBlocks
                             if (p[0] == "__IDX__") _catalogIndexed = true;
                         }
                     }
-                    else if (line.StartsWith("PROPMAT|"))
-                    {
-                        var p = line.Substring(8).Split('|');
-                        if (p.Length >= 2 && !string.IsNullOrEmpty(p[0]) && !string.IsNullOrEmpty(p[1]))
-                        {
-                            _propMaterialSources[p[0]] = p[1];
-                            if (p[0] == "__IDX__") _propMaterialsIndexed = true;
-                        }
-                    }
                 }
                 return true;
             }
@@ -139,10 +126,10 @@ namespace BabyBlocks
             if (string.Equals(existingFingerprint, incomingFingerprint, StringComparison.OrdinalIgnoreCase))
                 return stable;
 
-            return stable + "#" + ComputeShortStableHash(incomingFingerprint);
+            return stable + "#" + ComputeStableHash(incomingFingerprint);
         }
 
-        static string ComputeShortStableHash(string value)
+        public static string ComputeStableHash(string value)
         {
             unchecked
             {
@@ -173,8 +160,6 @@ namespace BabyBlocks
                       .Append(visualPath).Append('|').AppendLine(prefabName);
                 foreach (var kvp in _materialCatalogPaths)
                     sb.Append("MAT|").Append(kvp.Key).Append('|').AppendLine(kvp.Value);
-                foreach (var kvp in _propMaterialSources)
-                    sb.Append("PROPMAT|").Append(kvp.Key).Append('|').AppendLine(kvp.Value);
                 File.WriteAllText(GpuiCachePath, sb.ToString());
             }
             catch (Exception e)
@@ -1173,15 +1158,6 @@ namespace BabyBlocks
                 while (cleanName.EndsWith(InstanceSuffix, StringComparison.Ordinal))
                     cleanName = cleanName.Substring(0, cleanName.Length - InstanceSuffix.Length);
 
-                if (!string.IsNullOrEmpty(sourcePropId))
-                {
-                    var embedded = TryLoadPropEmbeddedMaterial(cleanName);
-                    if (embedded == null && !string.Equals(cleanName, materialName, StringComparison.Ordinal))
-                        embedded = TryLoadPropEmbeddedMaterial(materialName);
-                    if (embedded != null)
-                        return embedded;
-                }
-
                 // Check in-memory cache first under both the original and clean name.
                 if (!_materialCatalogPaths.TryGetValue(materialName, out string matPath)
                     && !_materialCatalogPaths.TryGetValue(cleanName, out matPath))
@@ -1208,13 +1184,7 @@ namespace BabyBlocks
                     }
 
                     if (matPath == null)
-                    {
-                        // Not in catalog — try loading it from its source prop (embedded material).
-                        var embedded = TryLoadPropEmbeddedMaterial(cleanName);
-                        if (embedded == null && !string.Equals(cleanName, materialName, StringComparison.Ordinal))
-                            embedded = TryLoadPropEmbeddedMaterial(materialName);
-                        return embedded;
-                    }
+                        return null;
 
                     // Cache under both the clean name and the original saved name so either
                     // lookup hits the cache on the next call.
@@ -1364,17 +1334,19 @@ namespace BabyBlocks
                 string key;
                 if (hasDupSuffix && _materialCatalogPaths.ContainsKey(baseName))
                 {
-                    key = $"{baseName} 2";
-                    int dup = 3;
+                    // Variant of a known base name — use a hash of the path as a stable unique suffix.
+                    key = $"{baseName} [{ComputeStableHash(path)}]";
+                    // Collision is astronomically unlikely but handle it just in case.
+                    int dup = 2;
                     while (_materialCatalogPaths.ContainsKey(key))
-                        key = $"{baseName} {dup++}";
+                        key = $"{baseName} [{ComputeStableHash(path + dup++)}]";
                 }
                 else
                 {
                     key = name;
                     int dup = 2;
                     while (_materialCatalogPaths.ContainsKey(key))
-                        key = $"{name} {dup++}";
+                        key = $"{name} [{ComputeStableHash(path + dup++)}]";
                 }
 
                 _materialCatalogPaths[key] = path;
@@ -1417,73 +1389,6 @@ namespace BabyBlocks
             }
         }
 
-        // Starts a background coroutine that loads every prop, extracts embedded material names,
-        // and caches them as materialName → propId in GpuiCache.txt. No-op after the first run.
-        // On subsequent sessions the cache is read at startup so the material list is immediately
-        // complete without loading any prefabs.
-        public static void IndexAllPropMaterials()
-        {
-            if (_propMaterialsIndexed) return;
-            MelonLoader.MelonCoroutines.Start(IndexAllPropMaterialsCoroutine());
-        }
-
-        static System.Collections.IEnumerator IndexAllPropMaterialsCoroutine()
-        {
-            _propMaterialsIndexed = true;
-            int found = 0;
-            int batch = 0;
-            var snapshot = _all.ToArray(); // snapshot so mutations during iteration are safe
-
-            foreach (var info in snapshot)
-            {
-                if (info.id.StartsWith("primitive://") || info.id == NegativeCollisionPropId)
-                    continue;
-
-                try { LoadPropData(info); } catch { }
-
-                if (info.parts != null)
-                {
-                    foreach (var part in info.parts)
-                    {
-                        if (part?.materials == null) continue;
-                        foreach (var mat in part.materials)
-                        {
-                            if (mat == null || string.IsNullOrEmpty(mat.name)) continue;
-                            if (_propMaterialSources.ContainsKey(mat.name)) continue;
-                            _propMaterialSources[mat.name] = info.id;
-                            found++;
-                        }
-                    }
-                }
-
-                if (++batch % 5 == 0)
-                    yield return null; // give other systems a frame
-            }
-
-            _propMaterialSources["__IDX__"] = "1";
-            SaveMaterialPathCache();
-            BBLog.Msg($"[PropLibrary] Prop material index built: {found} embedded material(s) cached.");
-            PropMetadataPanel.OnPropMaterialIndexReady();
-        }
-
-        // Loads the actual Material object for a prop-embedded material by loading its source prop.
-        // Falls back to null if the source prop can't be loaded.
-        public static Material TryLoadPropEmbeddedMaterial(string materialName)
-        {
-            if (!_propMaterialSources.TryGetValue(materialName, out string propId)) return null;
-            var info = FindById(propId);
-            if (info == null) return null;
-            try { LoadPropData(info); } catch { return null; }
-            if (info.parts == null) return null;
-            foreach (var part in info.parts)
-            {
-                if (part?.materials == null) continue;
-                foreach (var mat in part.materials)
-                    if (mat != null && string.Equals(mat.name, materialName, StringComparison.OrdinalIgnoreCase))
-                        return mat;
-            }
-            return null;
-        }
 
 
         static string FindMaterialPath(string text, string materialName)

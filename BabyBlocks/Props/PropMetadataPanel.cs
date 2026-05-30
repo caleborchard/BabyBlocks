@@ -708,27 +708,30 @@ static bool _showRendererDropdown;
 
         static bool ShouldHideMaterial(string name) =>
             name.IndexOf("Imposter", StringComparison.OrdinalIgnoreCase) >= 0
-            || name.IndexOf("Impostor", StringComparison.OrdinalIgnoreCase) >= 0;
+            || name.IndexOf("Impostor", StringComparison.OrdinalIgnoreCase) >= 0
+            || name.EndsWith(" (Instance)", StringComparison.Ordinal);
 
-        // Returns true when displayName is a numbered duplicate ("Foo 2", "Foo 3", …).
-        static bool IsNumberedVariant(string name)
+        // Computes a stable display hash for a material based on its texture content.
+        // Uses the same GetTextureSig path as RegisterVariant so both systems produce
+        // identical hashes for identical texture state — preventing duplicate entries.
+        static string ComputeMatHash(Material m)
         {
-            int s = name.LastIndexOf(' ');
-            return s > 0 && int.TryParse(name.Substring(s + 1), out int n) && n >= 2;
-        }
-
-        // Returns "  (filename.mat)" from the catalog path for a numbered variant, or empty string.
-        static string CatalogFileHint(string displayName)
-        {
-            if (!PropLibrary.MaterialCatalogPaths.TryGetValue(displayName, out string path)) return string.Empty;
-            string fileName = Path.GetFileName(path);
-            return string.IsNullOrEmpty(fileName) ? string.Empty : $"  ({fileName})";
+            try
+            {
+                string sig = GetTextureSig(m);
+                if (!string.IsNullOrEmpty(sig))
+                    return PropLibrary.ComputeStableHash(sig);
+                // No textures at all — use shader name for some distinction.
+                string shaderSig = m.shader != null ? m.shader.name : string.Empty;
+                return PropLibrary.ComputeStableHash(shaderSig.Length > 0 ? shaderSig : m.GetInstanceID().ToString());
+            }
+            catch { return PropLibrary.ComputeStableHash(m.GetInstanceID().ToString()); }
         }
 
         static bool ShouldSkipSceneVariantCapture(Material m)
         {
             if (m == null || string.IsNullOrEmpty(m.name)) return true;
-            if (ShouldHideMaterial(m.name)) return true;
+            if (ShouldHideMaterial(m.name)) return true; // covers " (Instance)" too
 
             // Skip classes of materials that change instance ID constantly and are not
             // area-variant materials we care about tracking.
@@ -886,18 +889,17 @@ static void SortMaterialList()
             var key = (baseName, sig);
             if (_sceneVariantMats.ContainsKey(key)) return;
 
-            // Count existing variants for this base name to pick the next number.
             // First variant keeps the plain base name (covered by the live scan in _materialByName).
-            // Subsequent variants get a numeric suffix: "Name 2", "Name 3", …
-            int existingCount = 0;
+            // Subsequent variants get a hash of their texture signature as a stable unique suffix.
+            bool isFirst = true;
             foreach (var k in _sceneVariantMats.Keys)
                 if (string.Equals(k.baseName, baseName, StringComparison.OrdinalIgnoreCase))
-                    existingCount++;
+                    { isFirst = false; break; }
 
-            string displayName = existingCount == 0 ? baseName : $"{baseName} {existingCount + 1}";
+            string displayName = isFirst ? baseName : $"{baseName} [{PropLibrary.ComputeStableHash(sig)}]";
             int n = 2;
             while (_sceneVariantByDisplayName.ContainsKey(displayName))
-                displayName = $"{baseName} {existingCount + n++}";
+                displayName = $"{baseName} [{PropLibrary.ComputeStableHash(sig + n++)}]";
 
             var clone = new Material(source) { name = displayName };
             _ownedMaterialIds.Add(clone.GetInstanceID());
@@ -960,25 +962,42 @@ static void SortMaterialList()
                 var mats = Resources.FindObjectsOfTypeAll<Material>();
                 if (mats != null)
                 {
-                    var seenCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    // Two-pass approach so we know upfront whether a name has multiple distinct
+                    // texture states before assigning display names.
+                    // Pass 1: group by name, collecting only distinct sigs.
+                    var groups = new Dictionary<string, List<(Material mat, string sig)>>(StringComparer.OrdinalIgnoreCase);
                     for (int i = 0; i < mats.Length; i++)
                     {
                         var m = mats[i];
                         if (m == null || string.IsNullOrEmpty(m.name)) continue;
-                        if (_ownedMaterialIds.Contains(m.GetInstanceID())) continue; // skip our own clones
+                        if (_ownedMaterialIds.Contains(m.GetInstanceID())) continue;
                         if (ShouldHideMaterial(m.name)) continue;
-                        seenCount.TryGetValue(m.name, out int count);
-                        seenCount[m.name] = count + 1;
-                        string displayName = count == 0 ? m.name : $"{m.name} {count + 1}";
-                        if (_materialByName.ContainsKey(displayName)) continue;
-                        string shaderName = m.shader != null ? m.shader.name : string.Empty;
-                        string hint = count > 0 ? CatalogFileHint(displayName) : string.Empty;
-                        string label = string.IsNullOrEmpty(shaderName)
-                            ? $"{displayName}{hint}"
-                            : $"{displayName}  [{shaderName}]{hint}";
-                        _materialNames.Add(displayName);
-                        _materialLabels.Add(label);
-                        _materialByName[displayName] = m;
+                        string sig = GetTextureSig(m);
+                        if (!groups.TryGetValue(m.name, out var grp))
+                        {
+                            grp = new List<(Material, string)>();
+                            groups[m.name] = grp;
+                        }
+                        bool already = false;
+                        foreach (var (_, s) in grp) if (string.Equals(s, sig, StringComparison.Ordinal)) { already = true; break; }
+                        if (!already) grp.Add((m, sig));
+                    }
+                    // Pass 2: assign display names — plain when only one sig, hashed for all when
+                    // multiple sigs exist so every variant is consistently distinguishable.
+                    foreach (var kvp in groups)
+                    {
+                        var grp        = kvp.Value;
+                        bool hasVars   = grp.Count > 1;
+                        foreach (var (m, sig) in grp)
+                        {
+                            string displayName = hasVars ? $"{m.name} [{PropLibrary.ComputeStableHash(sig)}]" : m.name;
+                            if (_materialByName.ContainsKey(displayName)) continue;
+                            string shaderName = m.shader != null ? m.shader.name : string.Empty;
+                            string label = string.IsNullOrEmpty(shaderName) ? displayName : $"{displayName}  [{shaderName}]";
+                            _materialNames.Add(displayName);
+                            _materialLabels.Add(label);
+                            _materialByName[displayName] = m;
+                        }
                     }
                 }
 
@@ -1056,6 +1075,17 @@ static void SortMaterialList()
                     // Scan parts directly — GPUI materials don't reliably appear in
                     // Resources.FindObjectsOfTypeAll after loading, but parts hold the real refs.
                     AddPartsToMaterialList(sourceInfo);
+
+                    // Validate: if the material still isn't in the list after loading the recorded
+                    // source prop, the source was recorded incorrectly (e.g. from a contaminated
+                    // renderer). Clear it so we don't keep trying the wrong prop.
+                    if (!_materialByName.ContainsKey(item.overrideMaterialId))
+                    {
+                        item.materialSourcePropId = string.Empty;
+                        anyBackfilled = true; // trigger Save() to persist the correction
+                        continue;
+                    }
+
                     // Propagate this source to all other entries that share the same override material.
                     if (BackfillMaterialSource(item.overrideMaterialId, item.materialSourcePropId))
                         anyBackfilled = true;
@@ -1094,27 +1124,21 @@ static void SortMaterialList()
             // in ApplyPreviewMaterial, ApplySlotMaterial, and ApplyMaterialOverridesToRoot.
             if (anyLoaded)
             {
-                // Re-scan Resources to pick up materials from the newly-loaded asset bundles.
+                // Update the lookup map with any materials that came into memory as a side-effect
+                // of loading source props. The display list is not touched here — it is owned by
+                // the in-memory seenCount scan and the catalog.
                 try
                 {
                     var allMats = Resources.FindObjectsOfTypeAll<Material>();
                     if (allMats != null)
-                    {
                         for (int i = 0; i < allMats.Length; i++)
                         {
                             var m = allMats[i];
                             if (m == null || string.IsNullOrEmpty(m.name)) continue;
                             if (ShouldHideMaterial(m.name)) continue;
-                            if (_materialByName.ContainsKey(m.name)) continue;
-                            string shaderName = m.shader != null ? m.shader.name : string.Empty;
-                            string label = string.IsNullOrEmpty(shaderName)
-                                ? m.name
-                                : $"{m.name}  [{shaderName}]";
-                            _materialNames.Add(m.name);
-                            _materialLabels.Add(label);
-                            _materialByName[m.name] = m;
+                            if (!_materialByName.ContainsKey(m.name))
+                                _materialByName[m.name] = m;
                         }
-                    }
                 }
                 catch { }
             }
@@ -1132,50 +1156,13 @@ static void SortMaterialList()
                 if (name == "__IDX__") continue;
                 if (ShouldHideMaterial(name)) continue;
                 if (!alreadyListed.Add(name)) continue;
-                string catalogLabel = IsNumberedVariant(name)
-                    ? $"{name}  ({Path.GetFileName(kvp.Value)})"
-                    : name;
+                string catalogLabel = name;
                 _materialNames.Add(name);
                 _materialLabels.Add(catalogLabel);
                 anyCatalogAdded = true;
             }
 
-            // Prop-embedded material index: names discovered by loading every prop once.
-            // On the first session this starts a background coroutine; on subsequent sessions
-            // the names are already in the cache and added here immediately.
-            PropLibrary.IndexAllPropMaterials();
-            foreach (var kvp in PropLibrary.PropMaterialSources)
-            {
-                string name = kvp.Key;
-                if (name == "__IDX__") continue;
-                if (ShouldHideMaterial(name)) continue;
-                if (!alreadyListed.Add(name)) continue;
-                _materialNames.Add(name);
-                _materialLabels.Add(name);
-                anyCatalogAdded = true;
-            }
-
             if (anyCatalogAdded) SortMaterialList();
-        }
-
-        // Called by PropLibrary when the background prop material scan finishes on first run,
-        // so newly discovered names are added to the already-open material list.
-        public static void OnPropMaterialIndexReady()
-        {
-            if (!_materialsLoaded) return; // list not built yet; EnsureMaterialSources will pick it up when it runs
-            var alreadyListed = new HashSet<string>(_materialNames, StringComparer.OrdinalIgnoreCase);
-            bool any = false;
-            foreach (var kvp in PropLibrary.PropMaterialSources)
-            {
-                string name = kvp.Key;
-                if (name == "__IDX__") continue;
-                if (ShouldHideMaterial(name)) continue;
-                if (!alreadyListed.Add(name)) continue;
-                _materialNames.Add(name);
-                _materialLabels.Add(name);
-                any = true;
-            }
-            if (any) SortMaterialList();
         }
 
         // Returns the first material name found in the prop's parts that is NOT the override.
@@ -1216,14 +1203,10 @@ static void SortMaterialList()
                         if (BackfillMaterialSource(mat.name, info.id))
                             Save();
                     }
-                    if (_materialByName.ContainsKey(mat.name)) continue;
-                    string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
-                    string label = string.IsNullOrEmpty(shaderName)
-                        ? mat.name
-                        : $"{mat.name}  [{shaderName}]";
-                    _materialNames.Add(mat.name);
-                    _materialLabels.Add(label);
-                    _materialByName[mat.name] = mat;
+                    // Only register in the lookup map — the display list is owned by the
+                    // in-memory seenCount scan and the catalog, not by prop-metadata loading.
+                    if (!_materialByName.ContainsKey(mat.name))
+                        _materialByName[mat.name] = mat;
                 }
             }
         }
@@ -1245,16 +1228,15 @@ static void SortMaterialList()
                     if (ShouldHideMaterial(mat.name)) continue;
                     // Track which prop this material came from and propagate to all saved entries
                     // that use it as an override but had no source recorded yet.
-                    // Only skip if this material is the current prop's override AND the override differs
-                    // from the native material — that means the renderer may be contaminated (showing
-                    // the override rather than the native), so recording this prop as the source would
-                    // be wrong. When override == native, loading this prop does bring the material into
-                    // memory, so recording is correct.
+                    // Never record a source from a contaminated renderer: if the renderer material
+                    // matches the saved override name, the renderer may be showing the override rather
+                    // than the native material, so this prop is NOT the true source of that material.
+                    // Note: we cannot rely on _defaultMaterialName here because the nativeMaterialName
+                    // correction in SyncFromSelection runs after this method, so _defaultMaterialName
+                    // may still reflect the contaminated state at this point.
                     bool isUntrustedOverride =
                         !string.IsNullOrEmpty(_overrideMaterialName)
-                        && !string.IsNullOrEmpty(_defaultMaterialName)
-                        && string.Equals(mat.name, _overrideMaterialName, StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(_overrideMaterialName, _defaultMaterialName, StringComparison.OrdinalIgnoreCase);
+                        && string.Equals(mat.name, _overrideMaterialName, StringComparison.OrdinalIgnoreCase);
 
                     if (!string.IsNullOrEmpty(_propId) && !isUntrustedOverride)
                     {
@@ -1592,6 +1574,8 @@ static void SortMaterialList()
 
             if (needsFreshScan)
             {
+                // Update the lookup map only — do not push these into the display list, which is
+                // managed by the seenCount scan and catalog to keep variant hashing consistent.
                 try
                 {
                     var allMats = Resources.FindObjectsOfTypeAll<Material>();
@@ -1600,14 +1584,8 @@ static void SortMaterialList()
                         var m = allMats[i];
                         if (m == null || string.IsNullOrEmpty(m.name)) continue;
                         if (ShouldHideMaterial(m.name)) continue;
-                        if (_materialByName.ContainsKey(m.name)) continue;
-                        string shaderName = m.shader != null ? m.shader.name : string.Empty;
-                        string label = string.IsNullOrEmpty(shaderName)
-                            ? m.name
-                            : $"{m.name}  [{shaderName}]";
-                        _materialNames.Add(m.name);
-                        _materialLabels.Add(label);
-                        _materialByName[m.name] = m;
+                        if (!_materialByName.ContainsKey(m.name))
+                            _materialByName[m.name] = m;
                     }
                 }
                 catch { }
