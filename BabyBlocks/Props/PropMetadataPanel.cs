@@ -889,14 +889,9 @@ static void SortMaterialList()
             var key = (baseName, sig);
             if (_sceneVariantMats.ContainsKey(key)) return;
 
-            // First variant keeps the plain base name (covered by the live scan in _materialByName).
-            // Subsequent variants get a hash of their texture signature as a stable unique suffix.
-            bool isFirst = true;
-            foreach (var k in _sceneVariantMats.Keys)
-                if (string.Equals(k.baseName, baseName, StringComparison.OrdinalIgnoreCase))
-                    { isFirst = false; break; }
-
-            string displayName = isFirst ? baseName : $"{baseName} [{PropLibrary.ComputeStableHash(sig)}]";
+            // All variants always get a hash of their texture signature so the display name is
+            // stable and consistent with the seenCount two-pass naming.
+            string displayName = $"{baseName} [{PropLibrary.ComputeStableHash(sig)}]";
             int n = 2;
             while (_sceneVariantByDisplayName.ContainsKey(displayName))
                 displayName = $"{baseName} [{PropLibrary.ComputeStableHash(sig + n++)}]";
@@ -982,12 +977,22 @@ static void SortMaterialList()
                         foreach (var (_, s) in grp) if (string.Equals(s, sig, StringComparison.Ordinal)) { already = true; break; }
                         if (!already) grp.Add((m, sig));
                     }
-                    // Pass 2: assign display names — plain when only one sig, hashed for all when
-                    // multiple sigs exist so every variant is consistently distinguishable.
+                    // Count distinct scene-variant states per base name so that a material with
+                    // known variants is treated as multi-state even when only one is in memory.
+                    var sceneVarCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var key in _sceneVariantMats.Keys)
+                    {
+                        sceneVarCounts.TryGetValue(key.baseName, out int c);
+                        sceneVarCounts[key.baseName] = c + 1;
+                    }
+
+                    // Pass 2: assign display names — plain when only one sig AND no known scene
+                    // variants, hashed for all occurrences when multiple states exist.
                     foreach (var kvp in groups)
                     {
-                        var grp        = kvp.Value;
-                        bool hasVars   = grp.Count > 1;
+                        var grp      = kvp.Value;
+                        sceneVarCounts.TryGetValue(kvp.Key, out int svCount);
+                        bool hasVars = grp.Count > 1 || svCount >= 2;
                         foreach (var (m, sig) in grp)
                         {
                             string displayName = hasVars ? $"{m.name} [{PropLibrary.ComputeStableHash(sig)}]" : m.name;
@@ -1243,14 +1248,9 @@ static void SortMaterialList()
                         if (BackfillMaterialSource(mat.name, _propId))
                             Save();
                     }
-                    if (_materialByName.ContainsKey(mat.name)) continue;
-                    string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
-                    string label = string.IsNullOrEmpty(shaderName)
-                        ? mat.name
-                        : $"{mat.name}  [{shaderName}]";
-                    _materialNames.Add(mat.name);
-                    _materialLabels.Add(label);
-                    _materialByName[mat.name] = mat;
+                    // Lookup only — display list is owned by seenCount + catalog + scene variants.
+                    if (!_materialByName.ContainsKey(mat.name))
+                        _materialByName[mat.name] = mat;
                 }
             }
         }
@@ -2435,8 +2435,10 @@ static void SortMaterialList()
             if (string.IsNullOrEmpty(propId) || root == null) return;
             if (!_byId.TryGetValue(propId, out var info)) return;
 
-            // MicroSplat materials are runtime-generated; ensure they're in _materialByName even
-            // when the metadata panel UI has never been shown (e.g. non-debug mode or first launch).
+            // Ensure the full material list is built even when the debug UI has never been shown
+            // (non-debug mode, first launch). This populates _materialByName with hashed variants
+            // and source-prop materials so ResolveMaterial can find any saved override.
+            EnsureMaterialList();
             AddMicroSplatLayerMaterials();
 
             // Per-slot overrides
