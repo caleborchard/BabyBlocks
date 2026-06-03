@@ -438,7 +438,7 @@ namespace BabyBlocks
 
             if (chosen == null)
             {
-                if (Physics.Raycast(ray, out var hit, 2000f, ~GizmoRenderer.Mask))
+                if (Physics.Raycast(ray, out var hit, 2000f, ~GizmoRenderer.Mask, QueryTriggerInteraction.Collide))
                 {
                     var leo = hit.collider.GetComponent<LevelEditorObject>()
                            ?? hit.collider.GetComponentInParent<LevelEditorObject>();

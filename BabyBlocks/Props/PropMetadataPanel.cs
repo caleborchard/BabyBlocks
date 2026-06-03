@@ -1908,6 +1908,13 @@ static void SortMaterialList()
                 if (col == null) continue;
                 // Leave the BushCollider's own SphereCollider alone (already a trigger, handled separately).
                 if (col.gameObject.GetComponent<Il2Cpp.BushCollider>() != null) continue;
+                // Non-convex MeshColliders cannot be triggers in Unity — force convex so isTrigger sticks.
+                // The convex hull is sufficient for editor click-selection.
+                if (passthrough)
+                {
+                    var mc = col.TryCast<MeshCollider>();
+                    if (mc != null && !mc.convex) mc.convex = true;
+                }
                 col.isTrigger = passthrough;
             }
         }
