@@ -168,6 +168,8 @@ static bool _showRendererDropdown;
         static bool _savePathLogged;
         static string _paletteSelectedId;
 
+        static bool _loadedFromJson;
+
         static bool _showExportWindow;
         static Rect _exportWindowRect;
         static bool _exportWindowInitialized;
@@ -250,12 +252,14 @@ static bool _showRendererDropdown;
             GUI.enabled = !string.IsNullOrEmpty(_propId);
             if (GUILayout.Button("Save"))
             {
+                _loadedFromJson = true;
                 ApplyCurrent();
                 _dirty = false;
             }
             GUI.enabled = true;
             if (GUILayout.Button("Save All"))
             {
+                _loadedFromJson = true;
                 if (!string.IsNullOrEmpty(_propId))
                 {
                     ApplyCurrent();
@@ -2797,6 +2801,7 @@ static void SortMaterialList()
 
         static void LoadFromJson(string json)
         {
+            _loadedFromJson = true;
             var data = Deserialize(json);
             if (data == null || data.items == null) return;
 
@@ -2827,6 +2832,7 @@ static void SortMaterialList()
 
         static void Save()
         {
+            if (!_loadedFromJson) return;
             try
             {
                 var dir = Path.GetDirectoryName(SavePath);
