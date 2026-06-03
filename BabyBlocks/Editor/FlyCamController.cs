@@ -32,7 +32,8 @@ namespace BabyBlocks
         public static void OnUpdate()
         {
             if (Input.GetKeyDown(KeyCode.R) && PlayerMovement.me != null
-                && !Menu.me.teleporting && !Core.IsKeyboardCaptured)
+                && !Menu.me.teleporting && !Core.IsKeyboardCaptured
+                && !PropPalette.IsDragging)
                 ToggleFlyEditorMode();
 
             if (Input.GetKeyDown(KeyCode.BackQuote) && PlayerMovement.me != null

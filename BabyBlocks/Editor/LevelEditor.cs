@@ -58,6 +58,22 @@ namespace BabyBlocks
         static float _lastUnloadCheck;
         const float UnloadCheckInterval = 15f;
 
+        // Ghost preview shown while dragging a prop from the palette.
+        static GameObject _propGhost;
+        static PropInfo   _ghostProp;
+
+        // R cycles through 16 cardinal orientations: 4 pitch faces × 4 yaw steps.
+        // Each group of 4 presses cycles all faces at a fixed yaw, so the very first
+        // four presses give upright → side → upside-down → other-side (varied, not just spin).
+        static readonly (int pitch, int yaw)[] DragOrientations =
+        {
+            (0,0),(1,0),(2,0),(3,0),   // all faces at 0° yaw
+            (0,1),(1,1),(2,1),(3,1),   // all faces at 90° yaw
+            (0,2),(1,2),(2,2),(3,2),   // all faces at 180° yaw
+            (0,3),(1,3),(2,3),(3,3),   // all faces at 270° yaw
+        };
+        static int _dragStep;
+
         public static void EnsureManager()
         {
             if (LevelEditorManager.Instance != null) return;
@@ -192,7 +208,13 @@ namespace BabyBlocks
                 if (!Input.GetMouseButton(0))
                 {
                     if (!overUI) TryDropProp();
+                    DestroyPropGhost();
                     PropPalette.CancelDrag();
+                }
+                else
+                {
+                    if (Input.GetKeyDown(KeyCode.R)) _dragStep = (_dragStep + 1) % DragOrientations.Length;
+                    UpdatePropGhostForFrame(overUI);
                 }
                 return;
             }
@@ -297,20 +319,116 @@ namespace BabyBlocks
             if (prop == null) return;
 
             EnsureManager();
-
             PropLibrary.LoadPropData(prop);
-            // Compute prop pivot center so the prop's center lands on the hit point.
-            Vector3 pivot = PropLibrary.GetPropPivotCenter(prop);
-            Vector3 spawnPos;
-            if (pivot == Vector3.zero)
-                spawnPos = hit.point + Vector3.up * 0.5f; // fallback
-            else
-                spawnPos = hit.point - pivot;
 
-            var obj = LevelEditorManager.Instance.SpawnFromPropInfo(prop, spawnPos);
+            var rot = ComputeSpawnRotation(hit.normal) * Quaternion.Euler(DragOrientations[_dragStep].pitch * 90f, DragOrientations[_dragStep].yaw * 90f, 0f);
+            var obj = LevelEditorManager.Instance.SpawnFromPropInfo(prop, ComputeSpawnPosition(prop, hit, rot));
             if (obj == null) return;
+            obj.transform.rotation = rot;
             Select(obj);
             LevelEditorHistory.PushSpawn(obj);
+        }
+
+        // Returns the rotation that aligns the prop's local +Y with the hit surface normal.
+        static Quaternion ComputeSpawnRotation(Vector3 normal)
+        {
+            if (Vector3.Dot(normal, Vector3.up) < -0.999f)
+                return Quaternion.Euler(180f, 0f, 0f);  // ceiling: unambiguous 180° flip
+            return Quaternion.FromToRotation(Vector3.up, normal);
+        }
+
+        // Places the prop so its nearest face (in the surface-normal direction) sits on the hit point,
+        // accounting for the prop's spawn rotation so the offset is correct for rotated placements.
+        static Vector3 ComputeSpawnPosition(PropInfo prop, RaycastHit hit, Quaternion rotation)
+        {
+            var bounds = PropLibrary.GetPropBounds(prop);
+            if (!bounds.HasValue)
+                return hit.point + hit.normal * 0.5f;
+
+            Vector3 n = hit.normal;
+            // Rotate the local-space center into world space.
+            Vector3 rotCenter = rotation * bounds.Value.center;
+            // Support function for a rotated AABB: project each rotated half-axis onto n.
+            Vector3 e = bounds.Value.extents;
+            float extent = Mathf.Abs(Vector3.Dot(rotation * new Vector3(e.x, 0f,  0f),  n))
+                         + Mathf.Abs(Vector3.Dot(rotation * new Vector3(0f,  e.y, 0f),  n))
+                         + Mathf.Abs(Vector3.Dot(rotation * new Vector3(0f,  0f,  e.z), n));
+            return hit.point - rotCenter + n * extent;
+        }
+
+        static void UpdatePropGhostForFrame(bool overUI)
+        {
+            var prop = PropPalette.DraggingProp;
+            if (prop == null) { DestroyPropGhost(); return; }
+
+            if (_propGhost == null || _ghostProp != prop)
+            {
+                DestroyPropGhost();
+                _dragStep = 0;
+                PropLibrary.LoadPropData(prop);
+                if (prop.HasMesh) { _propGhost = CreateGhostObject(prop); _ghostProp = prop; }
+            }
+
+            if (_propGhost == null) return;
+
+            if (overUI) { _propGhost.SetActive(false); return; }
+
+            var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+            if (Physics.Raycast(ray, out var hit, 2000f, LayerCache.PropTerrainMask))
+            {
+                var rot = ComputeSpawnRotation(hit.normal)
+                        * Quaternion.Euler(DragOrientations[_dragStep].pitch * 90f,
+                                           DragOrientations[_dragStep].yaw   * 90f, 0f);
+                _propGhost.SetActive(true);
+                _propGhost.transform.SetPositionAndRotation(ComputeSpawnPosition(_ghostProp, hit, rot), rot);
+            }
+            else
+            {
+                _propGhost.SetActive(false);
+            }
+        }
+
+        static void DestroyPropGhost()
+        {
+            if (_propGhost != null)
+            {
+                UnityEngine.Object.Destroy(_propGhost);
+                _propGhost = null;
+            }
+            _ghostProp = null;
+        }
+
+        // Mirrors the PropLayer constant in LevelEditorManager so the ghost is
+        // rendered by the same camera passes as real props.
+        const int GhostLayer = 16;
+
+        static GameObject CreateGhostObject(PropInfo prop)
+        {
+            var root = new GameObject("__PropGhost__");
+            root.layer = GhostLayer;
+
+            for (int i = 0; i < prop.parts.Count; i++)
+            {
+                var part = prop.parts[i];
+                if (part?.mesh == null) continue;
+                // Name matches the LEO convention (Part_0, Part_1…) so that
+                // ApplyDisabledRenderersToRoot can find children by path.
+                var child = new GameObject($"Part_{i}");
+                child.layer = GhostLayer;
+                child.transform.SetParent(root.transform, false);
+                child.transform.localPosition = part.localPosition;
+                child.transform.localRotation = part.localRotation;
+                child.transform.localScale    = part.localScale;
+                child.AddComponent<MeshFilter>().mesh = part.mesh;
+                var mr = child.AddComponent<MeshRenderer>();
+                if (part.materials != null) mr.sharedMaterials = part.materials;
+            }
+
+            // Honour metadata overrides so the ghost matches what will be placed.
+            PropMetadataPanel.ApplyMaterialOverridesToRoot(prop.id, root);
+            PropMetadataPanel.ApplyDisabledRenderersToRoot(prop.id, root);
+
+            return root;
         }
 
         static void TryBeginDrag()

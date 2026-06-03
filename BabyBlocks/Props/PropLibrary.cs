@@ -738,16 +738,14 @@ namespace BabyBlocks
             return c >= '1' && c <= '9';
         }
 
-        // Compute the prop's pivot center in the prop-root local space by
-        // combining all part mesh bounds transformed by their local transforms.
-        // Returns Vector3.zero if no reliable data is available.
-        public static Vector3 GetPropPivotCenter(PropInfo info)
+        // Returns the prop's combined mesh bounds in prop-root local space.
+        // Returns null if no reliable data is available or bounds are implausibly large.
+        public static Bounds? GetPropBounds(PropInfo info)
         {
-            if (info == null) return Vector3.zero;
+            if (info == null) return null;
 
             Bounds? acc = null;
 
-            // Use rendered parts first
             if (info.parts != null)
             {
                 for (int i = 0; i < info.parts.Count; i++)
@@ -757,23 +755,18 @@ namespace BabyBlocks
                     var mb = p.mesh.bounds;
                     Vector3 center = mb.center;
                     Vector3 ext    = mb.extents;
-
-                    // Transform 8 corners into prop-local space
                     for (int xi = -1; xi <= 1; xi += 2)
                     for (int yi = -1; yi <= 1; yi += 2)
                     for (int zi = -1; zi <= 1; zi += 2)
                     {
-                        var localCorner = center + Vector3.Scale(new Vector3(xi * ext.x, yi * ext.y, zi * ext.z), Vector3.one);
-                        var scaled = Vector3.Scale(localCorner, p.localScale);
-                        var rotated = p.localRotation * scaled;
-                        var worldLocal = p.localPosition + rotated;
+                        var corner    = center + new Vector3(xi * ext.x, yi * ext.y, zi * ext.z);
+                        var worldLocal = p.localPosition + p.localRotation * Vector3.Scale(corner, p.localScale);
                         if (acc == null) acc = new Bounds(worldLocal, Vector3.zero);
                         else { var b = acc.Value; b.Encapsulate(worldLocal); acc = b; }
                     }
                 }
             }
 
-            // If no render parts, fall back to collider parts
             if (acc == null && info.colliderParts != null)
             {
                 for (int i = 0; i < info.colliderParts.Count; i++)
@@ -789,32 +782,50 @@ namespace BabyBlocks
                         for (int yi = -1; yi <= 1; yi += 2)
                         for (int zi = -1; zi <= 1; zi += 2)
                         {
-                            var localCorner = center + Vector3.Scale(new Vector3(xi * ext.x, yi * ext.y, zi * ext.z), Vector3.one);
-                            var scaled = Vector3.Scale(localCorner, cp.localScale);
-                            var rotated = cp.localRotation * scaled;
-                            var worldLocal = cp.localPosition + rotated;
+                            var corner     = center + new Vector3(xi * ext.x, yi * ext.y, zi * ext.z);
+                            var worldLocal = cp.localPosition + cp.localRotation * Vector3.Scale(corner, cp.localScale);
+                            if (acc == null) acc = new Bounds(worldLocal, Vector3.zero);
+                            else { var b = acc.Value; b.Encapsulate(worldLocal); acc = b; }
+                        }
+                    }
+                    else if (cp.type == PropColliderPart.ColliderType.Box)
+                    {
+                        // Encapsulate all 8 corners of the box so bounds include full extents.
+                        Vector3 hs = cp.size * 0.5f;
+                        for (int xi = -1; xi <= 1; xi += 2)
+                        for (int yi = -1; yi <= 1; yi += 2)
+                        for (int zi = -1; zi <= 1; zi += 2)
+                        {
+                            var corner     = cp.center + new Vector3(xi * hs.x, yi * hs.y, zi * hs.z);
+                            var worldLocal = cp.localPosition + cp.localRotation * Vector3.Scale(corner, cp.localScale);
                             if (acc == null) acc = new Bounds(worldLocal, Vector3.zero);
                             else { var b = acc.Value; b.Encapsulate(worldLocal); acc = b; }
                         }
                     }
                     else
                     {
-                        // For simple colliders, include their center points
-                        var worldLocal = cp.localPosition + cp.localRotation * Vector3.Scale(cp.center, cp.localScale);
-                        if (acc == null) acc = new Bounds(worldLocal, Vector3.zero);
-                        else { var b = acc.Value; b.Encapsulate(worldLocal); acc = b; }
+                        // Sphere / Capsule: encapsulate center + an approximate radius.
+                        var worldCenter = cp.localPosition + cp.localRotation * Vector3.Scale(cp.center, cp.localScale);
+                        float r = cp.radius * Mathf.Max(cp.localScale.x, cp.localScale.y, cp.localScale.z);
+                        if (r < 0.01f) r = 0.01f;
+                        var sphereBounds = new Bounds(worldCenter, Vector3.one * (r * 2f));
+                        if (acc == null) acc = sphereBounds;
+                        else { var b = acc.Value; b.Encapsulate(sphereBounds); acc = b; }
                     }
                 }
             }
 
-            if (acc == null) return Vector3.zero;
-
-            // If bounds are implausibly large, return zero to avoid wild placement.
+            if (acc == null) return null;
             var size = acc.Value.size;
-            if (size.x > 100f || size.y > 100f || size.z > 100f)
-                return Vector3.zero;
+            if (size.x > 100f || size.y > 100f || size.z > 100f) return null;
+            return acc;
+        }
 
-            return acc.Value.center;
+        // Returns Vector3.zero if no reliable bounds data is available.
+        public static Vector3 GetPropPivotCenter(PropInfo info)
+        {
+            var b = GetPropBounds(info);
+            return b.HasValue ? b.Value.center : Vector3.zero;
         }
 
         // Natural string comparison: compares alphabetic parts case-insensitively

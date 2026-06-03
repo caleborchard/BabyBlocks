@@ -246,8 +246,9 @@ namespace BabyBlocks
                 GUI.color = Color.white;
             }
 
-            // Ghost label following cursor while dragging.
-            if (IsDragging)
+            // Ghost label following cursor while dragging — only while still inside the panel.
+            // Once outside, the 3D ghost preview in the scene takes over.
+            if (IsDragging && panelRect.Contains(e.mousePosition))
             {
                 GUI.color = new Color(1f, 1f, 0.4f, 0.80f);
                 GUI.Box(
