@@ -1,5 +1,7 @@
+using System.Collections;
 using Il2Cpp;
 using Il2CppCinemachine;
+using MelonLoader;
 using UnityEngine;
 
 namespace BabyBlocks
@@ -12,6 +14,7 @@ namespace BabyBlocks
 
         static float _noiseAmplitude = -1f;
         static bool  _refreezePending;
+        static bool  _farTeleportActive;
 
         // Player freeze state
         static bool _freezeActive;
@@ -40,7 +43,17 @@ namespace BabyBlocks
                 && !Menu.me.teleporting && !Core.IsKeyboardCaptured)
                 ToggleTeleportMode();
 
-            // After a background teleport finishes, re-freeze the player so fly cam stays active.
+            // G: unified teleport. In non-cursor mode aims along the crosshair (infinite
+            // distance); in cursor mode drops to fly-cam position. Both paths go through
+            // FarTeleportCo which drains loaded chunks in parallel then shrinks the load
+            // radius to just the target chunk, so the player lands the moment that one
+            // chunk's collision scene activates rather than waiting for the full region.
+            if (FlyCamActive && !CursorMode && Input.GetKeyDown(KeyCode.G)
+                && !Menu.me.teleporting && !_refreezePending && !_farTeleportActive
+                && !Core.IsKeyboardCaptured)
+                HandleFarTeleport();
+
+            // After a short (nearby) teleport finishes, re-freeze the player.
             if (FlyCamActive && _refreezePending && !Menu.me.teleporting)
             {
                 var player = PlayerMovement.me;
@@ -241,9 +254,10 @@ namespace BabyBlocks
             _frozenAnimator   = null;
         }
 
+        // LMB in non-cursor fly mode — kept for the standard short-range click-teleport.
         public static void HandleTeleport(FlyCam flyCam)
         {
-            if (Menu.me.teleporting || _refreezePending) return;
+            if (Menu.me.teleporting || _refreezePending || _farTeleportActive) return;
 
             var ray = Camera.main.ScreenPointToRay(new Vector3(Screen.width / 2f, Screen.height / 2f));
             if (!Physics.Raycast(ray, out var hit, 1000f, LayerCache.PropTerrainMask))
@@ -258,7 +272,6 @@ namespace BabyBlocks
             else
                 checkPos = hit.point + Vector3.up;
 
-            // Unfreeze before teleport so TeleportCo's sequence runs on an active player.
             FreezePlayer(player, false);
             player.anim.transform.rotation = Quaternion.Euler(0f, flyCam.transform.eulerAngles.y, 0f);
             player.pm.SwitchToActiveMode();
@@ -266,8 +279,173 @@ namespace BabyBlocks
 
             Menu.me.Teleport(checkPos);
 
-            // OnUpdate re-freezes once Menu.me.teleporting drops back to false.
             _refreezePending = true;
+        }
+
+        // G key: fast unified teleport for any distance.
+        // Non-cursor mode: aims along the crosshair with infinite range.
+        // Cursor mode: uses fly-cam position.
+        // Both paths go through FarTeleportCo.
+        static void HandleFarTeleport()
+        {
+            var player = PlayerMovement.me;
+            if (player == null) return;
+
+            float facingY = player.flyCam.transform.eulerAngles.y;
+            Vector3 target;
+
+            if (!CursorMode)
+            {
+                // Infinite-range crosshair raycast — hits any loaded terrain/prop.
+                var ray = Camera.main.ScreenPointToRay(new Vector3(Screen.width / 2f, Screen.height / 2f));
+                if (Physics.Raycast(ray, out var hit, Mathf.Infinity, LayerCache.PropTerrainMask))
+                    target = hit.point;
+                else
+                    // Nothing in sights — target fly-cam XZ at a low Y so TeleportCo's
+                    // upward ground search starts well below terrain.
+                    target = new Vector3(player.flyCam.transform.position.x, -100f,
+                                         player.flyCam.transform.position.z);
+            }
+            else
+            {
+                target = new Vector3(player.flyCam.transform.position.x, -100f,
+                                     player.flyCam.transform.position.z);
+            }
+
+            _farTeleportActive = true;
+            SkipGame.me.fullscreenColor = Color.black;
+            SkipGame.me.blackScreenAlpha = 1f;
+
+            MelonCoroutines.Start(FarTeleportCo(player, target, facingY));
+        }
+
+        // The fast teleport coroutine. Mirrors what RestartScene does but without any
+        // menu state changes, and with two key optimisations over plain Menu.me.Teleport():
+        //
+        //   1. Parallel chunk drain: all loaded chunk scenes are unloaded simultaneously
+        //      (rather than one-at-a-time as in UnloadAll), clearing BestRegionLoader's
+        //      serial somebodyLoading queue as fast as possible.
+        //
+        //   2. Minimal load radius: chunkLoadDist/chunkUnloadDist are set to 1f before
+        //      handing off to TeleportCo. BestRegionLoader.fullyLoaded therefore becomes
+        //      true the moment the single chunk under the target finishes loading — its
+        //      colliders are active at that point (OnChunkLoaded activates them immediately)
+        //      so the player can be placed right away. Surrounding chunks stream in normally
+        //      after the player lands, hidden by the black screen.
+        //
+        //   3. SaveGod continuePt is stamped with the target so if the save loop fires
+        //      during the sequence it records a consistent position.
+        static IEnumerator FarTeleportCo(PlayerMovement player, Vector3 target, float facingY)
+        {
+            // Pause autosave; stamp target so any stray save writes a consistent position.
+            SaveGod.me.stopSaving = true;
+            SaveGod.theSave.continuePt = target;
+
+            // Freeze the loader so nothing new starts while we drain.
+            BestRegionLoader.me.off = true;
+
+            // Wait for any in-flight async op to settle before we touch loadStates.
+            while (BestRegionLoader.somebodyLoading) yield return null;
+
+            // --- Parallel chunk drain ---
+            // Kick off every loaded chunk's unload simultaneously. The game normally
+            // serialises these one at a time (UnloadAll); firing them all at once lets
+            // Addressables pipeline the scene unloads concurrently.
+            var chunkMap = BestRegionLoader.me.chunkMap;
+            for (int i = 0; i < chunkMap.Length; i++)
+            {
+                if (chunkMap[i].loadState == LoadState.loaded)
+                    chunkMap[i].Unload();
+            }
+
+            // Any chunk still mid-load: wait for it to finish, then unload it too.
+            bool anyInFlight;
+            do
+            {
+                yield return null;
+                anyInFlight = false;
+                for (int i = 0; i < chunkMap.Length; i++)
+                {
+                    switch (chunkMap[i].loadState)
+                    {
+                        case LoadState.loading:
+                            anyInFlight = true;
+                            break;
+                        case LoadState.loaded:
+                            chunkMap[i].Unload();
+                            anyInFlight = true;
+                            break;
+                    }
+                }
+            } while (anyInFlight);
+
+            // Wait for all unload callbacks to complete.
+            bool allClear;
+            do
+            {
+                yield return null;
+                allClear = true;
+                for (int i = 0; i < chunkMap.Length; i++)
+                {
+                    if (chunkMap[i].loadState != LoadState.unloaded) { allClear = false; break; }
+                }
+            } while (!allClear);
+
+            // Parallel callbacks may leave somebodyLoading stuck; reset it explicitly.
+            BestRegionLoader.somebodyLoading = false;
+
+            // --- Absolute minimum load: 1 chunk terrain scene, zero props ---
+            // UpdateLoaderCells() also contributes to fullyLoaded via its own shouldLoad
+            // check, so any props within propLoadDists would gate the wait just like chunks.
+            // Zero all prop distances so only the single chunk terrain scene is required.
+            // chunkLoadDist = 1f means only the chunk whose bounding box contains the
+            // target point (distance == 0 < 1) gets shouldLoad=true.
+            var br = BestRegionLoader.me;
+            float origLoad   = br.chunkLoadDist;
+            float origUnload = br.chunkUnloadDist;
+            br.chunkLoadDist   = 1f;
+            br.chunkUnloadDist = 1f;
+
+            var propLoad   = br.propLoadDists;
+            var propUnload = br.propUnloadDists;
+            var origPropLoad   = new float[propLoad.Length];
+            var origPropUnload = new float[propUnload.Length];
+            for (int i = 0; i < propLoad.Length; i++)   { origPropLoad[i]   = propLoad[i];   propLoad[i]   = 0f; }
+            for (int i = 0; i < propUnload.Length; i++) { origPropUnload[i] = propUnload[i]; propUnload[i] = 0f; }
+
+            br.off = false;
+
+            // Set up player so TeleportCo's ragdoll sequence has the right puppet state.
+            FreezePlayer(player, false);
+            player.anim.transform.rotation = Quaternion.Euler(0f, facingY, 0f);
+            player.pm.SwitchToActiveMode();
+            player.pm.SwitchModes();
+
+            // Deactivate immediately after mode switches so the player can't fall through
+            // the now-empty world or trigger scream/water-splash sounds while we wait for
+            // the single chunk to load. TeleportCo's own SetActive(false) becomes a no-op;
+            // its SetActive(true) re-enables the player correctly at the new position.
+            player.gameObject.SetActive(false);
+
+            // Hand off to the game's teleport machinery. It forces one BestRegionLoader
+            // update, waits for fullyLoaded (1 chunk = very fast), then runs the full
+            // ragdoll foot-placement sequence and clears Menu.me.teleporting.
+            Menu.me.Teleport(target);
+            while (Menu.me.teleporting) yield return null;
+
+            // Restore all distances — surrounding terrain and props stream in normally.
+            br.chunkLoadDist   = origLoad;
+            br.chunkUnloadDist = origUnload;
+            for (int i = 0; i < propLoad.Length; i++)   propLoad[i]   = origPropLoad[i];
+            for (int i = 0; i < propUnload.Length; i++) propUnload[i] = origPropUnload[i];
+
+            // Back into fly-cam state.
+            FreezePlayer(player, true);
+            br.loadingTransform = player.flyCam.transform;
+
+            SaveGod.me.stopSaving = false;
+            SkipGame.me.blackScreenAlpha = 0f;
+            _farTeleportActive = false;
         }
     }
 }
