@@ -168,8 +168,20 @@ static bool _showRendererDropdown;
         static bool _savePathLogged;
         static string _paletteSelectedId;
 
+        static bool _showExportWindow;
+        static Rect _exportWindowRect;
+        static bool _exportWindowInitialized;
+        static bool _exportWindowDragging;
+        static Vector2 _exportWindowDragOffset;
+        static string _exportStatusMsg = "";
+
+        const byte PmdVersion = 1;
+
         static string SavePath =>
             Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "prop_metadata.json");
+
+        static string BinaryExportPath =>
+            Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "prop_metadata.bin");
 
         public static void DrawGUI(LevelEditorObject selectedObject)
         {
@@ -200,6 +212,9 @@ static bool _showRendererDropdown;
             HandleDrag(headerRect);
             AutoSaveIfIdle();
 
+            if (_showExportWindow)
+                DrawExportWindow();
+
             string focused = GUI.GetNameOfFocusedControl();
             IsTypingInUI = focused == SearchField
                         || focused == DisplayNameField
@@ -210,6 +225,8 @@ static bool _showRendererDropdown;
 
             var mouse = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
             IsPointerOverUI = rect.Contains(mouse);
+            if (_showExportWindow && _exportWindowInitialized)
+                IsPointerOverUI |= _exportWindowRect.Contains(mouse);
         }
 
         public static bool ContainsPoint(Vector2 guiPoint)
@@ -246,6 +263,8 @@ static bool _showRendererDropdown;
                 }
                 Save();
             }
+            if (GUILayout.Button(_showExportWindow ? "Hide Export" : "Binary Export"))
+                _showExportWindow = !_showExportWindow;
             GUILayout.Space(4f);
 
             _mainScroll = GUILayout.BeginScrollView(_mainScroll, false, false, GUIStyle.none, GUI.skin.verticalScrollbar, GUILayout.ExpandHeight(true));
@@ -2746,41 +2765,64 @@ static void SortMaterialList()
 
             try
             {
-                if (!File.Exists(SavePath)) return;
-                var json = File.ReadAllText(SavePath);
-                if (string.IsNullOrEmpty(json)) return;
-
-                var data = Deserialize(json);
-                if (data == null || data.items == null) return;
-
-                _nextIndex = Math.Max(1, data.nextIndex);
-                int maxIndex = _nextIndex - 1;
-                foreach (var item in data.items)
+                if (Core.DebugMode)
                 {
-                    if (item == null || string.IsNullOrEmpty(item.id)) continue;
-                    if (!item.excluded && item.index <= 0) item.index = _nextIndex++;
-                    if (item.index > maxIndex) maxIndex = item.index;
-                    _byId[item.id] = item;
+                    // Debug: try UserData JSON first (allows live editing)
+                    if (File.Exists(SavePath))
+                    {
+                        var json = File.ReadAllText(SavePath);
+                        if (!string.IsNullOrEmpty(json))
+                        {
+                            LoadFromJson(json);
+                            return;
+                        }
+                    }
+                    // Debug: fall back to UserData binary (useful for testing the export without rebuilding)
+                    if (File.Exists(BinaryExportPath))
+                    {
+                        using var fs = File.OpenRead(BinaryExportPath);
+                        LoadFromBinaryStream(fs);
+                        BBLog.Msg("[PropMetadata] Loaded from UserData binary.");
+                        return;
+                    }
                 }
-                _nextIndex = Math.Max(_nextIndex, maxIndex + 1);
-
-                // One-time cleanup: MicroSplat materials are runtime-generated so they can't have
-                // a real source prop. Clear any that were incorrectly recorded.
-                bool anyFixed = false;
-                foreach (var item in _byId.Values)
-                {
-                    if (string.IsNullOrEmpty(item.materialSourcePropId)) continue;
-                    if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
-                    if (!item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
-                    item.materialSourcePropId = string.Empty;
-                    anyFixed = true;
-                }
-                if (anyFixed) Save();
+                // Non-debug (or no UserData file found): use embedded binary
+                LoadFromEmbedded();
             }
             catch (Exception e)
             {
                 MelonLogger.Warning($"[PropMetadata] Load failed: {e.Message}");
             }
+        }
+
+        static void LoadFromJson(string json)
+        {
+            var data = Deserialize(json);
+            if (data == null || data.items == null) return;
+
+            _nextIndex = Math.Max(1, data.nextIndex);
+            int maxIndex = _nextIndex - 1;
+            foreach (var item in data.items)
+            {
+                if (item == null || string.IsNullOrEmpty(item.id)) continue;
+                if (!item.excluded && item.index <= 0) item.index = _nextIndex++;
+                if (item.index > maxIndex) maxIndex = item.index;
+                _byId[item.id] = item;
+            }
+            _nextIndex = Math.Max(_nextIndex, maxIndex + 1);
+
+            // One-time cleanup: MicroSplat materials are runtime-generated so they can't have
+            // a real source prop. Clear any that were incorrectly recorded.
+            bool anyFixed = false;
+            foreach (var item in _byId.Values)
+            {
+                if (string.IsNullOrEmpty(item.materialSourcePropId)) continue;
+                if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
+                if (!item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
+                item.materialSourcePropId = string.Empty;
+                anyFixed = true;
+            }
+            if (anyFixed) Save();
         }
 
         static void Save()
@@ -2810,6 +2852,196 @@ static void SortMaterialList()
                 MelonLogger.Warning($"[PropMetadata] Save failed: {e.Message}");
             }
         }
+
+        // ── Binary PMD format ─────────────────────────────────────────────────────
+
+        static void SaveBinary(string path)
+        {
+            EnsureLoaded();
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            using var fs = File.Open(path, FileMode.Create, FileAccess.Write);
+            using var w = new BinaryWriter(fs, System.Text.Encoding.UTF8, leaveOpen: false);
+            WriteBinary(w);
+        }
+
+        static void WriteBinary(BinaryWriter w)
+        {
+            // Header: magic "PMD" + version
+            w.Write((byte)0x50); w.Write((byte)0x4D); w.Write((byte)0x44);
+            w.Write(PmdVersion);
+
+            var items = new List<PropExtraInfo>();
+            foreach (var v in _byId.Values)
+                if (v != null && !string.IsNullOrEmpty(v.id))
+                    items.Add(v);
+
+            w.Write(_nextIndex);
+            w.Write(items.Count);
+
+            foreach (var item in items)
+            {
+                w.Write(item.id);
+                w.Write(item.index);
+
+                bool hasDisplayName     = !item.excluded && !string.IsNullOrEmpty(item.displayName);
+                bool hasCategory        = !item.excluded && !string.IsNullOrEmpty(item.category);
+                bool hasColliderIgnored = !item.excluded && !string.IsNullOrEmpty(item.colliderIgnoredSubmeshes);
+                bool hasOverrideMat     = !item.excluded && !string.IsNullOrEmpty(item.overrideMaterialId);
+
+                byte flags1 = 0;
+                if (item.excluded)                                flags1 |= 0x01;
+                if (!item.excluded && item.useRenderMeshCollider) flags1 |= 0x02;
+                if (!item.excluded && item.isBush)                flags1 |= 0x04;
+                if (!item.excluded && item.keepOriginalHierarchy) flags1 |= 0x08;
+                if (hasDisplayName)                               flags1 |= 0x10;
+                if (hasCategory)                                  flags1 |= 0x20;
+                if (hasColliderIgnored)                           flags1 |= 0x40;
+                if (hasOverrideMat)                               flags1 |= 0x80;
+                w.Write(flags1);
+
+                if (item.excluded) continue;
+
+                bool hasNativeMat   = !string.IsNullOrEmpty(item.nativeMaterialName);
+                bool hasMatSource   = !string.IsNullOrEmpty(item.materialSourcePropId);
+                bool hasSurface     = !string.IsNullOrEmpty(item.surfaceType);
+                bool hasDisabled    = item.disabledRenderers != null && item.disabledRenderers.Count > 0;
+                bool hasPerSlot     = HasNonEmptySlot(item.perSlotMaterialOverrides);
+                bool hasForcedSlots = item.forcedMaterialSlots > 1;
+
+                byte flags2 = 0;
+                if (hasNativeMat)   flags2 |= 0x01;
+                if (hasMatSource)   flags2 |= 0x02;
+                if (hasSurface)     flags2 |= 0x04;
+                if (hasDisabled)    flags2 |= 0x08;
+                if (hasPerSlot)     flags2 |= 0x10;
+                if (hasForcedSlots) flags2 |= 0x20;
+                w.Write(flags2);
+
+                if (hasDisplayName)     w.Write(item.displayName);
+                if (hasCategory)        w.Write(item.category);
+                if (hasColliderIgnored) w.Write(item.colliderIgnoredSubmeshes);
+                if (hasOverrideMat)     w.Write(item.overrideMaterialId);
+                if (hasNativeMat)       w.Write(item.nativeMaterialName);
+                if (hasMatSource)       w.Write(item.materialSourcePropId);
+                if (hasSurface)         w.Write(item.surfaceType);
+                if (hasDisabled)
+                {
+                    var dr = item.disabledRenderers;
+                    int cnt = Math.Min(dr.Count, 255);
+                    w.Write((byte)cnt);
+                    for (int i = 0; i < cnt; i++) w.Write(dr[i] ?? "");
+                }
+                if (hasPerSlot)
+                {
+                    var ps = item.perSlotMaterialOverrides;
+                    int cnt = Math.Min(ps.Count, 255);
+                    w.Write((byte)cnt);
+                    for (int i = 0; i < cnt; i++) w.Write(ps[i] ?? "");
+                }
+                if (hasForcedSlots) w.Write(item.forcedMaterialSlots);
+                if (item.isBush)
+                {
+                    w.Write(item.bushRadius);
+                    w.Write(item.soundGrassType);
+                }
+            }
+        }
+
+        static void LoadFromBinaryStream(Stream stream)
+        {
+            using var r = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+
+            byte b0 = r.ReadByte(), b1 = r.ReadByte(), b2 = r.ReadByte();
+            if (b0 != 0x50 || b1 != 0x4D || b2 != 0x44)
+                throw new InvalidDataException("Not a PMD file");
+            byte version = r.ReadByte();
+            if (version != PmdVersion)
+                throw new InvalidDataException($"Unsupported PMD version {version}");
+
+            _nextIndex = r.ReadInt32();
+            int count = r.ReadInt32();
+
+            for (int i = 0; i < count; i++)
+            {
+                string id = r.ReadString();
+                int index = r.ReadInt32();
+                byte flags1 = r.ReadByte();
+
+                bool excluded = (flags1 & 0x01) != 0;
+
+                if (string.IsNullOrEmpty(id))
+                {
+                    // Skip flags2 + payload for non-excluded entries to keep stream in sync
+                    if (!excluded) r.ReadByte();
+                    continue;
+                }
+
+                var item = new PropExtraInfo { id = id, index = index, excluded = excluded };
+
+                if (!excluded)
+                {
+                    item.useRenderMeshCollider = (flags1 & 0x02) != 0;
+                    item.isBush                = (flags1 & 0x04) != 0;
+                    item.keepOriginalHierarchy = (flags1 & 0x08) != 0;
+                    bool hasDisplayName     = (flags1 & 0x10) != 0;
+                    bool hasCategory        = (flags1 & 0x20) != 0;
+                    bool hasColliderIgnored = (flags1 & 0x40) != 0;
+                    bool hasOverrideMat     = (flags1 & 0x80) != 0;
+
+                    byte flags2 = r.ReadByte();
+                    bool hasNativeMat   = (flags2 & 0x01) != 0;
+                    bool hasMatSource   = (flags2 & 0x02) != 0;
+                    bool hasSurface     = (flags2 & 0x04) != 0;
+                    bool hasDisabled    = (flags2 & 0x08) != 0;
+                    bool hasPerSlot     = (flags2 & 0x10) != 0;
+                    bool hasForcedSlots = (flags2 & 0x20) != 0;
+
+                    if (hasDisplayName)     item.displayName              = r.ReadString();
+                    if (hasCategory)        item.category                 = r.ReadString();
+                    if (hasColliderIgnored) item.colliderIgnoredSubmeshes = r.ReadString();
+                    if (hasOverrideMat)     item.overrideMaterialId       = r.ReadString();
+                    if (hasNativeMat)       item.nativeMaterialName       = r.ReadString();
+                    if (hasMatSource)       item.materialSourcePropId     = r.ReadString();
+                    if (hasSurface)         item.surfaceType              = r.ReadString();
+                    if (hasDisabled)
+                    {
+                        int cnt = r.ReadByte();
+                        item.disabledRenderers = new List<string>(cnt);
+                        for (int j = 0; j < cnt; j++) item.disabledRenderers.Add(r.ReadString());
+                    }
+                    if (hasPerSlot)
+                    {
+                        int cnt = r.ReadByte();
+                        item.perSlotMaterialOverrides = new List<string>(cnt);
+                        for (int j = 0; j < cnt; j++) item.perSlotMaterialOverrides.Add(r.ReadString());
+                    }
+                    if (hasForcedSlots) item.forcedMaterialSlots = r.ReadInt32();
+                    if (item.isBush)
+                    {
+                        item.bushRadius     = r.ReadSingle();
+                        item.soundGrassType = r.ReadInt32();
+                    }
+                }
+
+                _byId[id] = item;
+            }
+        }
+
+        static void LoadFromEmbedded()
+        {
+            var asm = System.Reflection.Assembly.GetExecutingAssembly();
+            using var stream = asm.GetManifestResourceStream("BabyBlocks.Props.prop_metadata.bin");
+            if (stream == null)
+            {
+                MelonLogger.Warning("[PropMetadata] Embedded prop_metadata.bin not found.");
+                return;
+            }
+            LoadFromBinaryStream(stream);
+            BBLog.Msg("[PropMetadata] Loaded from embedded binary.");
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
 
         static string Serialize(PropExtraInfoSave data) => SerializeManual(data);
 
@@ -3185,6 +3417,56 @@ static void SortMaterialList()
                 if (!string.IsNullOrEmpty(kvp.Value.category))
                     cats.Add(kvp.Value.category);
             return new List<string>(cats);
+        }
+
+        static void DrawExportWindow()
+        {
+            if (!_exportWindowInitialized)
+            {
+                _exportWindowRect = new Rect(10f, Screen.height - 120f, 300f, 110f);
+                _exportWindowInitialized = true;
+            }
+
+            var r = _exportWindowRect;
+            GUI.Box(r, "Metadata Export", GUI.skin.window);
+
+            var headerRect  = new Rect(r.x, r.y, r.width, HeaderH);
+            var contentRect = new Rect(r.x + Pad, r.y + HeaderH + Pad, r.width - Pad * 2f, r.height - HeaderH - Pad * 2f);
+
+            GUILayout.BeginArea(contentRect);
+            GUILayout.BeginVertical();
+            if (GUILayout.Button("Export prop_metadata.bin"))
+            {
+                try
+                {
+                    SaveBinary(BinaryExportPath);
+                    _exportStatusMsg = BinaryExportPath;
+                }
+                catch (Exception ex)
+                {
+                    _exportStatusMsg = "Error: " + ex.Message;
+                }
+            }
+            if (!string.IsNullOrEmpty(_exportStatusMsg))
+                GUILayout.Label(_exportStatusMsg);
+            GUILayout.EndVertical();
+            GUILayout.EndArea();
+
+            var e = Event.current;
+            if (e.type == EventType.MouseDown && e.button == 0 && headerRect.Contains(e.mousePosition))
+            {
+                _exportWindowDragging = true;
+                _exportWindowDragOffset = e.mousePosition - new Vector2(r.x, r.y);
+                e.Use();
+            }
+            else if (e.type == EventType.MouseDrag && _exportWindowDragging)
+            {
+                _exportWindowRect.x = e.mousePosition.x - _exportWindowDragOffset.x;
+                _exportWindowRect.y = e.mousePosition.y - _exportWindowDragOffset.y;
+                e.Use();
+            }
+            else if (e.type == EventType.MouseUp && e.button == 0)
+                _exportWindowDragging = false;
         }
     }
 }

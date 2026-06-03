@@ -684,6 +684,10 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<EmbeddedResource Include="Props\prop_metadata.bin" Condition="Exists('Props\prop_metadata.bin')" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<Compile Include="Core.cs" />
 		<Compile Include="Components\LevelEditorObject.cs" />
 		<Compile Include="Components\GizmoHandle.cs" />

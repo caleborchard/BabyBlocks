@@ -419,6 +419,7 @@ namespace BabyBlocks
                 {
                     _combinedOutlineSignature = outlineSignature;
                     _combinedOutlineShell.Clear(false);
+                    _combinedOutlineShell.indexFormat = IndexFormat.UInt32;
                     _combinedOutlineShell.CombineMeshes(_combinedOutlineCombines.ToArray(), true, false, false);
                     _combinedOutlineShell.RecalculateBounds();
                 }

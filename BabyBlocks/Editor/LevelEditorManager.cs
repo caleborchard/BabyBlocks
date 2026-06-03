@@ -176,9 +176,12 @@ namespace BabyBlocks
             string cacheKey = ignoredSubmeshes == null || ignoredSubmeshes.Count == 0
                 ? string.Empty
                 : string.Join(",", ignoredSubmeshes.OrderBy(v => v));
-            if (_physicsMeshCache.TryGetValue(id, out var physMap)
-                && physMap.TryGetValue(cacheKey, out var hit))
-                return hit;
+            if (_physicsMeshCache.TryGetValue(id, out var physMap))
+            {
+                if (physMap == null) return null; // known-bad mesh; don't retry
+                if (physMap.TryGetValue(cacheKey, out var hit))
+                    return hit;
+            }
 
             Mesh result = null;
             try
@@ -288,7 +291,9 @@ namespace BabyBlocks
                     {
                         case PropColliderPart.ColliderType.Mesh:
                             var mc = go.AddComponent<MeshCollider>();
-                            mc.sharedMesh = cp.mesh;
+                            // Use an owned physics mesh so scene unloads can't evict the CPU mesh data.
+                            var physMesh = BuildPhysicsMesh(cp.mesh);
+                            mc.sharedMesh = physMesh ?? cp.mesh;
                             mc.convex     = cp.convex;
                             break;
                         case PropColliderPart.ColliderType.Box:
