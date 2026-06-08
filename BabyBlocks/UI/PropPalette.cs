@@ -101,6 +101,19 @@ namespace BabyBlocks
                 return;
             }
 
+            // Block dragging while the material-source scan is spreading its loads across frames —
+            // placing a prop before its override material is in memory would apply the override
+            // once (at placement time) and never retry, leaving it permanently wrong.
+            if (PropMetadataPanel.IsLoadingMaterialSources)
+            {
+                PanelRect = new Rect(10f, 10f, PanelW, 40f);
+                GUI.color = new Color(0f, 0f, 0f, 0.65f);
+                GUI.Box(PanelRect, "");
+                GUI.color = Color.white;
+                GUI.Label(new Rect(10f + Pad, 18f, ItemW, 20f), "Loading materials…");
+                return;
+            }
+
             var props   = PropLibrary.FilteredProps;
             int total   = props.Count;
             int visible = VisibleSlots;

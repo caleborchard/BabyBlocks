@@ -137,8 +137,8 @@ namespace BabyBlocks
                 Cursor.lockState = CursorLockMode.Locked;
                 FreezePlayer(player, true);
                 LevelEditor.EnsureManager();
-                PropLibrary.ScanGpuiProps();
-                PropMetadataPanel.InvalidateMaterialSources();
+
+                MelonCoroutines.Start(ActivateEditorScanCo());
 
                 var noise = player.flyCam.GetComponentInChildren<CinemachineBasicMultiChannelPerlin>();
                 if (noise != null)
@@ -168,6 +168,20 @@ namespace BabyBlocks
                     if (noise != null) noise.m_AmplitudeGain = _noiseAmplitude;
                 }
             }
+        }
+
+        // Spreads the editor-activation scan across two frames so neither half lands in the same
+        // frame as the other (or as ToggleFlyMode's own work) — a single ~400ms synchronous frame
+        // was enough to trip the Linux compositor's freeze-detection and black the window out.
+        static IEnumerator ActivateEditorScanCo()
+        {
+            yield return null;
+
+            PropLibrary.ScanGpuiProps();
+
+            yield return null;
+
+            PropMetadataPanel.InvalidateMaterialSources();
         }
 
         static void ToggleCursorMode()

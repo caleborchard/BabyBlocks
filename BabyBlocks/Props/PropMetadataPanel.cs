@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -163,6 +164,7 @@ static bool _showRendererDropdown;
         // Maps material name → prop ID of the prop whose asset natively contains that material.
         static readonly Dictionary<string, string> _knownMaterialSources = new(StringComparer.OrdinalIgnoreCase);
         static bool _materialSourcesLoaded;
+        static bool _materialSourcesLoading;
         static bool _loaded;
         static int _nextIndex = 1;
         static bool _savePathLogged;
@@ -980,25 +982,53 @@ static void SortMaterialList()
                 var mats = Resources.FindObjectsOfTypeAll<Material>();
                 if (mats != null)
                 {
-                    // Two-pass approach so we know upfront whether a name has multiple distinct
-                    // texture states before assigning display names.
-                    // Pass 1: group by name, collecting only distinct sigs.
-                    var groups = new Dictionary<string, List<(Material mat, string sig)>>(StringComparer.OrdinalIgnoreCase);
+                    // Three-pass approach so we know upfront whether a name has multiple distinct
+                    // texture states before assigning display names — and, crucially, so that
+                    // GetTextureSig (GetTexturePropertyNames/GetTexture — slow IL2Cpp interop calls)
+                    // only runs for materials that actually share a name with another loaded
+                    // material. Calling it for all 3000+ scanned materials unconditionally was the
+                    // single biggest contributor to the freeze on first scan (and the Linux
+                    // compositor black-screen it triggers) — most names appear only once, where the
+                    // signature is never even consulted (see hasVars below).
+                    //
+                    // Pass 1: group by name only — cheap, no texture introspection.
+                    var rawGroups = new Dictionary<string, List<Material>>(StringComparer.OrdinalIgnoreCase);
                     for (int i = 0; i < mats.Length; i++)
                     {
                         var m = mats[i];
                         if (m == null || string.IsNullOrEmpty(m.name)) continue;
                         if (_ownedMaterialIds.Contains(m.GetInstanceID())) continue;
                         if (ShouldHideMaterial(m.name)) continue;
-                        string sig = GetTextureSig(m);
-                        if (!groups.TryGetValue(m.name, out var grp))
+                        if (!rawGroups.TryGetValue(m.name, out var rawGrp))
                         {
-                            grp = new List<(Material, string)>();
-                            groups[m.name] = grp;
+                            rawGrp = new List<Material>();
+                            rawGroups[m.name] = rawGrp;
                         }
-                        bool already = false;
-                        foreach (var (_, s) in grp) if (string.Equals(s, sig, StringComparison.Ordinal)) { already = true; break; }
-                        if (!already) grp.Add((m, sig));
+                        rawGrp.Add(m);
+                    }
+
+                    // Pass 2: only compute texture signatures (and dedupe by them) for names that
+                    // collide — single-instance names skip GetTextureSig entirely.
+                    var groups = new Dictionary<string, List<(Material mat, string sig)>>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var kvp in rawGroups)
+                    {
+                        var rawGrp = kvp.Value;
+                        var grp = new List<(Material, string)>();
+                        if (rawGrp.Count == 1)
+                        {
+                            grp.Add((rawGrp[0], string.Empty));
+                        }
+                        else
+                        {
+                            foreach (var m in rawGrp)
+                            {
+                                string sig = GetTextureSig(m);
+                                bool already = false;
+                                foreach (var (_, s) in grp) if (string.Equals(s, sig, StringComparison.Ordinal)) { already = true; break; }
+                                if (!already) grp.Add((m, sig));
+                            }
+                        }
+                        groups[kvp.Key] = grp;
                     }
                     // Count distinct scene-variant states per base name so that a material with
                     // known variants is treated as multi-state even when only one is in memory.
@@ -1009,7 +1039,7 @@ static void SortMaterialList()
                         sceneVarCounts[key.baseName] = c + 1;
                     }
 
-                    // Pass 2: assign display names — plain when only one sig AND no known scene
+                    // Pass 3: assign display names — plain when only one sig AND no known scene
                     // variants, hashed for all occurrences when multiple states exist.
                     foreach (var kvp in groups)
                     {
@@ -1077,54 +1107,111 @@ static void SortMaterialList()
 
         // For each saved override whose source prop ID is known, load that prop so its asset bundle
         // (and thus its materials) comes into memory. Runs once after the initial material list is built.
+        //
+        // Synchronous fallback — does the whole scan in one go. Used only if something needs the
+        // sources resolved immediately and the async version (below) hasn't been started/finished.
+        // Guarded against double-running alongside the coroutine via _materialSourcesLoading.
         static void EnsureMaterialSources()
         {
-            if (_materialSourcesLoaded) return;
+            if (_materialSourcesLoaded || _materialSourcesLoading) return;
             _materialSourcesLoaded = true;
             if (!PropLibrary.IsInitialized) return;
 
             EnsureLoaded();
-            bool anyLoaded = false;
-            bool anyBackfilled = false;
+
+            var sourceCandidates = CollectSourceCandidates();
+            var anyBackfilled = RunSourcePass(sourceCandidates, out bool anyLoadedA);
+
+            var selfCandidates = CollectSelfDiscoveryCandidates();
+            bool anyLoadedB = RunSelfDiscoveryPass(selfCandidates);
+
+            FinishMaterialSourcesScan(anyLoadedA || anyLoadedB, anyBackfilled);
+        }
+
+        // Async version — spreads the same work across multiple frames (a small handful of prop
+        // loads per frame, yielding in between) so no single frame freezes long enough to trip the
+        // Linux Wayland/X11 compositor's "no frame presented" timeout that blacks the window.
+        // While running, IsLoadingMaterialSources is true and the palette blocks dragging.
+        static IEnumerator EnsureMaterialSourcesCo()
+        {
+            if (_materialSourcesLoaded || _materialSourcesLoading) yield break;
+            _materialSourcesLoading = true;
+            _materialSourcesLoaded  = true;
+
+            // Iterator methods run synchronously up to their first `yield return` the moment
+            // MelonCoroutines.Start calls MoveNext() — without this, CollectSourceCandidates()
+            // and the first blocking prop load would execute immediately on the calling frame,
+            // reproducing the exact freeze/black-screen this coroutine exists to avoid.
+            yield return null;
+
+            const int itemsPerFrame = 1;
+
+            try
+            {
+                if (!PropLibrary.IsInitialized) yield break;
+                EnsureLoaded();
+
+                var sourceCandidates = CollectSourceCandidates();
+                bool anyLoaded = false;
+                bool anyBackfilled = false;
+                int sinceYield = 0;
+                foreach (var item in sourceCandidates)
+                {
+                    if (RunOneSourceItem(item, out bool loaded, out bool backfilled))
+                    {
+                        anyLoaded |= loaded;
+                        anyBackfilled |= backfilled;
+                    }
+                    if (++sinceYield >= itemsPerFrame) { sinceYield = 0; yield return null; }
+                }
+                if (anyBackfilled) Save();
+
+                var selfCandidates = CollectSelfDiscoveryCandidates();
+                sinceYield = 0;
+                foreach (var item in selfCandidates)
+                {
+                    if (RunOneSelfDiscoveryItem(item)) anyLoaded = true;
+                    if (++sinceYield >= itemsPerFrame) { sinceYield = 0; yield return null; }
+                }
+
+                FinishMaterialSourcesScan(anyLoaded, false);
+            }
+            finally
+            {
+                _materialSourcesLoading = false;
+            }
+        }
+
+        // Kicks off the spread-out async scan (idempotent). Falls back to nothing if already done
+        // or already in progress.
+        public static void StartMaterialSourcesScanAsync()
+        {
+            if (_materialSourcesLoaded || _materialSourcesLoading) return;
+            MelonCoroutines.Start(EnsureMaterialSourcesCo());
+        }
+
+        // True while the async source scan is spreading its loads across frames. The palette uses
+        // this to block dragging — placing a prop before its override material is in memory would
+        // apply the override once (at placement time) and never retry.
+        public static bool IsLoadingMaterialSources => _materialSourcesLoading;
+
+        static List<PropExtraInfo> CollectSourceCandidates()
+        {
+            var list = new List<PropExtraInfo>();
             foreach (var kvp in _byId)
             {
                 var item = kvp.Value;
                 if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
                 if (_materialByName.ContainsKey(item.overrideMaterialId)) continue; // already in memory
                 if (string.IsNullOrEmpty(item.materialSourcePropId)) continue;      // no source tracked yet
-
-                var sourceInfo = PropLibrary.FindById(item.materialSourcePropId);
-                if (sourceInfo == null) continue;
-
-                try
-                {
-                    PropLibrary.LoadPropData(sourceInfo);
-                    anyLoaded = true;
-                    // Scan parts directly — GPUI materials don't reliably appear in
-                    // Resources.FindObjectsOfTypeAll after loading, but parts hold the real refs.
-                    AddPartsToMaterialList(sourceInfo);
-
-                    // Validate: if the material still isn't in the list after loading the recorded
-                    // source prop, the source was recorded incorrectly (e.g. from a contaminated
-                    // renderer). Clear it so we don't keep trying the wrong prop.
-                    if (!_materialByName.ContainsKey(item.overrideMaterialId))
-                    {
-                        item.materialSourcePropId = string.Empty;
-                        anyBackfilled = true; // trigger Save() to persist the correction
-                        continue;
-                    }
-
-                    // Propagate this source to all other entries that share the same override material.
-                    if (BackfillMaterialSource(item.overrideMaterialId, item.materialSourcePropId))
-                        anyBackfilled = true;
-                }
-                catch { }
+                list.Add(item);
             }
+            return list;
+        }
 
-            if (anyBackfilled) Save();
-
-            // Self-discovery pass: entries with a saved override but no recorded source.
-            // Try loading the prop itself — it may natively contain its own override material.
+        static List<PropExtraInfo> CollectSelfDiscoveryCandidates()
+        {
+            var list = new List<PropExtraInfo>();
             foreach (var kvp in _byId)
             {
                 var item = kvp.Value;
@@ -1132,19 +1219,90 @@ static void SortMaterialList()
                 if (_materialByName.ContainsKey(item.overrideMaterialId)) continue;
                 if (!string.IsNullOrEmpty(item.materialSourcePropId)) continue;
                 if (item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
-
-                var selfInfo = PropLibrary.FindById(item.id);
-                if (selfInfo == null) continue;
-
-                try
-                {
-                    PropLibrary.LoadPropData(selfInfo);
-                    AddPartsToMaterialList(selfInfo); // sets materialSourcePropId + calls Save() if found
-                    anyLoaded = true;
-                }
-                catch { }
+                list.Add(item);
             }
+            return list;
+        }
 
+        static bool RunSourcePass(List<PropExtraInfo> candidates, out bool anyLoaded)
+        {
+            bool anyBackfilled = false;
+            anyLoaded = false;
+            foreach (var item in candidates)
+            {
+                if (RunOneSourceItem(item, out bool loaded, out bool backfilled))
+                {
+                    anyLoaded |= loaded;
+                    anyBackfilled |= backfilled;
+                }
+            }
+            if (anyBackfilled) Save();
+            return anyBackfilled;
+        }
+
+        static bool RunOneSourceItem(PropExtraInfo item, out bool anyLoaded, out bool anyBackfilled)
+        {
+            anyLoaded = false;
+            anyBackfilled = false;
+            if (_materialByName.ContainsKey(item.overrideMaterialId)) return false; // filled by an earlier item
+
+            var sourceInfo = PropLibrary.FindById(item.materialSourcePropId);
+            if (sourceInfo == null) return false;
+
+            try
+            {
+                PropLibrary.LoadPropData(sourceInfo);
+                anyLoaded = true;
+                // Scan parts directly — GPUI materials don't reliably appear in
+                // Resources.FindObjectsOfTypeAll after loading, but parts hold the real refs.
+                AddPartsToMaterialList(sourceInfo);
+
+                // Validate: if the material still isn't in the list after loading the recorded
+                // source prop, the source was recorded incorrectly (e.g. from a contaminated
+                // renderer). Clear it so we don't keep trying the wrong prop.
+                if (!_materialByName.ContainsKey(item.overrideMaterialId))
+                {
+                    item.materialSourcePropId = string.Empty;
+                    anyBackfilled = true; // trigger Save() to persist the correction
+                    return true;
+                }
+
+                // Propagate this source to all other entries that share the same override material.
+                if (BackfillMaterialSource(item.overrideMaterialId, item.materialSourcePropId))
+                    anyBackfilled = true;
+            }
+            catch { }
+            return true;
+        }
+
+        static bool RunSelfDiscoveryPass(List<PropExtraInfo> candidates)
+        {
+            bool anyLoaded = false;
+            foreach (var item in candidates)
+                if (RunOneSelfDiscoveryItem(item)) anyLoaded = true;
+            return anyLoaded;
+        }
+
+        static bool RunOneSelfDiscoveryItem(PropExtraInfo item)
+        {
+            if (_materialByName.ContainsKey(item.overrideMaterialId)) return false;
+
+            var selfInfo = PropLibrary.FindById(item.id);
+            if (selfInfo == null) return false;
+
+            try
+            {
+                PropLibrary.LoadPropData(selfInfo);
+                AddPartsToMaterialList(selfInfo); // sets materialSourcePropId + calls Save() if found
+                return true;
+            }
+            catch { return false; }
+        }
+
+        // Shared tail: side-effect material harvest + catalog index, run once after either the
+        // synchronous or async scan finishes.
+        static void FinishMaterialSourcesScan(bool anyLoaded, bool alreadySaved)
+        {
             // NOTE: Bulk pre-loading of all saved override materials via TryLoadMaterialByName was
             // removed here. Each WaitForCompletion() call can trigger game asset-management
             // callbacks (streaming, bundle eviction) that intermittently destroyed physics
@@ -2647,15 +2805,23 @@ static void SortMaterialList()
             return false;
         }
 
-        // Called after ScanGpuiProps so EnsureMaterialSources can find GPUI prop entries.
-        // If the material list is already built, re-run source discovery immediately with the
-        // now-populated PropLibrary. If not built yet, the reset flag is picked up when
-        // EnsureMaterialList eventually calls EnsureMaterialSources.
+        // Called after ScanGpuiProps, when the editor is opened, so EnsureMaterialSources can find
+        // GPUI prop entries. Forces the full material list + source scan to run right now (via
+        // EnsureMaterialList) instead of waiting for it to happen lazily on first prop drag — moves
+        // the one-time scan cost to editor-open time, where a freeze is less disruptive than mid-drag.
         public static void InvalidateMaterialSources()
         {
             _materialSourcesLoaded = false;
-            if (_materialsLoaded)
-                EnsureMaterialSources();
+
+            // Build the in-memory material list now (cheap — FindObjectsOfTypeAll is ~0ms). Suppress
+            // the synchronous EnsureMaterialSources that EnsureMaterialList would otherwise trigger
+            // on its first-ever call — we want the spread-out async version instead, which is kicked
+            // off below. (_materialSourcesLoading also blocks dragging in the palette meanwhile.)
+            _materialSourcesLoading = true;
+            EnsureMaterialList();
+            _materialSourcesLoading = false;
+
+            StartMaterialSourcesScanAsync();
         }
 
         static bool TryGet(string id, out PropExtraInfo info)
