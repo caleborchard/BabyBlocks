@@ -36,7 +36,7 @@ namespace BabyBlocks
         {
             if (Input.GetKeyDown(KeyCode.R) && PlayerMovement.me != null
                 && !Menu.me.teleporting && !Core.IsKeyboardCaptured
-                && !PropPalette.IsDragging)
+                && !PropPalette.IsDragging && !LevelEditor.IsSurfaceSnapDragging)
                 ToggleFlyEditorMode();
 
             if (Input.GetKeyDown(KeyCode.BackQuote) && PlayerMovement.me != null

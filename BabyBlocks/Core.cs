@@ -11,7 +11,7 @@ namespace BabyBlocks
 {
     public class Core : MelonMod
     {
-        public static bool DebugMode = true; // for categorizing props in the library
+        public static bool DebugMode = false; // for categorizing props in the library
 
         static MelonPreferences_Category _prefs;
         static MelonPreferences_Entry<string> _lastSavePath;

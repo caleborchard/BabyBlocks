@@ -16,6 +16,13 @@ namespace BabyBlocks
         public static bool              LocalMode      = true;   // true = local axes; false = world axes (G key)
         public static IReadOnlyList<LevelEditorObject> SelectedObjects => _selection;
 
+        // True while actively dragging the translation gizmo's center sphere with shift held
+        // (surface-snap mode). Used to suppress the selection outline and block the R
+        // edit-mode-toggle shortcut, which is repurposed for cycling spawn orientation here.
+        public static bool IsSurfaceSnapDragging =>
+            _isDragging && currentTool == ToolMode.Translate && _dragAxis == 3
+            && (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift));
+
         static readonly List<LevelEditorObject> _selection = new();
         static bool       _isDragging;
         static int        _dragAxis;
@@ -62,16 +69,33 @@ namespace BabyBlocks
         static GameObject _propGhost;
         static PropInfo   _ghostProp;
 
-        // R cycles through 16 cardinal orientations: 4 pitch faces × 4 yaw steps.
-        // Each group of 4 presses cycles all faces at a fixed yaw, so the very first
-        // four presses give upright → side → upside-down → other-side (varied, not just spin).
-        static readonly (int pitch, int yaw)[] DragOrientations =
+        // The 6 ways to reorient the prop so a different local face points "up" (i.e. gets
+        // aligned to the surface normal by ComputeSpawnRotation): +Y, -Y, the four sides.
+        static readonly Quaternion[] FaceUpRotations =
         {
-            (0,0),(1,0),(2,0),(3,0),   // all faces at 0° yaw
-            (0,1),(1,1),(2,1),(3,1),   // all faces at 90° yaw
-            (0,2),(1,2),(2,2),(3,2),   // all faces at 180° yaw
-            (0,3),(1,3),(2,3),(3,3),   // all faces at 270° yaw
+            Quaternion.identity,            // local +Y up   (upright)
+            Quaternion.Euler(180f, 0f, 0f), // local -Y up   (upside-down)
+            Quaternion.Euler(90f,  0f, 0f), // local -Z up   (lying on its back)
+            Quaternion.Euler(-90f, 0f, 0f), // local +Z up   (lying on its front)
+            Quaternion.Euler(0f, 0f, -90f), // local +X up   (lying on its right side)
+            Quaternion.Euler(0f, 0f,  90f), // local -X up   (lying on its left side)
         };
+
+        // R cycles through all 24 cube orientations: 6 faces-up × 4 spins around that
+        // up axis. The face changes every press (cycling fastest) so each of the first
+        // six presses already shows the prop resting on a different side — varied, not
+        // just spinning in place — and the full spin range is reachable by continuing.
+        static readonly Quaternion[] DragOrientations = BuildDragOrientations();
+
+        static Quaternion[] BuildDragOrientations()
+        {
+            var result = new Quaternion[FaceUpRotations.Length * 4];
+            for (int spin = 0; spin < 4; spin++)
+                for (int face = 0; face < FaceUpRotations.Length; face++)
+                    result[spin * FaceUpRotations.Length + face] =
+                        FaceUpRotations[face] * Quaternion.Euler(0f, spin * 90f, 0f);
+            return result;
+        }
         static int _dragStep;
 
         public static void EnsureManager()
@@ -182,13 +206,20 @@ namespace BabyBlocks
             var main = Camera.main;
             if (main != null) GizmoRenderer.Sync(_selection, selectedObject, currentTool, main);
             UpdateHover(overUI);
-            GizmoRenderer.Draw(_hoveredAxis, currentTool);
+            // Hide the gizmo while surface-snapping so it doesn't visually fight the
+            // object as it jumps to follow the cursor across surfaces.
+            if (!IsSurfaceSnapDragging)
+                GizmoRenderer.Draw(_hoveredAxis, currentTool);
+            else
+                HideGizmo();
             if (_isDragging && currentTool == ToolMode.Translate
                 && _dragObjects.Count > 0 && _dragObjects[0] != null)
                 GizmoRenderer.SetTranslateDragDelta(_dragObjects[0].transform.position - _dragStartPositions[0]);
             else
                 GizmoRenderer.ClearDragDelta();
-            GizmoRenderer.DrawOutline(_selection, main);
+            // Passing null/empty makes DrawOutline detach its command buffer and skip redrawing,
+            // rather than leaving a stale outline rendered at the pre-drag position.
+            GizmoRenderer.DrawOutline(IsSurfaceSnapDragging ? null : _selection, main);
 
             if (Input.GetMouseButton(1)) return;
 
@@ -225,6 +256,8 @@ namespace BabyBlocks
             {
                 if (Input.GetMouseButton(0))
                 {
+                    if (IsSurfaceSnapDragging && Input.GetKeyDown(KeyCode.R))
+                        _dragStep = (_dragStep + 1) % DragOrientations.Length;
                     ContinueDrag();
                 }
                 else
@@ -321,12 +354,20 @@ namespace BabyBlocks
             EnsureManager();
             PropLibrary.LoadPropData(prop);
 
-            var rot = ComputeSpawnRotation(hit.normal) * Quaternion.Euler(DragOrientations[_dragStep].pitch * 90f, DragOrientations[_dragStep].yaw * 90f, 0f);
+            var rot = ComputeDragRotation(hit.normal) * DragOrientations[_dragStep];
             var obj = LevelEditorManager.Instance.SpawnFromPropInfo(prop, ComputeSpawnPosition(prop, hit, rot));
             if (obj == null) return;
             obj.transform.rotation = rot;
             Select(obj);
             LevelEditorHistory.PushSpawn(obj);
+        }
+
+        // While dragging a prop from the palette, holding shift suppresses surface-rotate
+        // snapping so the prop spawns upright; releasing shift restores normal surface snap.
+        static Quaternion ComputeDragRotation(Vector3 normal)
+        {
+            bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+            return shift ? Quaternion.identity : ComputeSpawnRotation(normal);
         }
 
         // Returns the rotation that aligns the prop's local +Y with the hit surface normal.
@@ -364,7 +405,8 @@ namespace BabyBlocks
             if (_propGhost == null || _ghostProp != prop)
             {
                 DestroyPropGhost();
-                _dragStep = 0;
+                // Intentionally not resetting _dragStep here: the chosen R orientation
+                // persists across props dragged from the library (gizmo drags still reset it).
                 PropLibrary.LoadPropData(prop);
                 if (prop.HasMesh) { _propGhost = CreateGhostObject(prop); _ghostProp = prop; }
             }
@@ -376,9 +418,7 @@ namespace BabyBlocks
             var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
             if (Physics.Raycast(ray, out var hit, 2000f, LayerCache.PropTerrainMask))
             {
-                var rot = ComputeSpawnRotation(hit.normal)
-                        * Quaternion.Euler(DragOrientations[_dragStep].pitch * 90f,
-                                           DragOrientations[_dragStep].yaw   * 90f, 0f);
+                var rot = ComputeDragRotation(hit.normal) * DragOrientations[_dragStep];
                 _propGhost.SetActive(true);
                 _propGhost.transform.SetPositionAndRotation(ComputeSpawnPosition(_ghostProp, hit, rot), rot);
             }
@@ -457,6 +497,7 @@ namespace BabyBlocks
 
             _isDragging     = true;
             _dragAxis       = chosen.axisIndex;
+            _dragStep       = 0;
             _dragStartPos   = selectedObject.transform.position;
             _dragStartScale = selectedObject.transform.localScale;
             _dragStartRot   = selectedObject.transform.rotation;
@@ -662,6 +703,11 @@ namespace BabyBlocks
                     float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, scaleDir, cam);
                     float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
                     ApplyScaleToDragObjects(factor, factor, factor, true, true, true);
+                }
+                else if (currentTool == ToolMode.Translate
+                         && (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)))
+                {
+                    ApplySurfaceSnapTranslation();
                 }
                 else { ApplyTranslation(delta); }
                 return;
@@ -1017,10 +1063,77 @@ namespace BabyBlocks
                 if (obj == null) continue;
                 var pos = _dragStartPositions[i] + delta;
                 if (_snapEnabled) pos = SnapVector(pos);
-                obj.transform.position = pos;
+                // Restore drag-start rotation each frame: undoes any rotation applied while
+                // surface-snap mode (shift) was active earlier in the same drag.
+                obj.transform.SetPositionAndRotation(pos, _dragStartRotations[i]);
             }
 
             SyncDraggedPhysicsTransforms();
+        }
+
+        // Surface-snap translation: while holding shift on the center-sphere drag, the dragged
+        // selection is stuck to whatever surface is under the cursor (position + rotation aligned
+        // to the hit normal), mirroring how props snap onto surfaces when placed from the palette.
+        // Releasing shift returns to normal free translation along the drag plane.
+        static void ApplySurfaceSnapTranslation()
+        {
+            var cam = Camera.main;
+            var ray = cam.ScreenPointToRay(Input.mousePosition);
+
+            RaycastHit hit       = default;
+            float      bestDist  = float.MaxValue;
+            bool       found     = false;
+            // RaycastAll + filter: a plain Raycast can hit the object being dragged itself
+            // (it now sits under the cursor), which causes the snap point to jitter toward
+            // the camera and back as the object repeatedly occludes/unoccludes the surface.
+            foreach (var h in Physics.RaycastAll(ray, 2000f, LayerCache.PropTerrainMask))
+            {
+                if (h.distance >= bestDist || IsDraggedTransform(h.collider.transform)) continue;
+                bestDist = h.distance;
+                hit      = h;
+                found    = true;
+            }
+            if (!found) return;
+
+            var rot = ComputeSpawnRotation(hit.normal) * DragOrientations[_dragStep];
+
+            // Reuse the same placement math as palette dragging (ComputeSpawnPosition) so the
+            // prop's nearest face sits flush on the surface instead of snapping by its center.
+            var primary  = _dragObjects[0];
+            var prop     = primary != null ? PropLibrary.FindById(primary.addressableKey) : null;
+            Vector3 targetPos;
+            if (prop != null)
+            {
+                PropLibrary.LoadPropData(prop);
+                targetPos = ComputeSpawnPosition(prop, hit, rot);
+            }
+            else
+            {
+                targetPos = hit.point + hit.normal * 0.5f;
+            }
+
+            var deltaRot = rot * Quaternion.Inverse(_dragStartRotations[0]);
+            var posDelta = targetPos - _dragStartPositions[0];
+
+            for (int i = 0; i < _dragObjects.Count; i++)
+            {
+                var obj = _dragObjects[i];
+                if (obj == null) continue;
+                obj.transform.rotation = deltaRot * _dragStartRotations[i];
+                obj.transform.position = _dragStartPositions[i] + posDelta;
+            }
+
+            SyncDraggedPhysicsTransforms();
+        }
+
+        static bool IsDraggedTransform(Transform t)
+        {
+            for (int i = 0; i < _dragObjects.Count; i++)
+            {
+                var obj = _dragObjects[i];
+                if (obj != null && (t == obj.transform || t.IsChildOf(obj.transform))) return true;
+            }
+            return false;
         }
 
         static void ApplyScaleToDragObjects(float xFactor, float yFactor, float zFactor,

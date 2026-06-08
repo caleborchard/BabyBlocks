@@ -2722,20 +2722,27 @@ static void SortMaterialList()
             if (_sceneVariantByDisplayName.ContainsKey(matName))
             {
                 // Captured but clone is gone — fall back to base name without a catalog scan.
-                int paren = matName.LastIndexOf(" (", StringComparison.Ordinal);
-                string baseName = paren > 0 ? matName.Substring(0, paren) : matName;
+                // Variant display names always end in " [hash]" (see RegisterVariant) — strip that,
+                // not any "(...)" suffix, since native names can legitimately contain parens.
+                int bracket = matName.LastIndexOf(" [", StringComparison.Ordinal);
+                string baseName = (bracket > 0 && matName.EndsWith("]", StringComparison.Ordinal))
+                    ? matName.Substring(0, bracket)
+                    : matName;
                 if (_materialByName.TryGetValue(baseName, out mat) && mat != null) return mat;
                 mat = PropLibrary.TryLoadMaterialByName(baseName, sourcePropId);
                 if (mat != null && !_materialByName.ContainsKey(baseName)) _materialByName[baseName] = mat;
                 return mat;
             }
 
-            // If the name looks like a variant display name ("Base (something)") but isn't in
-            // _sceneVariantByDisplayName, skip the catalog scan and fall back to the base name.
-            int lastParen = matName.LastIndexOf(" (", StringComparison.Ordinal);
-            if (lastParen > 0 && matName.EndsWith(")", StringComparison.Ordinal))
+            // If the name looks like a variant display name ("Base [hash]" — see RegisterVariant,
+            // which always uses square brackets) but isn't in _sceneVariantByDisplayName, skip the
+            // catalog scan and fall back to the base name. Native material names can legitimately
+            // contain parenthesized suffixes (e.g. "Spruce_Norway_BarkMat (TVE Material)"), so we
+            // must only strip the square-bracket variant pattern, not any "(...)" suffix.
+            int lastBracket = matName.LastIndexOf(" [", StringComparison.Ordinal);
+            if (lastBracket > 0 && matName.EndsWith("]", StringComparison.Ordinal))
             {
-                string baseName = matName.Substring(0, lastParen);
+                string baseName = matName.Substring(0, lastBracket);
                 if (_materialByName.TryGetValue(baseName, out mat) && mat != null) return mat;
                 mat = PropLibrary.TryLoadMaterialByName(baseName, sourcePropId);
                 if (mat != null)
