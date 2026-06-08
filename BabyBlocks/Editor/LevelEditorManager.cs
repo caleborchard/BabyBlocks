@@ -101,7 +101,16 @@ namespace BabyBlocks
                     var mr = child.AddComponent<MeshRenderer>();
                     if (part.materials != null) mr.sharedMaterials = part.materials;
                 }
-                ApplyColliderParts(root, info, PropMetadataPanel.GetUseRenderMeshCollider(info.id));
+                if (PropLibrary.IsNegativeCollisionProp(info.id))
+                {
+                    // The ghost cube provides its own trigger volume — a real mesh/render
+                    // collider on the placeholder cylinder would solidly block the player.
+                    GhostCubeConfig.Configure(root);
+                }
+                else
+                {
+                    ApplyColliderParts(root, info, PropMetadataPanel.GetUseRenderMeshCollider(info.id));
+                }
             }
 
             if (_propsContainer != null)

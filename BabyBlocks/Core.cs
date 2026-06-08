@@ -85,6 +85,7 @@ namespace BabyBlocks
             ClassInjector.RegisterTypeInIl2Cpp<LevelEditorObject>();
             ClassInjector.RegisterTypeInIl2Cpp<LevelEditorManager>();
             ClassInjector.RegisterTypeInIl2Cpp<GizmoHandle>();
+            ClassInjector.RegisterTypeInIl2Cpp<GhostCollisionCutter>();
 
             new HarmonyLib.Harmony("BabyBlocks.Patches").PatchAll();
         }
