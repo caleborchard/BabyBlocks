@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using MelonLoader;
 using MelonLoader.Utils;
@@ -2551,6 +2552,43 @@ static void SortMaterialList()
             if (string.IsNullOrEmpty(id)) return string.Empty;
             if (!_byId.TryGetValue(id, out var info)) return string.Empty;
             return info.surfaceType ?? string.Empty;
+        }
+
+        public static string GetOverrideMaterialId(string id)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id)) return string.Empty;
+            if (!TryGetInfoById(id, out var info)) return string.Empty;
+            return info.overrideMaterialId ?? string.Empty;
+        }
+
+        // Stable string identifying the material configuration currently applied to prop
+        // `id` (per-slot overrides, single override, or the native default) - used as part
+        // of the on-disk bake-cache key (see MaterialBakeCache) so different materials
+        // applied to the same prop get separate cached bakes.
+        public static string GetMaterialCacheKey(string id)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id) || !TryGetInfoById(id, out var info))
+                return "default";
+
+            if (HasNonEmptySlot(info.perSlotMaterialOverrides))
+            {
+                var sb = new StringBuilder();
+                for (int i = 0; i < info.perSlotMaterialOverrides.Count; i++)
+                {
+                    if (i > 0) sb.Append('+');
+                    string slot = info.perSlotMaterialOverrides[i];
+                    sb.Append(string.IsNullOrEmpty(slot) ? "_" : slot);
+                }
+                return sb.ToString();
+            }
+
+            if (!string.IsNullOrEmpty(info.overrideMaterialId)
+                && !string.Equals(info.overrideMaterialId, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
+                return info.overrideMaterialId;
+
+            return "default";
         }
 
         public static void ApplySurfaceType(LevelEditorObject leo, string surfaceTag)

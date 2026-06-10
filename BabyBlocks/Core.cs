@@ -100,7 +100,7 @@ namespace BabyBlocks
         public override void OnGUI() => FlyCamController.OnGUI();
     }
 
-    // Replaces FlyCam.Update to add right-click look in cursor mode and left-click teleport.
+    // Replaces FlyCam.Update to add right-click look in cursor mode and left-click far-teleport.
     [HarmonyPatch(typeof(FlyCam), "Update")]
     class FlyCamUpdatePatch
     {
@@ -140,7 +140,7 @@ namespace BabyBlocks
                 __instance.transform.rotation * (input * __instance.maxVel) * Time.unscaledDeltaTime;
 
             if (!FlyCamController.CursorMode && Input.GetMouseButtonDown(0) && !Menu.me.paused)
-                FlyCamController.HandleTeleport(__instance);
+                FlyCamController.HandleFarTeleport();
 
             return false;
         }

@@ -696,6 +696,8 @@
 		<Compile Include="Editor\GizmoRenderer.cs" />
 		<Compile Include="Editor\LevelEditor.cs" />
 		<Compile Include="Editor\LevelEditorManager.cs" />
+		<Compile Include="Editor\MaterialBaker.cs" />
+		<Compile Include="Editor\MaterialBakeCache.cs" />
 		<Compile Include="Editor\LevelEditorHistory.cs" />
 		<Compile Include="Props\PropData.cs" />
 		<Compile Include="Props\PropExtraInfo.cs" />

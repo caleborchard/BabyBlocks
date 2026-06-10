@@ -810,7 +810,7 @@ namespace BabyBlocks
             if (targets.Count == 0) return;
 
             foreach (var obj in targets)
-                if (obj.physicsMode != PhysicsMode.Static) mgr.ClearPhysics(obj);
+                if (obj.physicsMode != PhysicsMode.Static) mgr.ClearPhysics(obj, restoreMaterial: mode == PhysicsMode.Static);
             if (mode == PhysicsMode.Static) return;
 
             int sharedLogicalGroup  = targets.All(o => o.groupId > 0 && o.groupId == targets[0].groupId)

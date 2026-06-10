@@ -15,6 +15,7 @@ namespace BabyBlocks
         static float _noiseAmplitude = -1f;
         static bool  _refreezePending;
         static bool  _farTeleportActive;
+        static bool  _editorScanDone;
 
         // Player freeze state
         static bool _freezeActive;
@@ -103,13 +104,21 @@ namespace BabyBlocks
                 LevelEditor.OnGUI();
         }
 
-        // R key: toggle fly cam without cursor/editor.
+        // BackQuote key: direct game ↔ editor toggle (skips bare fly mode).
         static void ToggleTeleportMode()
         {
-            ToggleFlyMode();
+            if (!FlyCamActive)
+            {
+                ToggleFlyMode();
+                ToggleCursorMode();
+            }
+            else
+            {
+                ToggleFlyMode();
+            }
         }
 
-        // BackQuote key: toggle fly cam with cursor/editor.
+        // R key: game → fly, then cycles fly ↔ editor.
         static void ToggleFlyEditorMode()
         {
             if (!FlyCamActive)
@@ -167,6 +176,7 @@ namespace BabyBlocks
                     var noise = player.flyCam.GetComponentInChildren<CinemachineBasicMultiChannelPerlin>();
                     if (noise != null) noise.m_AmplitudeGain = _noiseAmplitude;
                 }
+
             }
         }
 
@@ -181,7 +191,11 @@ namespace BabyBlocks
 
             yield return null;
 
-            PropMetadataPanel.InvalidateMaterialSources();
+            if (!_editorScanDone)
+            {
+                PropMetadataPanel.InvalidateMaterialSources();
+                _editorScanDone = true;
+            }
         }
 
         static void ToggleCursorMode()
@@ -268,40 +282,14 @@ namespace BabyBlocks
             _frozenAnimator   = null;
         }
 
-        // LMB in non-cursor fly mode — kept for the standard short-range click-teleport.
-        public static void HandleTeleport(FlyCam flyCam)
-        {
-            if (Menu.me.teleporting || _refreezePending || _farTeleportActive) return;
-
-            var ray = Camera.main.ScreenPointToRay(new Vector3(Screen.width / 2f, Screen.height / 2f));
-            if (!Physics.Raycast(ray, out var hit, 1000f, LayerCache.PropTerrainMask))
-                return;
-
-            var player = PlayerMovement.me;
-            if (player == null) return;
-
-            Vector3 checkPos;
-            if (Physics.Raycast(hit.point + Vector3.up * 0.5f, Vector3.down, out var groundHit, 10f, LayerCache.PropTerrainMask))
-                checkPos = groundHit.point + Vector3.up;
-            else
-                checkPos = hit.point + Vector3.up;
-
-            FreezePlayer(player, false);
-            player.anim.transform.rotation = Quaternion.Euler(0f, flyCam.transform.eulerAngles.y, 0f);
-            player.pm.SwitchToActiveMode();
-            player.pm.SwitchModes();
-
-            Menu.me.Teleport(checkPos);
-
-            _refreezePending = true;
-        }
-
-        // G key: fast unified teleport for any distance.
+        // LMB / G key: unified teleport for any distance.
         // Non-cursor mode: aims along the crosshair with infinite range.
         // Cursor mode: uses fly-cam position.
         // Both paths go through FarTeleportCo.
-        static void HandleFarTeleport()
+        public static void HandleFarTeleport()
         {
+            if (Menu.me.teleporting || _refreezePending || _farTeleportActive) return;
+
             var player = PlayerMovement.me;
             if (player == null) return;
 
@@ -446,6 +434,13 @@ namespace BabyBlocks
             // ragdoll foot-placement sequence and clears Menu.me.teleporting.
             Menu.me.Teleport(target);
             while (Menu.me.teleporting) yield return null;
+
+            // Snap the fly cam to the player's new body position so that BestRegionLoader
+            // streams terrain around the correct area. Without this, the fly cam stays at
+            // the old look-from position and the chunk grid gets looped around there instead
+            // of the teleport destination — which breaks terrain loading at the loop seam
+            // when the player walks around after exiting fly-cam mode.
+            player.flyCam.transform.position = player.torsoRbs[0].transform.position;
 
             // Restore all distances — surrounding terrain and props stream in normally.
             br.chunkLoadDist   = origLoad;

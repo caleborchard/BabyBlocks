@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Text;
 using MelonLoader;
 using UnityEngine;
@@ -14,7 +15,7 @@ namespace BabyBlocks
     //   Version  : 1 byte
     //   Count    : int32    (number of objects)
     //
-    // Per object (version 5):
+    // Per object (version 5+):
     //   MetaIndex    : int32    (PropMetadataPanel index — the sole prop reference)
     //   ChunkIndex   : byte     (0..63 for chunked props, 255 for physics objects)
     //   Pos.x/y/z    : 3 × float32
@@ -29,6 +30,27 @@ namespace BabyBlocks
     //   HatOffPos.xyz : 3 × float32  (additive hat head offset)
     //   HatOffRot.xyz : 3 × float32  (additive hat head rotation, Euler degrees)
     //
+    // After all object records (version 6+), a baked-render-data block:
+    //   CompressedLen : int32    (0 if no objects have baked data)
+    //   RawLen        : int32    (present only if CompressedLen > 0)
+    //   CompressedData: byte[CompressedLen] (Deflate; see WriteBakedData/ReadBakedData)
+    //
+    // Decompressed baked-data layout:
+    //   ObjectCount : int32
+    //   For each:
+    //     RecordIndex : int32 (index into the object records above)
+    //     PartCount   : int32
+    //     For each part (one per baked MeshRenderer):
+    //       RendererPath : length-prefixed UTF8 string (sibling-index path from prop root)
+    //       VertexCount  : int32
+    //       Positions    : VertexCount × 3 × float32
+    //       Normals      : VertexCount × 3 × float32
+    //       UVs          : VertexCount × 2 × float32
+    //       TriCount     : int32
+    //       Triangles    : TriCount × int32
+    //       AtlasLen     : int32
+    //       AtlasJpg     : byte[AtlasLen]
+    //
     // Version 4 (legacy): same without grab/hat offset fields.
     // Version 3 (legacy): same without PhysicsType/GroupId/HatHairAmt.
     // Version 2 (legacy): MetaIndex + full quaternion + scale.
@@ -36,7 +58,7 @@ namespace BabyBlocks
     static class LevelSaveLoad
     {
         static readonly byte[] Magic = { 0x42, 0x42, 0x42 };
-        const byte FormatVersion = 5;
+        const byte FormatVersion = 6;
 
         struct SaveRecord
         {
@@ -80,6 +102,8 @@ namespace BabyBlocks
                 for (int i = 0; i < records.Count; i++)
                     WriteRecord(w, records[i]);
 
+                WriteBakedData(w, records);
+
                 MelonLogger.Msg($"[SaveLoad] Saved {records.Count} object(s) → {path}");
                 return true;
             }
@@ -110,13 +134,15 @@ namespace BabyBlocks
                     return (false, 0, "Not a .bbb file.");
 
                 byte version = r.ReadByte();
-                if (version > 5)
+                if (version > 6)
                     return (false, 0, $"Unsupported format version {version}.");
 
                 int count = r.ReadInt32();
                 int spawned = 0;
 
                 mgr.RemoveAll();
+
+                var leos = new LevelEditorObject[count];
 
                 for (int i = 0; i < count; i++)
                 {
@@ -232,8 +258,12 @@ namespace BabyBlocks
                     leo.grabOffsetRot    = grabOffsetRot;
                     leo.hatOffsetPos     = hatOffsetPos;
                     leo.hatOffsetRot     = hatOffsetRot;
+                    leos[i] = leo;
                     spawned++;
                 }
+
+                if (version >= 6)
+                    ReadBakedData(r, leos);
 
                 mgr.ApplyPhysicsGroups();
                 mgr.SyncLoadedHatHairValues();
@@ -325,6 +355,82 @@ namespace BabyBlocks
             w.Write(record.grabOffsetRot.x); w.Write(record.grabOffsetRot.y); w.Write(record.grabOffsetRot.z);
             w.Write(record.hatOffsetPos.x);  w.Write(record.hatOffsetPos.y);  w.Write(record.hatOffsetPos.z);
             w.Write(record.hatOffsetRot.x);  w.Write(record.hatOffsetRot.y);  w.Write(record.hatOffsetRot.z);
+        }
+
+        // Persists every physics-enabled object's already-baked mesh+atlas (see
+        // MaterialBaker.ExportBakedData) so Load() can skip MaterialBaker.Bake's GPU
+        // capture entirely. Static objects are never baked, so they're skipped here.
+        // The whole block is Deflate-compressed - the per-vertex float arrays compress
+        // well, and the cost on top of the already-compressed JPG atlases is negligible.
+        static void WriteBakedData(BinaryWriter w, List<SaveRecord> records)
+        {
+            var entries = new List<(int index, List<MaterialBaker.BakedPartData> parts)>();
+            int physicsRecordCount = 0;
+            for (int i = 0; i < records.Count; i++)
+            {
+                if (records[i].physicsType == PhysicsMode.Static) continue;
+                physicsRecordCount++;
+                var parts = MaterialBaker.ExportBakedData(records[i].obj.gameObject);
+                if (parts.Count > 0) entries.Add((i, parts));
+            }
+
+            MelonLogger.Msg($"[SaveLoad] WriteBakedData: {entries.Count}/{physicsRecordCount} physics object(s) had exportable bake data");
+
+            if (entries.Count == 0)
+            {
+                w.Write(0);
+                return;
+            }
+
+            using var raw = new MemoryStream();
+            using (var bw = new BinaryWriter(raw, Encoding.UTF8, leaveOpen: true))
+            {
+                bw.Write(entries.Count);
+                foreach (var (index, parts) in entries)
+                {
+                    bw.Write(index);
+                    MaterialBaker.WritePartList(bw, parts);
+                }
+            }
+
+            using var compressed = new MemoryStream();
+            raw.Position = 0;
+            using (var ds = new DeflateStream(compressed, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+                raw.CopyTo(ds);
+
+            var compressedBytes = compressed.ToArray();
+            w.Write(compressedBytes.Length);
+            w.Write((int)raw.Length);
+            w.Write(compressedBytes);
+        }
+
+        // Reads the block written by WriteBakedData and applies each part to its
+        // corresponding spawned object via MaterialBaker.ImportBakedData, BEFORE
+        // ApplyPhysicsGroups() runs - so Bake()'s "already baked" guard skips the GPU
+        // capture for every renderer covered by the saved data.
+        static void ReadBakedData(BinaryReader r, LevelEditorObject[] leos)
+        {
+            int compressedLen = r.ReadInt32();
+            if (compressedLen <= 0) return;
+            int rawLen = r.ReadInt32();
+            var compressedBytes = r.ReadBytes(compressedLen);
+
+            using var compressed = new MemoryStream(compressedBytes);
+            using var raw = new MemoryStream(rawLen);
+            using (var ds = new DeflateStream(compressed, CompressionMode.Decompress))
+                ds.CopyTo(raw);
+            raw.Position = 0;
+
+            using var br = new BinaryReader(raw, Encoding.UTF8, leaveOpen: true);
+            int objCount = br.ReadInt32();
+            for (int o = 0; o < objCount; o++)
+            {
+                int index = br.ReadInt32();
+                var parts = MaterialBaker.ReadPartList(br);
+
+                if (index >= 0 && index < leos.Length && leos[index] != null)
+                    MaterialBaker.ImportBakedData(leos[index].gameObject, parts);
+            }
         }
 
         static void WriteCompactRotation(BinaryWriter w, Quaternion rotation)

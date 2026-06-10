@@ -36,6 +36,7 @@ namespace BabyBlocks
         static readonly HashSet<int> _physicsControlSeen = new();
         readonly List<LevelEditorObject> _heldObjectsToRestore = new();
         readonly List<Vector3> _heldScalesToRestore = new();
+        static readonly Dictionary<int, (Mesh mesh, Material[] mats)> _bakeStash = new();
 
         [HideFromIl2Cpp]
         internal IReadOnlyList<LevelEditorObject> Objects => _objects;
@@ -918,7 +919,7 @@ namespace BabyBlocks
             foreach (var leo in rigidbodySolos)
             {
                 var colls = leo.gameObject.GetComponentsInChildren<Collider>(true);
-                AddRigidBodyComponent(leo.gameObject, colls, leo.addressableKey);
+                AddRigidBodyComponent(leo.gameObject, colls);
                 FreezeRigidBodyObject(leo, _editorModeActive);
                 MarkPhysicsChunkIndependent(leo);
                 leo.isPhysicsManaged = true;
@@ -936,7 +937,7 @@ namespace BabyBlocks
             foreach (var leo in wearableSolos)
             {
                 var colls = leo.gameObject.GetComponentsInChildren<Collider>(true);
-                AddGrabableComponent(leo.gameObject, leo.physicsMode == PhysicsMode.Hat, colls, leo.addressableKey);
+                AddGrabableComponent(leo.gameObject, leo.physicsMode == PhysicsMode.Hat, colls);
                 SyncHatHairAmount(leo);
                 if (leo.physicsMode == PhysicsMode.Grabable) SyncGrabOffset(leo);
                 MarkPhysicsChunkIndependent(leo);
@@ -958,12 +959,12 @@ namespace BabyBlocks
             var colls = leo.gameObject.GetComponentsInChildren<Collider>(true);
             if (leo.physicsMode == PhysicsMode.Rigidbody)
             {
-                AddRigidBodyComponent(leo.gameObject, colls, leo.addressableKey);
+                AddRigidBodyComponent(leo.gameObject, colls);
                 FreezeRigidBodyObject(leo, true);
             }
             else
             {
-                AddGrabableComponent(leo.gameObject, leo.physicsMode == PhysicsMode.Hat, colls, leo.addressableKey);
+                AddGrabableComponent(leo.gameObject, leo.physicsMode == PhysicsMode.Hat, colls);
                 SyncHatHairAmount(leo);
                 if (leo.physicsMode == PhysicsMode.Grabable) SyncGrabOffset(leo);
             }
@@ -1112,18 +1113,13 @@ namespace BabyBlocks
             }
         }
 
-        // restoreMaterial=false is used when switching directly between physics modes
-        // (Rigidbody/Grabable/Hat <-> each other) - the baked mesh/material is left in
-        // place (and its _bakeStash entry kept) so MaterialBaker.Bake's "already baked"
-        // guard skips recapturing it, instead of restoring the original then re-baking
-        // from scratch. Only a transition to Static restores the original mesh/materials.
-        public void ClearPhysics(LevelEditorObject leo, bool restoreMaterial = true)
+        public void ClearPhysics(LevelEditorObject leo)
         {
             if (leo == null || leo.physicsMode == PhysicsMode.Static) return;
 
             if (leo.physicsGroupId <= 0)
             {
-                if (restoreMaterial) MaterialBaker.RestoreOriginal(leo.gameObject);
+                RestoreOriginalMaterials(leo.gameObject);
                 RemoveGrabableComponents(leo.gameObject);
                 leo.isPhysicsManaged = false;
                 leo.physicsMode      = PhysicsMode.Static;
@@ -1138,7 +1134,7 @@ namespace BabyBlocks
                 foreach (var obj in _objects)
                 {
                     if (obj == null || obj.physicsGroupId != gid) continue;
-                    if (restoreMaterial) MaterialBaker.RestoreOriginal(obj.gameObject);
+                    RestoreOriginalMaterials(obj.gameObject);
                     obj.physicsMode      = PhysicsMode.Static;
                     obj.physicsGroupId   = 0;
                     obj.isPhysicsManaged = false;
@@ -1210,9 +1206,9 @@ namespace BabyBlocks
             }
         }
 
-        static void AddRigidBodyComponent(GameObject go, Collider[] colls, string propId = null)
+        static void AddRigidBodyComponent(GameObject go, Collider[] colls)
         {
-            MaterialBaker.Bake(go, propId);
+            BakeWorldSpaceMaterials(go);
             foreach (var mc in go.GetComponentsInChildren<MeshCollider>(true)) mc.convex = true;
             var rb = go.GetComponent<Rigidbody>() ?? go.AddComponent<Rigidbody>();
             rb.mass                   = 5f;
@@ -1222,10 +1218,10 @@ namespace BabyBlocks
             rb.interpolation          = RigidbodyInterpolation.Interpolate;
         }
 
-        static void AddGrabableComponent(GameObject go, bool isHat, Collider[] colls, string propId = null)
+        static void AddGrabableComponent(GameObject go, bool isHat, Collider[] colls)
         {
             if (go == null) return;
-            MaterialBaker.Bake(go, propId);
+            BakeWorldSpaceMaterials(go);
             if (colls == null) colls = Array.Empty<Collider>();
 
             foreach (var mc in go.GetComponentsInChildren<MeshCollider>(true)) mc.convex = true;
@@ -1348,6 +1344,929 @@ namespace BabyBlocks
                 if (root != null) Destroy(root);
             _groupRoots.Clear();
             _nextGroupId = 1;
+        }
+
+        // -- World-space UV baking ------------------------------------------------
+        // Props that use triplanar or world-position-mapped materials look wrong when
+        // turned into Rigidbodies/Grabables/Hats because their shaders sample texture
+        // coordinates from world space, so the texture stays fixed in the world while
+        // the object moves. Rather than reverse-engineering each shader's properties,
+        // this renders the mesh exactly as the GPU currently shows it — using its real
+        // material/shader — from six axis-aligned orthographic views, then builds a UV
+        // unwrap that assigns each triangle to the view matching the direction it faces.
+        // The captures are stitched into one atlas and applied via a plain unlit
+        // material, so the baked look is shader-agnostic and frozen in place.
+
+        static readonly Vector3[] BakeDirs = { Vector3.right, Vector3.left, Vector3.up, Vector3.down, Vector3.forward, Vector3.back };
+        static readonly Vector3[] BakeUps  = { Vector3.up,    Vector3.up,   Vector3.forward, Vector3.forward, Vector3.up, Vector3.up };
+        static readonly string[]  BakeDirNames = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
+        const int BakeCellPx = 512;
+
+        static void BakeWorldSpaceMaterials(GameObject root)
+        {
+            var lightingOverride = OverrideLightingForBake();
+            try
+            {
+            foreach (var mr in root.GetComponentsInChildren<MeshRenderer>(true))
+            {
+                // Already baked once (e.g. when this prop was first switched to
+                // Rigidbody/Grabable/Hat) - _bakeStash holds the ORIGINAL mesh/materials
+                // for restoration on revert. Re-running the capture pipeline on the
+                // already-baked atlas would feed it back through the calibration
+                // normalization again, compounding color/brightness drift each time
+                // (e.g. every time physics groups are reapplied on entering game mode).
+                int key = mr.GetInstanceID();
+                if (_bakeStash.ContainsKey(key))
+                    continue;
+
+                var mf = mr.GetComponent<MeshFilter>();
+                if (mf == null) continue;
+                var srcMesh = mf.sharedMesh;
+                if (srcMesh == null) continue;
+
+                var mats = mr.sharedMaterials;
+                if (mats == null || mats.Length == 0) continue;
+
+                if (!TryReadMeshForBake(srcMesh, out var positions, out var normals, out var submeshTris))
+                    continue;
+
+                _bakeStash[key] = (srcMesh, mr.sharedMaterials);
+
+                ClassifyTriangleDirections(positions, normals, submeshTris, mr.transform, out var triDir, out var dirUsed);
+
+                int drawLayer = FindUnusedLayer();
+                var bounds   = mr.bounds;
+                var camGOs   = new GameObject[6];
+                var cams     = new Camera[6];
+                var captures = new Texture2D[6];
+                // Capture a white-albedo "calibration" render from the same camera/lighting
+                // and divide it out (see BuildNormalizedPixels) - this cancels whatever the
+                // shader's response to the current lighting is (a plain ratio of 1.0 way
+                // over-amplified MicroSplat's heavily-attenuated response, so the result is
+                // rescaled to CaptureTargetBrightness instead).
+                Material calibMat = CreateCalibrationMaterial(mats.Length > 0 ? mats[0] : null);
+                LogMaterialPropertiesOnce(mats.Length > 0 ? mats[0] : null, "source");
+                LogMaterialPropertiesOnce(calibMat, "calibration");
+                try
+                {
+                    for (int d = 0; d < 6; d++)
+                    {
+                        if (!dirUsed[d]) continue;
+                        ComputeDirectionFootprint(positions, submeshTris, mr.transform, triDir, d, BakeDirs[d], BakeUps[d], bounds,
+                            out var planeCenter, out var extRight, out var extUp);
+                        camGOs[d] = CreateBakeCamera(bounds, planeCenter, extRight, extUp, BakeDirs[d], BakeUps[d], drawLayer, out cams[d]);
+                        // Aim the bake "headlight" the same way as this direction's camera so
+                        // the face it sees gets full, even, front-facing direct light.
+                        lightingOverride.bakeLight.transform.rotation = Quaternion.LookRotation(-BakeDirs[d], BakeUps[d]);
+                        captures[d] = CaptureMeshDirection(srcMesh, mats, calibMat, mr.transform.localToWorldMatrix, cams[d], drawLayer, BakeCellPx, mr.name, BakeDirNames[d]);
+                    }
+
+                    BuildBakedMeshData(positions, normals, submeshTris, mr.transform, triDir, cams,
+                        out var bakePositions, out var bakeNormals, out var bakeUV, out var bakeTris);
+
+                    var atlas = CompositeBakeAtlas(captures, dirUsed);
+
+                    var bakedMesh = new Mesh { name = srcMesh.name + "_baked" };
+                    if (bakePositions.Length > 65535)
+                        bakedMesh.indexFormat = IndexFormat.UInt32;
+                    bakedMesh.vertices = bakePositions;
+                    bakedMesh.normals  = bakeNormals;
+                    bakedMesh.uv       = bakeUV;
+                    bakedMesh.SetTriangles(bakeTris, 0);
+                    bakedMesh.RecalculateBounds();
+                    mf.sharedMesh = bakedMesh;
+
+                    mr.sharedMaterials = new[] { CreateBakedMaterial(mats, atlas) };
+
+                    MelonLogger.Msg($"[BabyBlocks] Baked \"{mr.name}\": verts={bakedMesh.vertexCount} " +
+                        $"tris={bakedMesh.triangles.Length / 3} bounds={bakedMesh.bounds} " +
+                        $"mr.enabled={mr.enabled} layer={mr.gameObject.layer} " +
+                        $"shadowMode={mr.shadowCastingMode} active={mr.gameObject.activeInHierarchy} " +
+                        $"calibrated={(calibMat != null)}");
+                }
+                finally
+                {
+                    for (int d = 0; d < 6; d++)
+                    {
+                        if (captures[d] != null) UnityEngine.Object.Destroy(captures[d]);
+                        if (camGOs[d]   != null) UnityEngine.Object.Destroy(camGOs[d]);
+                    }
+                    if (calibMat != null) UnityEngine.Object.Destroy(calibMat);
+                }
+            }
+            }
+            finally
+            {
+                RestoreLighting(lightingOverride);
+            }
+        }
+
+        // Both passes (real material + white-albedo calibration) need to be captured
+        // under IDENTICAL, FIXED lighting for the calibration division to mean anything.
+        // The scene's actual lighting (sun/sky via Enviro, local reflection probes) varies
+        // continuously with time of day and isn't fully controllable via a one-time
+        // RenderSettings.ambientLight write (Enviro keeps overwriting ambientProbe), so
+        // instead we temporarily disable every Light and ReflectionProbe in the scene and
+        // force flat ambient + a neutral gray "reflection" for the duration of the bake,
+        // then restore everything afterwards. This makes captures fully reproducible
+        // regardless of time of day/weather.
+        sealed class BakeLightingOverride
+        {
+            public Light[] lights;
+            public bool[] lightWasEnabled;
+            public ReflectionProbe[] probes;
+            public bool[] probeWasEnabled;
+            public AmbientMode prevAmbientMode;
+            public Color prevAmbientLight;
+            public DefaultReflectionMode prevReflectionMode;
+            public Texture prevReflectionTexture;
+            public float prevReflectionIntensity;
+            public GameObject bakeLightGO;
+            public Light bakeLight;
+        }
+
+        const float CaptureAmbient = 0.3f;
+        const float BakeLightIntensity = 1.0f;
+
+        static BakeLightingOverride OverrideLightingForBake()
+        {
+            var o = new BakeLightingOverride();
+
+            o.lights = UnityEngine.Object.FindObjectsOfType<Light>();
+            o.lightWasEnabled = new bool[o.lights.Length];
+            for (int i = 0; i < o.lights.Length; i++)
+            {
+                o.lightWasEnabled[i] = o.lights[i].enabled;
+                o.lights[i].enabled = false;
+            }
+
+            o.probes = UnityEngine.Object.FindObjectsOfType<ReflectionProbe>();
+            o.probeWasEnabled = new bool[o.probes.Length];
+            for (int i = 0; i < o.probes.Length; i++)
+            {
+                o.probeWasEnabled[i] = o.probes[i].enabled;
+                o.probes[i].enabled = false;
+            }
+
+            o.prevAmbientMode  = RenderSettings.ambientMode;
+            o.prevAmbientLight = RenderSettings.ambientLight;
+            RenderSettings.ambientMode  = AmbientMode.Flat;
+            RenderSettings.ambientLight = Color.white * CaptureAmbient;
+
+            o.prevReflectionMode      = RenderSettings.defaultReflectionMode;
+            o.prevReflectionTexture   = RenderSettings.customReflectionTexture;
+            o.prevReflectionIntensity = RenderSettings.reflectionIntensity;
+            RenderSettings.defaultReflectionMode   = DefaultReflectionMode.Custom;
+            RenderSettings.customReflectionTexture = NeutralCubemap();
+            RenderSettings.reflectionIntensity     = 0f;
+
+            // Some shaders (e.g. MicroSplat's terrain/rock blend) barely respond to ambient
+            // alone - with no direct light, even a pure-white surface came back ~17% gray.
+            // Add one temporary white directional "headlight" that gets re-aimed to match
+            // each bake camera's view direction (see BakeWorldSpaceMaterials), so every
+            // captured face gets the same full-on, front-facing direct light its shader
+            // expects, with no per-direction seams.
+            o.bakeLightGO = new GameObject("BabyBlocks_BakeLight");
+            o.bakeLight = o.bakeLightGO.AddComponent<Light>();
+            o.bakeLight.type      = LightType.Directional;
+            o.bakeLight.color     = Color.white;
+            o.bakeLight.intensity = BakeLightIntensity;
+            o.bakeLight.shadows   = LightShadows.None;
+
+            return o;
+        }
+
+        static void RestoreLighting(BakeLightingOverride o)
+        {
+            for (int i = 0; i < o.lights.Length; i++)
+                if (o.lights[i] != null) o.lights[i].enabled = o.lightWasEnabled[i];
+            for (int i = 0; i < o.probes.Length; i++)
+                if (o.probes[i] != null) o.probes[i].enabled = o.probeWasEnabled[i];
+
+            RenderSettings.ambientMode  = o.prevAmbientMode;
+            RenderSettings.ambientLight = o.prevAmbientLight;
+
+            RenderSettings.defaultReflectionMode   = o.prevReflectionMode;
+            RenderSettings.customReflectionTexture = o.prevReflectionTexture;
+            RenderSettings.reflectionIntensity     = o.prevReflectionIntensity;
+
+            if (o.bakeLightGO != null) UnityEngine.Object.Destroy(o.bakeLightGO);
+        }
+
+        static Cubemap _neutralCubemap;
+        static Cubemap NeutralCubemap()
+        {
+            if (_neutralCubemap == null)
+            {
+                _neutralCubemap = new Cubemap(4, TextureFormat.RGBA32, false) { name = "BabyBlocks_NeutralCubemap" };
+                var px = new Color[4 * 4];
+                var gray = new Color(0.5f, 0.5f, 0.5f, 1f);
+                for (int i = 0; i < px.Length; i++) px[i] = gray;
+                for (int f = 0; f < 6; f++)
+                    _neutralCubemap.SetPixels(px, (CubemapFace)f);
+                _neutralCubemap.Apply(false);
+            }
+            return _neutralCubemap;
+        }
+
+        static Texture2D _whiteTex;
+        static Texture2D WhiteTex()
+        {
+            if (_whiteTex == null)
+            {
+                _whiteTex = new Texture2D(1, 1, TextureFormat.RGBA32, false) { name = "BabyBlocks_White" };
+                _whiteTex.SetPixel(0, 0, Color.white);
+                _whiteTex.Apply(false);
+            }
+            return _whiteTex;
+        }
+
+        // Capture a second "calibration" render of the same mesh with its main
+        // texture/tint forced to white, using the SAME camera and (now flattened, see
+        // OverrideLightingForBake) lighting, then divide it out of the real capture
+        // pixel-by-pixel in CaptureMeshDirection. Whatever residual response the shader
+        // has to that fixed lighting cancels out of the ratio, leaving (close to) the
+        // material's neutral pattern/albedo - which the baked Standard material then
+        // re-lights normally for whatever lighting is present at display time.
+        static Material CreateCalibrationMaterial(Material srcMat)
+        {
+            if (srcMat == null) return null;
+            var m = new Material(srcMat) { name = "BabyBlocks_Calibration" };
+
+            bool found = false;
+            foreach (string p in new[] { "_MainTex", "_BaseMap", "_BaseColorMap", "_UnlitColorMap", "_AlbedoMap", "_Albedo", "_Diffuse", "_DiffuseTex" })
+            {
+                if (m.HasProperty(p))
+                {
+                    m.SetTexture(p, WhiteTex());
+                    m.SetTextureScale(p, Vector2.one);
+                    m.SetTextureOffset(p, Vector2.zero);
+                    found = true;
+                }
+            }
+            foreach (string p in new[] { "_Color", "_BaseColor", "_UnlitColor", "_TintColor", "_Tint" })
+                if (m.HasProperty(p)) { m.SetColor(p, Color.white); found = true; }
+
+            return found ? m : null;
+        }
+
+        // Picks one of six axis directions (+X,-X,+Y,-Y,+Z,-Z) for each triangle based on the
+        // world-space direction its face points, so it can later sample the photo taken from
+        // the camera that actually sees that face.
+        //
+        // Uses the triangle's own GEOMETRIC normal (cross product of its edges in world
+        // space) rather than the mesh's stored vertex-normal attribute. Some meshes store
+        // normals in a format/stream TryReadMeshForBake doesn't recognize and fall back to
+        // a placeholder Vector3.up for every vertex - with vertex normals, that silently
+        // classified every triangle as facing +Y, forcing all faces (including the sides)
+        // through a single top-down camera and producing badly stretched/distorted UVs.
+        // The geometric normal is always correct regardless of the mesh's vertex format.
+        static void ClassifyTriangleDirections(
+            Vector3[] positions, Vector3[] normals, int[][] submeshTris, Transform transform,
+            out int[] triDir, out bool[] dirUsed)
+        {
+            int totalTris = 0;
+            foreach (var st in submeshTris) totalTris += st.Length / 3;
+            triDir  = new int[totalTris];
+            dirUsed = new bool[6];
+
+            int ti = 0;
+            foreach (var st in submeshTris)
+            {
+                for (int t = 0; t + 2 < st.Length; t += 3)
+                {
+                    int i0 = st[t], i1 = st[t + 1], i2 = st[t + 2];
+                    Vector3 wp0 = transform.TransformPoint(positions[i0]);
+                    Vector3 wp1 = transform.TransformPoint(positions[i1]);
+                    Vector3 wp2 = transform.TransformPoint(positions[i2]);
+                    Vector3 fn  = Vector3.Cross(wp1 - wp0, wp2 - wp0);
+
+                    float ax = fn.x, ay = fn.y, az = fn.z;
+                    float aax = Mathf.Abs(ax), aay = Mathf.Abs(ay), aaz = Mathf.Abs(az);
+                    int d;
+                    if (aax >= aay && aax >= aaz) d = ax >= 0 ? 0 : 1;
+                    else if (aay >= aaz)          d = ay >= 0 ? 2 : 3;
+                    else                          d = az >= 0 ? 4 : 5;
+
+                    triDir[ti] = d;
+                    dirUsed[d] = true;
+                    ti++;
+                }
+            }
+        }
+
+        // A layer with no name (LayerMask.LayerToName == "") can still have real scene
+        // renderers assigned to its numeric index. If our temporary bake camera's
+        // cullingMask collides with such a layer, cam.Render() draws that scene geometry
+        // too, baking the background behind the prop into its texture (looks like the
+        // baked object is "see-through" to whatever was behind it). Scan actual renderers
+        // to find a layer index nothing currently uses.
+        static int FindUnusedLayer()
+        {
+            var used = new bool[32];
+            foreach (var r in UnityEngine.Object.FindObjectsOfType<Renderer>())
+                used[r.gameObject.layer] = true;
+            for (int i = 31; i >= 0; i--)
+                if (!used[i]) return i;
+            return 31;
+        }
+
+        // Finds the in-plane (right/up) bounding rectangle of just the triangles assigned to
+        // direction `dir` (triDir[t] == dir), in world space, projected onto that
+        // direction's right/up axes. Sizing each direction's camera to the WHOLE mesh's
+        // bounding box cross-section (instead of just the triangles it's actually going to
+        // capture) wastes most of the capture on empty space for non-cuboid props - e.g. a
+        // brick whose "+X face" triangles only cover a third of the mesh's overall
+        // X-extent silhouette - leaving most of that direction's atlas cell transparent
+        // (now filled with a flat average color, but still mostly disconnected from the
+        // mesh's real detail). Framing the camera tightly to just this direction's own
+        // triangles instead gives each face the full capture resolution and near-100%
+        // coverage regardless of the prop's overall shape.
+        // Frames each direction's camera around the mesh's overall bounds rather than just
+        // the triangles classified into that direction. A tighter per-direction frame
+        // sounds better in theory, but most meshes' same-direction triangles are scattered
+        // across disjoint patches (e.g. the many small facets of a beveled brick edge), so
+        // their combined bounding rect under-represents the actual silhouette visible from
+        // that direction and ends up framing/cropping the camera around the wrong region -
+        // this was tried and made coverage worse across the board. Using the whole mesh's
+        // bounds keeps every direction's camera centered on the object and sized to see
+        // its full silhouette, at the cost of some empty margin (handled by
+        // DilateEdges/FillRemainingTransparent).
+        static void ComputeDirectionFootprint(
+            Vector3[] positions, int[][] submeshTris, Transform transform, int[] triDir, int dir,
+            Vector3 dirVec, Vector3 up, Bounds worldBounds,
+            out Vector3 planeCenter, out float extRight, out float extUp)
+        {
+            Vector3 right = Vector3.Cross(up, dirVec).normalized;
+            planeCenter = worldBounds.center;
+            extRight = Mathf.Max(Mathf.Abs(Vector3.Dot(worldBounds.extents, right)), 0.02f);
+            extUp    = Mathf.Max(Mathf.Abs(Vector3.Dot(worldBounds.extents, up)), 0.02f);
+        }
+
+        // Sets up a temporary orthographic camera from one of the six axis directions,
+        // framed to `planeCenter`/`extRight`/`extUp` (see ComputeDirectionFootprint). The
+        // capture render target and atlas cells are square, so the camera always uses a
+        // square viewport (aspect 1) too - using a non-square aspect here would get
+        // silently reset to 1 the moment a square RenderTexture is assigned as
+        // targetTexture (and again when WorldToViewportPoint is later used for UVs in
+        // BuildBakedMeshData), making the render and the UV projection disagree and
+        // producing clamped/stretched UVs. Instead, fit a square view around the larger of
+        // the two in-plane extents so the whole face is always captured without cropping;
+        // any extra margin on the shorter axis is left transparent and filled in by
+        // DilateEdges/FillRemainingTransparent.
+        static GameObject CreateBakeCamera(Bounds worldBounds, Vector3 planeCenter, float extRight, float extUp, Vector3 dir, Vector3 up, int drawLayer, out Camera cam)
+        {
+            var go = new GameObject("BabyBlocks_BakeCam");
+            cam = go.AddComponent<Camera>();
+            cam.enabled = false;
+            cam.orthographic = true;
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = new Color(0f, 0f, 0f, 0f);
+            cam.cullingMask = 1 << drawLayer;
+            // Capture in HDR so bright lighting/highlights aren't clamped to 1.0 before
+            // the calibration ratio is computed (see BuildNormalizedPixels).
+            cam.allowHDR = true;
+
+            Vector3 ext = worldBounds.extents;
+            float depth;
+            if (Mathf.Abs(dir.x) > 0.5f)      depth = ext.x;
+            else if (Mathf.Abs(dir.y) > 0.5f) depth = ext.y;
+            else                              depth = ext.z;
+            if (depth < 0.05f) depth = 0.05f;
+
+            cam.orthographicSize = Mathf.Max(extRight, extUp) * 1.02f;
+            cam.aspect = 1f;
+            cam.nearClipPlane = 0.01f;
+            cam.farClipPlane  = depth * 2f + 0.5f;
+
+            go.transform.position = planeCenter + dir.normalized * (depth + 0.25f);
+            go.transform.rotation = Quaternion.LookRotation(-dir, up);
+            return go;
+        }
+
+        // Renders the mesh with its REAL materials/shaders (whatever they are) into a
+        // RenderTexture from the given camera and reads it back as a Texture2D. This is the
+        // "render everything out after the shader" capture — it works for any shader because
+        // it photographs the actual GPU output. If a calibration material is available, also
+        // renders the same mesh with that (white-albedo) material from the same camera and
+        // divides it out, cancelling whatever the current world lighting is doing.
+        static Texture2D CaptureMeshDirection(Mesh mesh, Material[] mats, Material calibMat, Matrix4x4 localToWorld, Camera cam, int drawLayer, int size, string objName, string dirLabel)
+        {
+            var realTex = RenderMeshToTexture(mesh, mats, null, localToWorld, cam, drawLayer, size);
+            var real = realTex.GetPixels();
+            UnityEngine.Object.Destroy(realTex);
+
+            Color[] calib = null;
+            if (calibMat != null)
+            {
+                var calibTex = RenderMeshToTexture(mesh, null, calibMat, localToWorld, cam, drawLayer, size);
+                calib = calibTex.GetPixels();
+                UnityEngine.Object.Destroy(calibTex);
+            }
+
+            var pixels = BuildNormalizedPixels(real, calib);
+
+            int covered = 0;
+            foreach (var p in pixels) if (p.a != 0) covered++;
+            float coveragePct = 100f * covered / pixels.Length;
+
+            MelonLogger.Msg($"[BabyBlocks] Bake \"{objName}\" {dirLabel}: real={AvgColorStr(real, real)} " +
+                $"calib={(calib != null ? AvgColorStr(calib, real) : "n/a")} result={AvgColor32Str(pixels)} coverage={coveragePct:F1}%");
+
+            // The background is left transparent (alpha=0) outside the rendered silhouette,
+            // and (for non-cuboid meshes) large interior gaps can also be left transparent
+            // where this direction's camera doesn't see any geometry. Bilinear sampling
+            // near a UV island's edge can pick up these black/transparent pixels as
+            // "see-through" holes, and CompositeBakeAtlas later forces every pixel to
+            // alpha=255 (turning any still-transparent pixel solid BLACK). Repeatedly push
+            // the silhouette's edge colors outward, one ring of pixels at a time, until the
+            // whole capture is covered - this "smears" the nearest real surface color
+            // outward into empty regions (standard texture-atlas padding), so a void looks
+            // like a soft continuation of the nearby surface instead of one flat block or
+            // black square.
+            DilateEdges(pixels, size, size);
+
+            // Safety net for the (rare) case a capture has no opaque pixels at all - in
+            // that case dilation has nothing to spread, so fall back to a flat fill.
+            FillRemainingTransparent(pixels);
+
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+            tex.SetPixels32(pixels);
+            tex.Apply(false);
+            return tex;
+        }
+
+        // Averages the r/g/b of `px` over pixels where `alphaSrc` has alpha > 0.5 (the
+        // mesh's silhouette), for diagnostic logging.
+        static string AvgColorStr(Color[] px, Color[] alphaSrc)
+        {
+            double r = 0, g = 0, b = 0; int n = 0;
+            for (int i = 0; i < px.Length; i++)
+            {
+                if (alphaSrc[i].a < 0.5f) continue;
+                r += px[i].r; g += px[i].g; b += px[i].b; n++;
+            }
+            if (n == 0) return "n/a";
+            return $"({r / n:F3},{g / n:F3},{b / n:F3})";
+        }
+
+        static string AvgColor32Str(Color32[] px)
+        {
+            double r = 0, g = 0, b = 0; int n = 0;
+            for (int i = 0; i < px.Length; i++)
+            {
+                if (px[i].a < 128) continue;
+                r += px[i].r; g += px[i].g; b += px[i].b; n++;
+            }
+            if (n == 0) return "n/a";
+            return $"({r / n / 255.0:F3},{g / n / 255.0:F3},{b / n / 255.0:F3})";
+        }
+
+        static readonly HashSet<string> _loggedMaterials = new HashSet<string>();
+
+        // Dumps every Color/Texture/Float/Vector property a material's shader exposes,
+        // once per (shader, label) pair, to help diagnose unexpected tints (e.g. a custom
+        // color property our calibration whitening doesn't know about).
+        static void LogMaterialPropertiesOnce(Material mat, string label)
+        {
+            if (mat == null) return;
+            var sh = mat.shader;
+            string key = label + "|" + sh.name;
+            if (!_loggedMaterials.Add(key)) return;
+
+            int count = sh.GetPropertyCount();
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"[BabyBlocks] {label} material \"{mat.name}\" shader=\"{sh.name}\" properties:");
+            for (int i = 0; i < count; i++)
+            {
+                var name = sh.GetPropertyName(i);
+                var type = sh.GetPropertyType(i);
+                switch (type)
+                {
+                    case UnityEngine.Rendering.ShaderPropertyType.Color:
+                        sb.Append($"\n  [Color] {name} = {mat.GetColor(name)}");
+                        break;
+                    case UnityEngine.Rendering.ShaderPropertyType.Texture:
+                        var tex = mat.GetTexture(name);
+                        sb.Append($"\n  [Tex]   {name} = {(tex != null ? $"{tex.name} {tex.width}x{tex.height}" : "null")}");
+                        break;
+                    case UnityEngine.Rendering.ShaderPropertyType.Float:
+                    case UnityEngine.Rendering.ShaderPropertyType.Range:
+                        sb.Append($"\n  [Float] {name} = {mat.GetFloat(name)}");
+                        break;
+                    case UnityEngine.Rendering.ShaderPropertyType.Vector:
+                        sb.Append($"\n  [Vec]   {name} = {mat.GetVector(name)}");
+                        break;
+                }
+            }
+            MelonLogger.Msg(sb.ToString());
+        }
+
+        // Draws the mesh's submeshes either with their own materials (mats) or, if
+        // singleMat is given, with that one material for every submesh (used for the
+        // calibration pass), then reads the camera's render back into a Texture2D.
+        // Uses an HDR float format so bright lighting/highlights aren't clamped to 1.0
+        // at capture time - clamping here would make the white-albedo calibration render
+        // hit the ceiling far sooner than the real (darker-albedo) render, which would
+        // throw off the real/calibration ratio in BuildNormalizedPixels.
+        static Texture2D RenderMeshToTexture(Mesh mesh, Material[] mats, Material singleMat, Matrix4x4 localToWorld, Camera cam, int drawLayer, int size)
+        {
+            var rt = new RenderTexture(size, size, 16, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear) { antiAliasing = 4 };
+            rt.Create();
+            cam.targetTexture = rt;
+
+            for (int i = 0; i < mesh.subMeshCount; i++)
+            {
+                var mat = singleMat ?? mats[Mathf.Min(i, mats.Length - 1)];
+                if (mat == null) continue;
+                Graphics.DrawMesh(mesh, localToWorld, mat, drawLayer, cam, i);
+            }
+            cam.Render();
+
+            var prev = RenderTexture.active;
+            RenderTexture.active = rt;
+            var tex = new Texture2D(size, size, TextureFormat.RGBAHalf, false);
+            tex.ReadPixels(new Rect(0, 0, size, size), 0, 0, false);
+            tex.Apply(false);
+            RenderTexture.active = prev;
+
+            cam.targetTexture = null;
+            rt.Release();
+            UnityEngine.Object.Destroy(rt);
+            return tex;
+        }
+
+        // Below this, a calibration "lighting" reading is treated as black/no-light and
+        // left as-is rather than dividing by (near) zero, which would blow the real
+        // pixel up to an enormous ratio.
+        const float MinCalibLight = 0.05f;
+
+        // For some shaders (e.g. MicroSplat's terrain/rock blend), even a pure-white
+        // surface under our "neutral" capture lighting comes back far below 1.0 (its AO/
+        // contrast curve eats most of it). Dividing real/calib straight to a ceiling of
+        // 1.0 over-amplifies those by a large, shader-dependent factor (this caused the
+        // earlier "insanely bright/yellow" result). Instead, divide out whatever the
+        // calibration measured (cancelling time-of-day/lighting variance, whatever drives
+        // it for this shader) and rescale to this target brightness instead of 1.0 - a
+        // tunable "how bright should a neutral gray surface look in the baked atlas".
+        const float CaptureTargetBrightness = 0.15f;
+
+        // Divides the real capture by the white-albedo calibration capture, channel by
+        // channel, so whatever the current ambient/sun lighting contributed to both
+        // renders cancels out, then rescales to CaptureTargetBrightness - leaving (close
+        // to) the material's neutral pattern at a controlled brightness, which the baked
+        // material then re-lights normally at display time. Both captures are HDR
+        // (unclamped) floats, so a bright calibration render that exceeds 1.0 doesn't get
+        // clipped to the same ceiling as the real render before the ratio is taken.
+        // The final value is clamped to [0,1] only here, once, for storage in the atlas.
+        static Color32[] BuildNormalizedPixels(Color[] real, Color[] calib)
+        {
+            var result = new Color32[real.Length];
+            for (int i = 0; i < real.Length; i++)
+            {
+                var c = real[i];
+                if (c.a < 0.5f) { result[i] = new Color32(0, 0, 0, 0); continue; } // outside silhouette - leave transparent
+
+                float r = c.r, g = c.g, b = c.b;
+                if (calib != null)
+                {
+                    var cal = calib[i];
+                    r = (r / Mathf.Max(cal.r, MinCalibLight)) * CaptureTargetBrightness;
+                    g = (g / Mathf.Max(cal.g, MinCalibLight)) * CaptureTargetBrightness;
+                    b = (b / Mathf.Max(cal.b, MinCalibLight)) * CaptureTargetBrightness;
+                }
+                result[i] = new Color32(ToByte(r), ToByte(g), ToByte(b), 255);
+            }
+            return result;
+        }
+
+        static byte ToByte(float v01) => (byte)(Mathf.Clamp01(v01) * 255f);
+
+        // Fills any pixel still fully transparent (alpha=0) - left over after DilateEdges -
+        // with the average color of all opaque pixels in this capture, and marks it
+        // opaque. See call site in CaptureMeshDirection for why this matters.
+        static void FillRemainingTransparent(Color32[] pixels)
+        {
+            long r = 0, g = 0, b = 0; int n = 0;
+            foreach (var c in pixels)
+            {
+                if (c.a == 0) continue;
+                r += c.r; g += c.g; b += c.b; n++;
+            }
+            if (n == 0) return; // nothing opaque to average - leave as-is
+
+            var avg = new Color32((byte)(r / n), (byte)(g / n), (byte)(b / n), 255);
+            for (int i = 0; i < pixels.Length; i++)
+                if (pixels[i].a == 0) pixels[i] = avg;
+        }
+
+        // Repeatedly fills fully-transparent pixels with a neighboring opaque pixel's color,
+        // growing the opaque silhouette outward by `iterations` pixels.
+        static void DilateEdges(Color32[] pixels, int size, int iterations)
+        {
+            for (int it = 0; it < iterations; it++)
+            {
+                var src = (Color32[])pixels.Clone();
+                for (int y = 0; y < size; y++)
+                for (int x = 0; x < size; x++)
+                {
+                    int i = y * size + x;
+                    if (src[i].a != 0) continue;
+
+                    Color32? fill = null;
+                    if (x > 0 && src[i - 1].a != 0) fill = src[i - 1];
+                    else if (x < size - 1 && src[i + 1].a != 0) fill = src[i + 1];
+                    else if (y > 0 && src[i - size].a != 0) fill = src[i - size];
+                    else if (y < size - 1 && src[i + size].a != 0) fill = src[i + size];
+
+                    if (fill.HasValue)
+                    {
+                        var c = fill.Value;
+                        c.a = 255;
+                        pixels[i] = c;
+                    }
+                }
+            }
+        }
+
+        // Stitches the (up to) six directional captures into one atlas: 3 columns
+        // (X/Y/Z axis) x 2 rows (positive/negative direction).
+        static Texture2D CompositeBakeAtlas(Texture2D[] captures, bool[] dirUsed)
+        {
+            int texW = BakeCellPx * 3, texH = BakeCellPx * 2;
+            // The captured pixels are LINEAR values (read back from an HDR
+            // RenderTextureReadWrite.Linear target). A default (sRGB) Texture2D
+            // bound as _MainTex would have the GPU sRGB-decode these
+            // already-linear bytes a second time at sample time, darkening
+            // mid-tones by ~2-2.5x - mark this texture linear so the stored
+            // bytes are used as-is.
+            var atlas = new Texture2D(texW, texH, TextureFormat.RGBA32, false, true);
+            atlas.wrapMode = TextureWrapMode.Clamp;
+
+            var blank = new Color32[texW * texH];
+            for (int i = 0; i < blank.Length; i++) blank[i] = new Color32(0, 0, 0, 255);
+            atlas.SetPixels32(blank);
+
+            for (int d = 0; d < 6; d++)
+            {
+                if (!dirUsed[d] || captures[d] == null) continue;
+                int axis = d / 2, sign = d % 2;
+                int ox = axis * BakeCellPx;
+                int oy = sign == 0 ? BakeCellPx : 0;
+
+                var px = captures[d].GetPixels32();
+                for (int i = 0; i < px.Length; i++)
+                {
+                    var c = px[i]; c.a = 255; px[i] = c; // fully opaque, no see-through
+                }
+                atlas.SetPixels32(ox, oy, BakeCellPx, BakeCellPx, px);
+            }
+            atlas.Apply(false);
+            return atlas;
+        }
+
+        // Duplicates every triangle into 3 unique vertices and assigns each a UV by
+        // projecting its world position through the camera that captured its facing
+        // direction (cams[triDir[t]].WorldToViewportPoint), placed into that direction's
+        // cell of the atlas. Because the same camera/projection produced both the photo and
+        // this UV, sampling the atlas at this UV reproduces exactly what the GPU rendered.
+        static void BuildBakedMeshData(
+            Vector3[] positions, Vector3[] normals, int[][] submeshTris, Transform transform,
+            int[] triDir, Camera[] cams,
+            out Vector3[] outPositions, out Vector3[] outNormals, out Vector2[] outUV, out int[] outTris)
+        {
+            int totalTris    = triDir.Length;
+            int totalCorners = totalTris * 3;
+            outPositions = new Vector3[totalCorners];
+            outNormals   = new Vector3[totalCorners];
+            outUV        = new Vector2[totalCorners];
+            outTris      = new int[totalCorners];
+
+            const float cellU = 1f / 3f, cellV = 1f / 2f;
+
+            int corner = 0, ti = 0;
+            foreach (var st in submeshTris)
+            {
+                for (int t = 0; t + 2 < st.Length; t += 3)
+                {
+                    int[] idx = { st[t], st[t + 1], st[t + 2] };
+                    int d = triDir[ti];
+                    var cam = cams[d];
+                    int axis = d / 2, sign = d % 2;
+                    float originU = axis * cellU;
+                    float originV = sign == 0 ? cellV : 0f;
+
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int vi = idx[c];
+                        Vector3 wp = transform.TransformPoint(positions[vi]);
+                        Vector3 vp = cam.WorldToViewportPoint(wp);
+
+                        outPositions[corner + c] = positions[vi];
+                        outNormals[corner + c]   = normals[vi];
+                        outUV[corner + c] = new Vector2(
+                            originU + Mathf.Clamp01(vp.x) * cellU,
+                            originV + Mathf.Clamp01(vp.y) * cellV);
+                        outTris[corner + c] = corner + c;
+                    }
+                    corner += 3;
+                    ti++;
+                }
+            }
+        }
+
+        // The captures are normalized against a white-albedo calibration render of the
+        // same mesh (see CreateCalibrationMaterial/BuildNormalizedPixels), so the atlas is
+        // close to the material's plain albedo/pattern rather than a frozen lighting
+        // snapshot. "Unlit/Texture" would otherwise be the ideal
+        // display shader (no re-lighting, normal Cull Back/ZWrite On occlusion) but in
+        // this game it doesn't actually render anything - confirmed see-through even with
+        // Cull Back + ZWrite On. "Standard" does render/occlude correctly, so use it as
+        // plain albedo and let it re-light the atlas normally under the current scene
+        // lighting, matching nearby (un-baked) objects.
+        static Material CreateBakedMaterial(Material[] srcMats, Texture2D atlas)
+        {
+            var srcMat = (srcMats != null && srcMats.Length > 0) ? srcMats[0] : null;
+
+            Shader sh = null;
+            foreach (var name in new[]
+            {
+                "Standard",
+                "Legacy Shaders/Diffuse",
+                "Sprites/Default",
+                "UI/Default",
+                "Unlit/Color",
+                "Unlit/Texture",
+            })
+            {
+                sh = Shader.Find(name);
+                if (sh != null) break;
+            }
+            if (sh == null && srcMat != null) sh = srcMat.shader;
+            if (sh == null) return srcMat;
+
+            var m = new Material(sh) { name = "BakedAtlas" };
+
+            foreach (string p in new[] { "_MainTex", "_BaseMap", "_BaseColorMap", "_UnlitColorMap" })
+            {
+                if (m.HasProperty(p))
+                {
+                    m.SetTexture(p, atlas);
+                    m.SetTextureScale(p, Vector2.one);
+                    m.SetTextureOffset(p, Vector2.zero);
+                    break;
+                }
+            }
+            foreach (string p in new[] { "_Color", "_BaseColor", "_UnlitColor" })
+                if (m.HasProperty(p)) { m.SetColor(p, Color.white); break; }
+
+            // Force a plain opaque, single-sided, depth-written surface regardless of
+            // what mode the chosen shader defaults to.
+            if (m.HasProperty("_Mode")) m.SetFloat("_Mode", 0f); // Standard: Opaque
+            if (m.HasProperty("_Glossiness")) m.SetFloat("_Glossiness", 0f);
+            if (m.HasProperty("_Metallic"))   m.SetFloat("_Metallic", 0f);
+            if (m.HasProperty("_SrcBlend"))   m.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
+            if (m.HasProperty("_DstBlend"))   m.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.Zero);
+            if (m.HasProperty("_ZWrite"))     m.SetInt("_ZWrite", 1);
+            if (m.HasProperty("_Cull"))       m.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Back);
+            m.DisableKeyword("_ALPHATEST_ON");
+            m.DisableKeyword("_ALPHABLEND_ON");
+            m.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+
+            m.renderQueue = 2000;
+
+            MelonLogger.Msg($"[BabyBlocks] CreateBakedMaterial: shader=\"{m.shader.name}\" " +
+                $"isSupported={m.shader.isSupported} mainTex={(m.mainTexture != null)} " +
+                $"({m.mainTexture?.width}x{m.mainTexture?.height}) renderQueue={m.renderQueue}");
+
+            return m;
+        }
+
+        static void RestoreOriginalMaterials(GameObject root)
+        {
+            foreach (var mr in root.GetComponentsInChildren<MeshRenderer>(true))
+            {
+                var mf = mr.GetComponent<MeshFilter>();
+                if (mf == null) continue;
+                int key = mr.GetInstanceID();
+                if (!_bakeStash.TryGetValue(key, out var stash)) continue;
+                mf.sharedMesh      = stash.mesh;
+                mr.sharedMaterials = stash.mats;
+                _bakeStash.Remove(key);
+            }
+        }
+
+        static bool TryReadMeshForBake(Mesh src, out Vector3[] positions, out Vector3[] normals, out int[][] submeshTris)
+        {
+            positions   = null;
+            normals     = null;
+            submeshTris = null;
+            try
+            {
+                int normalFIdx  = -1;
+                int floatCursor = 0;
+                bool posOk = false;
+
+                foreach (var a in src.GetVertexAttributes())
+                {
+                    if (a.stream != 0) { floatCursor += BakeAttrFloatStride(a); continue; }
+
+                    if (a.attribute == VertexAttribute.Position
+                     && a.format    == VertexAttributeFormat.Float32
+                     && a.dimension == 3)
+                        posOk = true;
+
+                    if (a.format    == VertexAttributeFormat.Float32
+                     && a.attribute == VertexAttribute.Normal
+                     && a.dimension == 3)
+                        normalFIdx = floatCursor;
+
+                    floatCursor += BakeAttrFloatStride(a);
+                }
+                if (!posOk) return false;
+
+                var vb    = src.GetVertexBuffer(0);
+                int fPerV = vb.stride / 4;
+                int vCnt  = src.vertexCount;
+                var raw   = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<float>(vCnt * fPerV);
+                vb.GetData(raw.Cast<Il2CppSystem.Array>());
+                vb.Release();
+
+                positions = new Vector3[vCnt];
+                for (int i = 0; i < vCnt; i++)
+                {
+                    int b = i * fPerV;
+                    positions[i] = new Vector3(raw[b], raw[b + 1], raw[b + 2]);
+                }
+
+                normals = new Vector3[vCnt];
+                if (normalFIdx >= 0)
+                {
+                    for (int i = 0; i < vCnt; i++)
+                    {
+                        int b = i * fPerV + normalFIdx;
+                        normals[i] = new Vector3(raw[b], raw[b + 1], raw[b + 2]);
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < vCnt; i++) normals[i] = Vector3.up;
+                }
+
+                var ib   = src.GetIndexBuffer();
+                int iCnt = ib.count;
+                var tris = new int[iCnt];
+                if (ib.stride == 2)
+                {
+                    var buf = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<ushort>(iCnt);
+                    ib.GetData(buf.Cast<Il2CppSystem.Array>());
+                    for (int i = 0; i < iCnt; i++) tris[i] = buf[i];
+                }
+                else
+                {
+                    var buf = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<int>(iCnt);
+                    ib.GetData(buf.Cast<Il2CppSystem.Array>());
+                    for (int i = 0; i < iCnt; i++) tris[i] = buf[i];
+                }
+                ib.Release();
+
+                int subs = src.subMeshCount;
+                submeshTris = new int[subs][];
+                for (int s = 0; s < subs; s++)
+                {
+                    var sm  = src.GetSubMesh(s);
+                    int end = sm.indexStart + sm.indexCount;
+                    var st  = new int[sm.indexCount];
+                    for (int j = sm.indexStart; j < end; j++)
+                        st[j - sm.indexStart] = tris[j];
+                    submeshTris[s] = st;
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+
+        // Returns how many float32 words |attr| occupies in the vertex buffer.
+        static int BakeAttrFloatStride(VertexAttributeDescriptor attr)
+        {
+            int byteSize;
+            switch (attr.format)
+            {
+                case VertexAttributeFormat.Float16:
+                case VertexAttributeFormat.UNorm16:
+                case VertexAttributeFormat.SNorm16:
+                case VertexAttributeFormat.UInt16:
+                case VertexAttributeFormat.SInt16:
+                    byteSize = attr.dimension * 2; break;
+                case VertexAttributeFormat.UNorm8:
+                case VertexAttributeFormat.SNorm8:
+                case VertexAttributeFormat.UInt8:
+                case VertexAttributeFormat.SInt8:
+                    byteSize = attr.dimension; break;
+                default:
+                    byteSize = attr.dimension * 4; break;
+            }
+            return (byteSize + 3) / 4;
         }
     }
 }
