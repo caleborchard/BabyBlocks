@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Globalization;
 using UnityEngine;
 
@@ -30,17 +31,18 @@ namespace BabyBlocks
         {
             if (_initialized) return;
             _initialized = true;
-            float h = ComputeHeight(false, false, false, false);
+            float h = ComputeHeight(false, false, false, false, false);
             _windowRect = new Rect(Screen.width - 320f - WinW - 10f,
                                    Screen.height - h - 40f, WinW, h);
         }
 
-        static float ComputeHeight(bool showGroup, bool showHatHair, bool showGrabOffset, bool showHatOffset)
+        static float ComputeHeight(bool showGroup, bool showHatHair, bool showGrabOffset, bool showHatOffset, bool showBakeToggle)
             => HeaderH + Pad + LineH
              + (showHatHair    ? LineH + 24f : 0f)
              + (showGrabOffset ? 3 * LineH   : 0f)
              + (showHatOffset  ? 3 * LineH   : 0f)
              + (showGroup      ? LineH       : 0f)
+             + (showBakeToggle ? LineH       : 0f)
              + LineH + LineH + Pad;
 
         public static bool ContainsPoint(Vector2 guiPoint) =>
@@ -57,6 +59,7 @@ namespace BabyBlocks
             bool anyGroup = false;
             var primary = LevelEditor.selectedObject;
 
+            var bakingPropIds = new HashSet<string>();
             foreach (var obj in sel)
             {
                 if (obj == null) continue;
@@ -72,12 +75,23 @@ namespace BabyBlocks
                     if (sharedGroup != obj.groupId)    sharedGroup = 0;
                 }
                 if (obj.groupId > 0) anyGroup = true;
+                if (!string.IsNullOrEmpty(obj.addressableKey)) bakingPropIds.Add(obj.addressableKey);
+            }
+
+            bool? sharedDisableBaking = null;
+            bool firstBakeProp = true;
+            foreach (var id in bakingPropIds)
+            {
+                bool val = PropMetadataPanel.GetDisableBaking(id);
+                if (firstBakeProp) { sharedDisableBaking = val; firstBakeProp = false; }
+                else if (sharedDisableBaking != val) sharedDisableBaking = null;
             }
 
             bool showGroup      = hasSelection && sharedGroup > 0;
             bool showHatHair    = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Hat;
             bool showGrabOffset = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Grabable;
             bool showHatOffset  = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Hat;
+            bool showBakeToggle = bakingPropIds.Count > 0;
 
             // Sync text field strings when the selected object changes
             if (primary != _lastPrimary)
@@ -86,7 +100,7 @@ namespace BabyBlocks
                 SyncStrings(primary);
             }
 
-            float winH = ComputeHeight(showGroup, showHatHair, showGrabOffset, showHatOffset);
+            float winH = ComputeHeight(showGroup, showHatHair, showGrabOffset, showHatOffset, showBakeToggle);
             _windowRect.width  = WinW;
             _windowRect.height = winH;
             _windowRect.x = Mathf.Clamp(_windowRect.x, 0f, Screen.width  - WinW);
@@ -129,6 +143,24 @@ namespace BabyBlocks
                              : "Hat";
             GUI.Label(new Rect(x, y, w, LineH), $"Mode: {modeLabel}");
             y += LineH;
+
+            if (showBakeToggle)
+            {
+                bool disableBaking = sharedDisableBaking ?? false;
+                string bakeLabel = sharedDisableBaking == null
+                    ? " Disable texture baking (Mixed)"
+                    : " Disable texture baking";
+                bool newDisableBaking = GUI.Toggle(new Rect(x, y, w, LineH), disableBaking, bakeLabel);
+                if (newDisableBaking != disableBaking)
+                {
+                    foreach (var id in bakingPropIds)
+                    {
+                        PropMetadataPanel.SetDisableBaking(id, newDisableBaking);
+                        LevelEditorManager.Instance?.RefreshBakingForProp(id);
+                    }
+                }
+                y += LineH;
+            }
 
             if (showHatHair)
             {

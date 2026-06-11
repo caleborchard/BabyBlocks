@@ -39,6 +39,11 @@ namespace BabyBlocks
         // (_bakeStash) skips re-capturing them.
         public static void Bake(GameObject root, string propId = null)
         {
+            // Per-prop opt-out (PhysicsWindow toggle): leave the prop's plain/native
+            // materials in place and skip the GPU capture/atlas entirely.
+            if (!string.IsNullOrEmpty(propId) && PropMetadataPanel.GetDisableBaking(propId))
+                return;
+
             string materialKey = null;
             List<BakedPartData> diskCache = null;
             if (!string.IsNullOrEmpty(propId))
@@ -71,6 +76,15 @@ namespace BabyBlocks
                 {
                     int key = mr.GetInstanceID();
                     if (_bakeStash.ContainsKey(key))
+                        continue;
+
+                    // For groups (propId is null here, see above) each member can be a
+                    // different prop with its own disable-baking setting - find that
+                    // member's own LevelEditorObject rather than relying on the group
+                    // root's (nonexistent) propId.
+                    var memberLeo = mr.GetComponentInParent<LevelEditorObject>();
+                    string memberPropId = memberLeo != null ? memberLeo.addressableKey : propId;
+                    if (!string.IsNullOrEmpty(memberPropId) && PropMetadataPanel.GetDisableBaking(memberPropId))
                         continue;
 
                     var mf = mr.GetComponent<MeshFilter>();

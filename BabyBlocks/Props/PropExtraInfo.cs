@@ -24,6 +24,7 @@ namespace BabyBlocks
         public float bushRadius;
         public int soundGrassType = 1;
         public bool keepOriginalHierarchy;
+        public bool disableBaking;
     }
 
     [Serializable]

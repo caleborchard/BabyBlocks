@@ -493,17 +493,30 @@ namespace BabyBlocks
 
             if (chosen == null)
             {
-                if (Physics.Raycast(ray, out var hit, 2000f, ~GizmoRenderer.Mask, QueryTriggerInteraction.Collide))
+                // WARNING: do NOT collapse this back into a single Physics.Raycast - this has
+                // regressed multiple times. A plain Raycast (even with QueryTriggerInteraction.Collide)
+                // stops at the first hit, which can be a game-world trigger volume (BBConvoStarter,
+                // conversation zones, etc.) with no LevelEditorObject - making props behind it
+                // (often rocks) unselectable. Bush props need Collide because SetBushPassthrough makes
+                // all their colliders triggers. So gather every hit and take the nearest one that
+                // actually has a LevelEditorObject in its hierarchy, skipping game-world triggers.
+                LevelEditorObject foundLeo  = null;
+                float              bestDist = float.MaxValue;
+                foreach (var h in Physics.RaycastAll(ray, 2000f, ~GizmoRenderer.Mask, QueryTriggerInteraction.Collide))
                 {
-                    var leo = hit.collider.GetComponent<LevelEditorObject>()
-                           ?? hit.collider.GetComponentInParent<LevelEditorObject>();
-                    if (leo != null)
-                    {
-                        bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
-                        if (shift) ToggleSelection(leo);
-                        else Select(leo);
-                        return;
-                    }
+                    if (h.distance >= bestDist) continue;
+                    var leo = h.collider.GetComponent<LevelEditorObject>()
+                           ?? h.collider.GetComponentInParent<LevelEditorObject>();
+                    if (leo == null) continue;
+                    bestDist = h.distance;
+                    foundLeo = leo;
+                }
+                if (foundLeo != null)
+                {
+                    bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+                    if (shift) ToggleSelection(foundLeo);
+                    else Select(foundLeo);
+                    return;
                 }
                 if (!Input.GetKey(KeyCode.LeftShift) && !Input.GetKey(KeyCode.RightShift))
                     ClearSelection();

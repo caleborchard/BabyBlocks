@@ -2534,6 +2534,7 @@ static void SortMaterialList()
             if (string.IsNullOrEmpty(target.materialSourcePropId) && !string.IsNullOrEmpty(source.materialSourcePropId)) { target.materialSourcePropId = source.materialSourcePropId; changed = true; }
             if (string.IsNullOrEmpty(target.surfaceType) && !string.IsNullOrEmpty(source.surfaceType)) { target.surfaceType = source.surfaceType; changed = true; }
             if (!target.useRenderMeshCollider && source.useRenderMeshCollider) { target.useRenderMeshCollider = true; changed = true; }
+            if (!target.disableBaking && source.disableBaking) { target.disableBaking = true; changed = true; }
             if (target.forcedMaterialSlots <= 1 && source.forcedMaterialSlots > 1) { target.forcedMaterialSlots = source.forcedMaterialSlots; changed = true; }
 
             if ((target.disabledRenderers == null || target.disabledRenderers.Count == 0)
@@ -2645,6 +2646,37 @@ static void SortMaterialList()
             if (string.IsNullOrEmpty(id)) return string.Empty;
             if (!TryGetInfoById(id, out var info)) return string.Empty;
             return info.overrideMaterialId ?? string.Empty;
+        }
+
+        // A prop-level (not per-instance) setting: when true, MaterialBaker.Bake skips this
+        // prop entirely and it keeps its plain/native materials when given physics, instead
+        // of a baked mesh+atlas. Persisted alongside the other per-prop overrides (see
+        // GetOverrideMaterialId/GetMaterialCacheKey) - i.e. it applies to every placed
+        // instance of this prop, not saved per-instance in the level (.bbb) file.
+        public static bool GetDisableBaking(string id)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id)) return false;
+            if (!TryGetInfoById(id, out var info)) return false;
+            return info.disableBaking;
+        }
+
+        public static void SetDisableBaking(string id, bool value)
+        {
+            EnsureLoaded();
+            if (string.IsNullOrEmpty(id)) return;
+
+            string key = PropLibrary.ResolveCanonicalId(id) ?? id;
+            if (!_byId.TryGetValue(key, out var info))
+            {
+                if (!value) return;
+                info = new PropExtraInfo { id = key, index = _nextIndex++ };
+                _byId[key] = info;
+            }
+
+            if (info.disableBaking == value) return;
+            info.disableBaking = value;
+            Save();
         }
 
         // Stable string identifying the material configuration currently applied to prop
@@ -3020,6 +3052,7 @@ static void SortMaterialList()
                 info.bushRadius               = 0f;
                 info.soundGrassType           = 1;
                 info.keepOriginalHierarchy    = false;
+                info.disableBaking            = false;
                 info.index                    = 0;
             }
             else
@@ -3219,12 +3252,13 @@ static void SortMaterialList()
                 bool hasForcedSlots = item.forcedMaterialSlots > 1;
 
                 byte flags2 = 0;
-                if (hasNativeMat)   flags2 |= 0x01;
-                if (hasMatSource)   flags2 |= 0x02;
-                if (hasSurface)     flags2 |= 0x04;
-                if (hasDisabled)    flags2 |= 0x08;
-                if (hasPerSlot)     flags2 |= 0x10;
-                if (hasForcedSlots) flags2 |= 0x20;
+                if (hasNativeMat)       flags2 |= 0x01;
+                if (hasMatSource)       flags2 |= 0x02;
+                if (hasSurface)         flags2 |= 0x04;
+                if (hasDisabled)        flags2 |= 0x08;
+                if (hasPerSlot)         flags2 |= 0x10;
+                if (hasForcedSlots)     flags2 |= 0x20;
+                if (item.disableBaking) flags2 |= 0x40;
                 w.Write(flags2);
 
                 if (hasDisplayName)     w.Write(item.displayName);
@@ -3305,6 +3339,7 @@ static void SortMaterialList()
                     bool hasDisabled    = (flags2 & 0x08) != 0;
                     bool hasPerSlot     = (flags2 & 0x10) != 0;
                     bool hasForcedSlots = (flags2 & 0x20) != 0;
+                    item.disableBaking  = (flags2 & 0x40) != 0;
 
                     if (hasDisplayName)     item.displayName              = r.ReadString();
                     if (hasCategory)        item.category                 = r.ReadString();
@@ -3409,6 +3444,8 @@ static void SortMaterialList()
                     }
                     if (item.keepOriginalHierarchy)
                         sb.Append("      \"keepOriginalHierarchy\": true,\n");
+                    if (item.disableBaking)
+                        sb.Append("      \"disableBaking\": true,\n");
                     sb.Append("      \"index\": ").Append(item.index).Append("\n");
                 }
                 sb.Append("    }");
@@ -3508,7 +3545,8 @@ static void SortMaterialList()
                     isBush = ExtractBool(obj, "isBush"),
                     bushRadius = ExtractFloat(obj, "bushRadius", 0f),
                     soundGrassType = ExtractInt(obj, "soundGrassType", 1),
-                    keepOriginalHierarchy = ExtractBool(obj, "keepOriginalHierarchy")
+                    keepOriginalHierarchy = ExtractBool(obj, "keepOriginalHierarchy"),
+                    disableBaking = ExtractBool(obj, "disableBaking")
                 };
                 if (!string.IsNullOrEmpty(item.id))
                     data.items.Add(item);

@@ -1173,6 +1173,25 @@ namespace BabyBlocks
             }
         }
 
+        // Re-applies baking (or the lack of it) to every placed instance of `propId` that
+        // currently has physics, after the user toggles PropMetadataPanel's per-prop
+        // "disable baking" setting in the Physics window. Restoring first undoes any
+        // existing bake (no-op if it was never baked), then Bake() re-runs and either
+        // re-bakes (using the disk cache when available) or, if disabled, leaves the
+        // restored plain/native materials in place.
+        internal void RefreshBakingForProp(string propId)
+        {
+            if (string.IsNullOrEmpty(propId)) return;
+            foreach (var leo in _objects)
+            {
+                if (leo == null || leo.physicsMode == PhysicsMode.Static) continue;
+                if (!string.Equals(leo.addressableKey, propId, StringComparison.Ordinal)) continue;
+
+                MaterialBaker.RestoreOriginal(leo.gameObject);
+                MaterialBaker.Bake(leo.gameObject, propId);
+            }
+        }
+
         // restoreMaterial=false is used when switching directly between physics modes
         // (Rigidbody/Grabable/Hat <-> each other) - the baked mesh/material is left in
         // place (and its _bakeStash entry kept) so MaterialBaker.Bake's "already baked"
@@ -1223,6 +1242,8 @@ namespace BabyBlocks
                     var childLeo = child.GetComponent<LevelEditorObject>();
                     if (childLeo != null)
                     {
+                        if (childLeo.physicsMode != PhysicsMode.Static)
+                            MaterialBaker.RestoreOriginal(childLeo.gameObject);
                         SyncLoopBase(childLeo);
                         childLeo.physicsMode      = PhysicsMode.Static;
                         childLeo.physicsGroupId   = 0;
@@ -1238,6 +1259,8 @@ namespace BabyBlocks
                 foreach (var obj in _objects)
                 {
                     if (obj == null || obj.groupId != groupId) continue;
+                    if (obj.physicsMode != PhysicsMode.Static)
+                        MaterialBaker.RestoreOriginal(obj.gameObject);
                     RemoveGrabableComponents(obj.gameObject);
                     obj.physicsMode      = PhysicsMode.Static;
                     obj.physicsGroupId   = 0;

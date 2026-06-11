@@ -428,7 +428,8 @@ namespace BabyBlocks
                 int index = br.ReadInt32();
                 var parts = MaterialBaker.ReadPartList(br);
 
-                if (index >= 0 && index < leos.Length && leos[index] != null)
+                if (index >= 0 && index < leos.Length && leos[index] != null
+                    && !PropMetadataPanel.GetDisableBaking(leos[index].addressableKey))
                     MaterialBaker.ImportBakedData(leos[index].gameObject, parts);
             }
         }
