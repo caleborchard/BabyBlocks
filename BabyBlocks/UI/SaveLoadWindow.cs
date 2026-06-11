@@ -139,7 +139,7 @@ namespace BabyBlocks
     static class SaveLoadWindow
     {
         const float WinW   = 310f;
-        const float WinH   = 160f;
+        const float WinH   = 184f;
         const float HeaderH= 30f;
         const float Pad    = 7f;
 
@@ -231,6 +231,13 @@ namespace BabyBlocks
                 LevelEditorManager.ChunkLoopingEnabled, "Chunk looping");
             if (newLooping != LevelEditorManager.ChunkLoopingEnabled)
                 LevelEditorManager.ChunkLoopingEnabled = newLooping;
+
+            contentY += 24f;
+
+            bool newBaseMap = GUI.Toggle(new Rect(contentX, contentY, innerW, 20f),
+                LevelEditorManager.BaseMapEnabled, "Base map");
+            if (newBaseMap != LevelEditorManager.BaseMapEnabled)
+                LevelEditorManager.SetBaseMapEnabled(newBaseMap);
 
             contentY += 24f;
 

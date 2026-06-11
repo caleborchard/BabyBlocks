@@ -105,7 +105,34 @@ namespace BabyBlocks
             PendingMicroSplatRefreshTime = Time.realtimeSinceStartup;
         }
 
-        public override void OnUpdate() => FlyCamController.OnUpdate();
+        public override void OnUpdate()
+        {
+            FlyCamController.OnUpdate();
+
+            // Suppress any terrain chunks or prop containers that BRL streams in
+            // while the base map is hidden. Runs unconditionally so it works even
+            // before the fly cam editor has been opened.
+            if (!LevelEditorManager.BaseMapEnabled)
+            {
+                var brl = BestRegionLoader.me;
+                if (brl != null)
+                {
+                    if (!brl.off) brl.off = true;
+
+                    // Suppress BRL child renderers (proxies).
+                    var cache = LevelEditorManager._brlRendererCache;
+                    bool needsRefresh = false;
+                    foreach (var r in cache)
+                    {
+                        if (r == null) { needsRefresh = true; break; }
+                        if (r.enabled) r.enabled = false;
+                    }
+                    if (needsRefresh)
+                        LevelEditorManager._brlRendererCache =
+                            brl.GetComponentsInChildren<Renderer>(true);
+                }
+            }
+        }
 
         public override void OnGUI() => FlyCamController.OnGUI();
     }

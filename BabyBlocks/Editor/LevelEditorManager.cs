@@ -8,6 +8,7 @@ using Il2CppNWH.DWP2.WaterObjects;
 using MelonLoader;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.SceneManagement;
 
 namespace BabyBlocks
 {
@@ -20,6 +21,7 @@ namespace BabyBlocks
         const int ChunksPerAxis = (int)(WorldLoopSize / ChunkWorldSize);
 
         public static bool ChunkLoopingEnabled = true;
+        public static bool BaseMapEnabled = true;
         const float PhysicsActiveRadius    = 25f;
         const float PhysicsActiveRadiusSqr = PhysicsActiveRadius * PhysicsActiveRadius;
 
@@ -1432,6 +1434,332 @@ namespace BabyBlocks
                 if (root != null) Destroy(root);
             _groupRoots.Clear();
             _nextGroupId = 1;
+        }
+
+        static readonly List<GameObject> _hiddenAudioObjects = new();
+        // Third-party rendering objects (TVE, GPUI) disabled by type-name search.
+        static readonly List<GameObject> _hiddenRenderObjects = new();
+        // Renderers hidden on small physics props (rocks, debris). These often carry
+        // Rigidbody/WaterObject(DWP2) components whose OnDisable touches native
+        // jobs/NativeArrays — SetActive(false) on them can crash, so we only ever
+        // toggle Renderer.enabled and leave the GameObject active.
+        static readonly List<Renderer> _hiddenPropRenderers = new();
+        // Cached BRL child renderers (MegaProxy LODs, GPUI pool objects) so OnUpdate
+        // can suppress newly-activated ones cheaply without calling GetComponentsInChildren.
+        internal static Renderer[] _brlRendererCache = Array.Empty<Renderer>();
+        static readonly List<MonoBehaviour> _disabledTerrainComponents = new();
+        static readonly List<Collider> _disabledTerrainColliders = new();
+        // Non-terrain colliders found inside loaded chunks (trash, rocks, candles,
+        // etc. placed directly in chunk scenes rather than GPUI-instanced).
+        static readonly List<Collider> _disabledPropColliders = new();
+
+        static IEnumerable<GameObject> AllSceneRoots()
+        {
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+                foreach (var root in SceneManager.GetSceneAt(i).GetRootGameObjects())
+                    yield return root;
+        }
+
+        static bool HasCameraComponent(GameObject go)
+        {
+            foreach (var comp in go.GetComponentsInChildren<Component>(true))
+            {
+                if (comp == null) continue;
+                try
+                {
+                    var name = comp.GetIl2CppType().Name;
+                    if (name.Contains("Camera") || name.Contains("Cinemachine")
+                        || name.Contains("FlyCam") || name.Contains("PlayerMovement")) return true;
+                }
+                catch { }
+            }
+            return false;
+        }
+
+        // Hide a GameObject visually without touching SetActive/OnDisable — safe for
+        // props with Rigidbody/WaterObject components. Tracks hidden renderers so
+        // they can be restored exactly. Also disables non-terrain colliders on the
+        // same hierarchy (Collider.enabled = false, unlike SetActive, doesn't fire
+        // OnDisable so it's safe for WaterObject/Rigidbody props) so the player
+        // can't collide with now-invisible props.
+        static void HidePropRenderers(GameObject go)
+        {
+            foreach (var r in go.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r != null && r.enabled)
+                {
+                    r.enabled = false;
+                    _hiddenPropRenderers.Add(r);
+                }
+            }
+
+            foreach (var col in go.GetComponentsInChildren<Collider>(true))
+            {
+                if (col == null || !col.enabled) continue;
+                try
+                {
+                    if (col.GetIl2CppType().Name == "TerrainCollider") continue;
+                }
+                catch { }
+                col.enabled = false;
+                _disabledPropColliders.Add(col);
+            }
+        }
+
+        // Disable GameObjects whose Il2Cpp type name matches any fragment.
+        // Uses SetActive on the whole GO so OnDisable fires and Camera callbacks unregister.
+        static void SetRenderObjectsActive(bool enabled, List<GameObject> tracked,
+                                           params string[] typeFragments)
+        {
+            if (!enabled)
+            {
+                tracked.Clear();
+                foreach (var root in AllSceneRoots())
+                {
+                    foreach (var mb in root.GetComponentsInChildren<MonoBehaviour>(true))
+                    {
+                        if (mb == null) continue;
+                        try
+                        {
+                            var typeName = mb.GetIl2CppType().Name;
+                            foreach (var frag in typeFragments)
+                            {
+                                if (typeName.Contains(frag))
+                                {
+                                    var go = mb.gameObject;
+                                    if (go.activeSelf && !tracked.Contains(go))
+                                    {
+                                        BBLog.Msg($"[BaseMap] SetActive(false) on '{go.name}' ({typeName})");
+                                        go.SetActive(false);
+                                        tracked.Add(go);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+            else
+            {
+                foreach (var go in tracked)
+                    if (go != null) go.SetActive(true);
+                tracked.Clear();
+            }
+        }
+
+        // Toggles the base map (terrain, props, vegetation, water/audio) for an empty
+        // canvas to build on. The fly cam and player are left untouched throughout.
+        //
+        // IMPORTANT: brl.off must be flipped to true LAST (when hiding) and to false
+        // FIRST (when restoring). Calling GetComponentsInChildren on BRL or its
+        // children (or on scene roots that include BRL) while brl.off == true causes
+        // a native Il2Cpp crash with no managed exception/log.
+        public static void SetBaseMapEnabled(bool enabled)
+        {
+            BBLog.Msg($"[BaseMap] SetBaseMapEnabled({enabled}) — start");
+            BaseMapEnabled = enabled;
+
+            var brl = BestRegionLoader.me;
+            BBLog.Msg($"[BaseMap] brl={(brl != null ? "found" : "null")}");
+
+            // Clear here (before any HidePropRenderers calls below) so hiding
+            // performed during the chunk-scan isn't wiped by the prop-container
+            // section's scan further down.
+            if (!enabled) _hiddenPropRenderers.Clear();
+
+            if (enabled)
+            {
+                // Restore the BRL world-position reference before touching anything else.
+                if (brl != null) brl.off = false;
+                BBLog.Msg("[BaseMap] brl.off=false done");
+
+                foreach (var mb in _disabledTerrainComponents)
+                    if (mb != null) mb.enabled = true;
+                _disabledTerrainComponents.Clear();
+
+                foreach (var col in _disabledTerrainColliders)
+                    if (col != null) col.enabled = true;
+                _disabledTerrainColliders.Clear();
+
+                foreach (var col in _disabledPropColliders)
+                    if (col != null) col.enabled = true;
+                _disabledPropColliders.Clear();
+
+                foreach (var r in _brlRendererCache)
+                    if (r != null) r.enabled = true;
+                _brlRendererCache = Array.Empty<Renderer>();
+                BBLog.Msg("[BaseMap] terrain/renderer restore done");
+            }
+            else if (brl != null)
+            {
+                // Gather everything we need via GetComponentsInChildren BEFORE
+                // setting brl.off, to avoid the native crash described above.
+                _brlRendererCache = brl.GetComponentsInChildren<Renderer>(true);
+                BBLog.Msg($"[BaseMap] brl renderer cache gathered: {_brlRendererCache.Length}");
+
+                _disabledTerrainComponents.Clear();
+                _disabledTerrainColliders.Clear();
+                _disabledPropColliders.Clear();
+                if (brl.chunkMap != null)
+                {
+                    BBLog.Msg($"[BaseMap] chunkMap count: {brl.chunkMap.Length}");
+                    foreach (var cell in brl.chunkMap)
+                    {
+                        if (cell?.loadedChunk == null) continue;
+                        foreach (var mb in cell.loadedChunk.GetComponentsInChildren<MonoBehaviour>(true))
+                        {
+                            if (mb == null || !mb.enabled) continue;
+                            try
+                            {
+                                var n = mb.GetIl2CppType().Name;
+                                if (n == "Terrain" || n.Contains("MicroSplat") || n.Contains("Terrain"))
+                                    _disabledTerrainComponents.Add(mb);
+                            }
+                            catch { }
+                        }
+
+                        foreach (var col in cell.loadedChunk.GetComponentsInChildren<Collider>(true))
+                        {
+                            if (col == null || !col.enabled) continue;
+                            try
+                            {
+                                if (col.GetIl2CppType().Name == "TerrainCollider")
+                                    _disabledTerrainColliders.Add(col);
+                            }
+                            catch { }
+                        }
+
+                        // Decoration props (trash, rocks, candles, etc.) placed directly
+                        // in the chunk scene rather than GPUI-instanced. Hide via
+                        // Renderer.enabled only — same reasoning as HidePropRenderers.
+                        HidePropRenderers(cell.loadedChunk);
+                    }
+                }
+                BBLog.Msg($"[BaseMap] terrain components gathered: {_disabledTerrainComponents.Count}, colliders: {_disabledTerrainColliders.Count}, prop colliders: {_disabledPropColliders.Count}");
+            }
+
+            // Non-GPUI prop instance containers (unnamed root GameObjects) and any
+            // DynamicPropSpitter-spawned props (small rocks/debris with Rigidbody +
+            // WaterObject). These are hidden via Renderer.enabled only — never
+            // SetActive — because SetActive(false) on a WaterObject (DWP2) can crash
+            // natively mid-simulation. Skip any root that carries a camera so the fly
+            // cam stays alive. Done before brl.off is flipped so this scan is crash-safe.
+            if (!enabled)
+            {
+                int rootCount = 0;
+                foreach (var root in AllSceneRoots())
+                {
+                    rootCount++;
+                    BBLog.Msg($"[BaseMap] scanning root #{rootCount} '{root.name}'");
+                    if (HasCameraComponent(root)) continue;
+
+                    if (root.name == "New Game Object" || root.name == "")
+                    {
+                        int before = _hiddenPropRenderers.Count;
+                        HidePropRenderers(root);
+                        BBLog.Msg($"[BaseMap]   hid {_hiddenPropRenderers.Count - before} renderers on '{root.name}' (prop container)");
+                        continue;
+                    }
+
+                    foreach (var mb in root.GetComponentsInChildren<MonoBehaviour>(true))
+                    {
+                        if (mb == null) continue;
+                        try
+                        {
+                            if (mb.GetIl2CppType().Name.Contains("DynamicPropSpitter"))
+                            {
+                                int before = _hiddenPropRenderers.Count;
+                                HidePropRenderers(mb.gameObject);
+                                BBLog.Msg($"[BaseMap]   hid {_hiddenPropRenderers.Count - before} renderers on '{mb.gameObject.name}' (DynamicPropSpitter)");
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                BBLog.Msg($"[BaseMap] hid {_hiddenPropRenderers.Count} prop renderers across {rootCount} scene roots");
+            }
+            else
+            {
+                foreach (var r in _hiddenPropRenderers)
+                    if (r != null) r.enabled = true;
+                _hiddenPropRenderers.Clear();
+                BBLog.Msg("[BaseMap] restored prop renderers");
+            }
+
+            // TVE (The Vegetation Engine) and GPUI managers/pool objects.
+            SetRenderObjectsActive(enabled, _hiddenRenderObjects,
+                                   "TVE", "GPUInstancer");
+            BBLog.Msg("[BaseMap] SetRenderObjectsActive done");
+
+            // GlobalObjectParent: water, fog, NPCs, etc. Hidden via renderer toggling
+            // only (never SetActive) — water bodies carry DWP2 WaterObject components
+            // whose OnDisable crashes natively mid-simulation, same as small props above.
+            var gop = GameObject.Find("GlobalObjectParent");
+            if (gop != null)
+            {
+                if (!enabled)
+                {
+                    for (int i = 0; i < gop.transform.childCount; i++)
+                    {
+                        var child = gop.transform.GetChild(i).gameObject;
+                        if (HasCameraComponent(child)) continue;
+                        int before = _hiddenPropRenderers.Count;
+                        HidePropRenderers(child);
+                        BBLog.Msg($"[BaseMap] GOP child '{child.name}' hid {_hiddenPropRenderers.Count - before} renderers");
+                    }
+                }
+                // Restoration of these renderers is handled by the prop-renderer
+                // restore block above (shared _hiddenPropRenderers list).
+            }
+            BBLog.Msg("[BaseMap] GlobalObjectParent done");
+
+            // Audio
+            if (!enabled)
+            {
+                _hiddenAudioObjects.Clear();
+                foreach (string audioName in new[] { "Arranger", "Gimbal" })
+                {
+                    var go = GameObject.Find(audioName);
+                    if (go != null && !HasCameraComponent(go))
+                    {
+                        BBLog.Msg($"[BaseMap] SetActive(false) on audio '{audioName}'");
+                        go.SetActive(false);
+                        _hiddenAudioObjects.Add(go);
+                    }
+                }
+            }
+            else
+            {
+                foreach (var go in _hiddenAudioObjects)
+                    if (go != null) go.SetActive(true);
+                _hiddenAudioObjects.Clear();
+            }
+            BBLog.Msg("[BaseMap] audio done");
+
+            if (!enabled)
+            {
+                // Now actually disable the gathered terrain components/colliders/renderers,
+                // and finally tell BRL to stop streaming. This must be last.
+                foreach (var mb in _disabledTerrainComponents)
+                    if (mb != null) mb.enabled = false;
+                foreach (var col in _disabledTerrainColliders)
+                    if (col != null) col.enabled = false;
+                foreach (var col in _disabledPropColliders)
+                    if (col != null) col.enabled = false;
+                foreach (var r in _brlRendererCache)
+                    if (r != null) r.enabled = false;
+                BBLog.Msg("[BaseMap] terrain/renderer disable done");
+
+                // brl.off stops UpdateDirtyGpuis → GPUI instance buffers go stale → rocks fade.
+                // Chunks must stay ACTIVE (not SetActive false) so OnPreCull keeps its
+                // world-position terrain reference and the camera doesn't break.
+                if (brl != null) brl.off = true;
+                BBLog.Msg("[BaseMap] brl.off=true done");
+            }
+
+            BBLog.Msg($"[BaseMap] SetBaseMapEnabled({enabled}) — end");
         }
     }
 }
