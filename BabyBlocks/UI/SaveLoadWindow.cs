@@ -139,14 +139,16 @@ namespace BabyBlocks
     static class SaveLoadWindow
     {
         const float WinW   = 310f;
-        const float WinH   = 184f;
+        const float BaseWinH = 208f;
         const float HeaderH= 30f;
         const float Pad    = 7f;
+        const float DropdownItemH = 18f;
 
         static Rect   _windowRect;
         static bool   _initialized;
         static bool   _dragging;
         static Vector2 _dragOffset;
+        static bool   _weatherDropdownOpen;
 
         static string _filePath = "";
         static string _status   = "";
@@ -167,7 +169,7 @@ namespace BabyBlocks
                     Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
                     "BabyBlocks", "level.bbb");
 
-            _windowRect = new Rect(Screen.width - WinW - 10f, Screen.height - WinH - 40f, WinW, WinH);
+            _windowRect = new Rect(Screen.width - WinW - 10f, Screen.height - BaseWinH - 40f, WinW, BaseWinH);
         }
 
         public static bool ContainsPoint(Vector2 guiPoint) =>
@@ -177,9 +179,15 @@ namespace BabyBlocks
         {
             EnsureInit();
 
+            int playlistCount = LevelEditorManager.DayWeatherPlaylistCount;
+            if (LevelEditorManager.BaseMapEnabled) _weatherDropdownOpen = false;
+            float dropdownExtra = (_weatherDropdownOpen && playlistCount > 0) ? playlistCount * DropdownItemH : 0f;
+            float winH = BaseWinH + dropdownExtra;
+
             // Clamp to screen
             _windowRect.x = Mathf.Clamp(_windowRect.x, 0f, Screen.width  - WinW);
-            _windowRect.y = Mathf.Clamp(_windowRect.y, 0f, Screen.height - WinH);
+            _windowRect.y = Mathf.Clamp(_windowRect.y, 0f, Screen.height - winH);
+            _windowRect.height = winH;
 
             GUI.color = new Color(0f, 0f, 0f, 0.72f);
             GUI.Box(_windowRect, "");
@@ -240,6 +248,34 @@ namespace BabyBlocks
                 LevelEditorManager.SetBaseMapEnabled(newBaseMap);
 
             contentY += 24f;
+
+            // Day Weather Playlist dropdown — only usable while the base map is
+            // hidden. SetBaseMapEnabled captures/restores Menu.curChapter around it.
+            bool weatherEnabled = !LevelEditorManager.BaseMapEnabled && playlistCount > 0;
+            GUI.enabled = weatherEnabled;
+            string playlistLabel = playlistCount > 0
+                ? $"Weather playlist: {LevelEditorManager.DayWeatherPlaylist}"
+                : "Weather playlist: n/a";
+            if (GUI.Button(new Rect(contentX, contentY, innerW, 20f),
+                playlistLabel + (_weatherDropdownOpen ? " ▲" : " ▼")))
+                _weatherDropdownOpen = !_weatherDropdownOpen;
+            GUI.enabled = true;
+
+            contentY += 24f;
+
+            if (weatherEnabled && _weatherDropdownOpen)
+            {
+                for (int i = 0; i < playlistCount; i++)
+                {
+                    string lbl = (i == LevelEditorManager.DayWeatherPlaylist ? "> " : "") + $"Playlist {i}";
+                    if (GUI.Button(new Rect(contentX, contentY, innerW, DropdownItemH), lbl))
+                    {
+                        LevelEditorManager.SetDayWeatherPlaylist(i);
+                        _weatherDropdownOpen = false;
+                    }
+                    contentY += DropdownItemH;
+                }
+            }
 
             // File path text field + browse button
             float browseW = 26f;

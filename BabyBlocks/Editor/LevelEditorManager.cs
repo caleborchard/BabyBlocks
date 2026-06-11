@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using Il2Cpp;
@@ -22,6 +23,14 @@ namespace BabyBlocks
 
         public static bool ChunkLoopingEnabled = true;
         public static bool BaseMapEnabled = true;
+
+        // Selected WeatherMan "Day Weather Playlist" (Menu.curChapter index) applied
+        // while the base map is hidden. Edited via the Save/Load window dropdown,
+        // which is only enabled while BaseMapEnabled == false.
+        public static int DayWeatherPlaylist;
+        // Menu.curChapter value to restore once the base map is shown again.
+        public static int RestoreDayWeatherPlaylist;
+        static bool _weatherPlaylistOverridden;
         const float PhysicsActiveRadius    = 25f;
         const float PhysicsActiveRadiusSqr = PhysicsActiveRadius * PhysicsActiveRadius;
 
@@ -1573,10 +1582,11 @@ namespace BabyBlocks
         // FIRST (when restoring). Calling GetComponentsInChildren on BRL or its
         // children (or on scene roots that include BRL) while brl.off == true causes
         // a native Il2Cpp crash with no managed exception/log.
-        public static void SetBaseMapEnabled(bool enabled)
+        public static void SetBaseMapEnabled(bool enabled, bool captureRestoreChapter = true)
         {
             BBLog.Msg($"[BaseMap] SetBaseMapEnabled({enabled}) — start");
             BaseMapEnabled = enabled;
+            ApplyDayWeatherPlaylistOverride(enabled, captureRestoreChapter);
 
             var brl = BestRegionLoader.me;
             BBLog.Msg($"[BaseMap] brl={(brl != null ? "found" : "null")}");
@@ -1777,6 +1787,74 @@ namespace BabyBlocks
             }
 
             BBLog.Msg($"[BaseMap] SetBaseMapEnabled({enabled}) — end");
+        }
+
+        // Applies/restores the Day Weather Playlist override that goes with the base
+        // map toggle. Disabling the base map captures Menu.curChapter (so it can be
+        // restored later) and switches to DayWeatherPlaylist; re-enabling restores
+        // the captured chapter. captureRestoreChapter=false is used when applying a
+        // loaded level that already specifies the chapter to restore to.
+        static void ApplyDayWeatherPlaylistOverride(bool baseMapEnabled, bool captureRestoreChapter)
+        {
+            if (Menu.me == null || Menu.me.campfireDatas == null || Menu.me.campfireDatas.Length == 0) return;
+
+            if (!baseMapEnabled)
+            {
+                if (captureRestoreChapter && !_weatherPlaylistOverridden)
+                    RestoreDayWeatherPlaylist = Menu.me.curChapter;
+                _weatherPlaylistOverridden = true;
+                SetCurChapter(DayWeatherPlaylist);
+            }
+            else if (_weatherPlaylistOverridden)
+            {
+                _weatherPlaylistOverridden = false;
+                SetCurChapter(RestoreDayWeatherPlaylist);
+            }
+        }
+
+        static void SetCurChapter(int index)
+        {
+            index = Mathf.Clamp(index, 0, Menu.me.campfireDatas.Length - 1);
+            Menu.me.curChapter = index;
+            if (SaveGod.theSave != null) SaveGod.theSave.lastCampfire = index;
+        }
+
+        // Number of WeatherMan "Day Weather Playlist" options (Menu.campfireDatas
+        // entries). 0 if Menu isn't ready yet.
+        public static int DayWeatherPlaylistCount =>
+            Menu.me != null && Menu.me.campfireDatas != null ? Menu.me.campfireDatas.Length : 0;
+
+        // Sets the Day Weather Playlist dropdown selection. Applies it immediately
+        // if the base map is currently hidden (the override is active).
+        public static void SetDayWeatherPlaylist(int index)
+        {
+            DayWeatherPlaylist = index;
+            if (!BaseMapEnabled && Menu.me != null && Menu.me.campfireDatas != null && Menu.me.campfireDatas.Length > 0)
+                SetCurChapter(index);
+        }
+
+        // Applies a loaded level's saved base-map/weather state. restoreChapter comes
+        // from the save file rather than being captured from the live Menu.curChapter.
+        public static void ApplyLoadedBaseMapState(bool baseMapOff, int dayWeatherPlaylist, int restoreChapter)
+        {
+            DayWeatherPlaylist = dayWeatherPlaylist;
+            RestoreDayWeatherPlaylist = restoreChapter;
+            _weatherPlaylistOverridden = false;
+            SetBaseMapEnabled(!baseMapOff, captureRestoreChapter: false);
+        }
+
+        // Defers ApplyLoadedBaseMapState until Menu.me.Teleport's coroutine (started by
+        // TeleportToSpawnPoint) finishes. Menu.TeleportCo waits across many frames for
+        // BestRegionLoader.fullyLoaded while the player is mid-teleport; setting
+        // brl.off = true (from SetBaseMapEnabled(false)) during that window stalls BRL
+        // forever, leaving Menu.me.teleporting stuck true — which breaks the spawn-point
+        // teleport, leaves chunks around the destination unloaded ("missing" props), and
+        // blocks input that's gated on !Menu.me.teleporting (e.g. tool-mode/edit-mode keys).
+        [HideFromIl2Cpp]
+        internal static IEnumerator ApplyLoadedBaseMapStateDelayed(bool baseMapOff, int dayWeatherPlaylist, int restoreChapter)
+        {
+            while (Menu.me != null && Menu.me.teleporting) yield return null;
+            ApplyLoadedBaseMapState(baseMapOff, dayWeatherPlaylist, restoreChapter);
         }
     }
 }

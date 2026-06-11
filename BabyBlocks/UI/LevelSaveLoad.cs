@@ -56,10 +56,15 @@ namespace BabyBlocks
     // Version 3 (legacy): same without PhysicsType/GroupId/HatHairAmt.
     // Version 2 (legacy): MetaIndex + full quaternion + scale.
     // Version 1 (legacy): PropId string + MetaIndex int32 + same transform.
+    //
+    // Version 7 adds, immediately after the format-version byte and before Count:
+    //   BaseMapOff           : bool    (true if the base map was hidden when saved)
+    //   DayWeatherPlaylist   : int32   (Menu.curChapter override applied while base map is off)
+    //   RestoreDayWeatherPlaylist : int32 (Menu.curChapter to restore when base map is shown)
     static class LevelSaveLoad
     {
         static readonly byte[] Magic = { 0x42, 0x42, 0x42 };
-        const byte FormatVersion = 6;
+        const byte FormatVersion = 7;
 
         // Reserved MetaIndex value identifying the Spawn Point — it isn't registered in
         // PropMetadataPanel (no per-instance metadata needed), so a sentinel outside the
@@ -101,6 +106,9 @@ namespace BabyBlocks
 
                 w.Write(Magic);
                 w.Write(FormatVersion);
+                w.Write(!LevelEditorManager.BaseMapEnabled);
+                w.Write(LevelEditorManager.DayWeatherPlaylist);
+                w.Write(LevelEditorManager.RestoreDayWeatherPlaylist);
 
                 var records = BuildSortedRecords(mgr);
                 w.Write(records.Count);
@@ -140,8 +148,18 @@ namespace BabyBlocks
                     return (false, 0, "Not a .bbb file.");
 
                 byte version = r.ReadByte();
-                if (version > 6)
+                if (version > 7)
                     return (false, 0, $"Unsupported format version {version}.");
+
+                bool baseMapOff = false;
+                int dayWeatherPlaylist = 0;
+                int restoreDayWeatherPlaylist = 0;
+                if (version >= 7)
+                {
+                    baseMapOff = r.ReadBoolean();
+                    dayWeatherPlaylist = r.ReadInt32();
+                    restoreDayWeatherPlaylist = r.ReadInt32();
+                }
 
                 int count = r.ReadInt32();
                 int spawned = 0;
@@ -277,7 +295,18 @@ namespace BabyBlocks
                 mgr.ApplyPhysicsGroups();
                 mgr.SyncLoadedHatHairValues();
 
+                // Teleport BEFORE applying the saved base-map state: SetBaseMapEnabled's
+                // chunk-hide scan and brl.off toggling need to happen at the player's
+                // final position, and Teleport itself needs BRL active to stream in
+                // chunks at the destination — doing this after brl.off=true left the
+                // player ungrounded with stale chunks and stuck Menu.me.teleporting.
                 TeleportToSpawnPoint(leos);
+
+                // Menu.Teleport's coroutine runs across many frames, so defer applying
+                // the base-map state until it finishes (see ApplyLoadedBaseMapStateDelayed).
+                if (version >= 7)
+                    MelonCoroutines.Start(
+                        LevelEditorManager.ApplyLoadedBaseMapStateDelayed(baseMapOff, dayWeatherPlaylist, restoreDayWeatherPlaylist));
 
                 MelonLogger.Msg($"[SaveLoad] Loaded {spawned}/{count} object(s) from {path}");
                 return (true, spawned, null);
