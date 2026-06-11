@@ -470,6 +470,19 @@ namespace BabyBlocks
             PropMetadataPanel.ApplyMaterialOverridesToRoot(prop.id, root);
             PropMetadataPanel.ApplyDisabledRenderersToRoot(prop.id, root);
 
+            // The hole prop's "mesh" is just a placeholder cylinder (see
+            // LoadNegativeCollisionProp) — hide it and show the same wireframe
+            // box that GhostCubeConfig.Configure builds once the prop is placed.
+            if (PropLibrary.IsNegativeCollisionProp(prop.id))
+            {
+                foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>(true))
+                {
+                    renderer.forceRenderingOff = true;
+                    renderer.enabled = false;
+                }
+                GhostCubeConfig.BuildFrame(root);
+            }
+
             return root;
         }
 

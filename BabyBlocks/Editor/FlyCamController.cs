@@ -47,6 +47,11 @@ namespace BabyBlocks
                 PropMetadataPanel.RefreshMicroSplatLayerMaterials();
                 LevelEditorManager.Instance?.PruneDestroyedObjects();
                 if (GizmoRenderer.IsReady) GizmoRenderer.RefreshAssets();
+
+                // All props from the loaded save are back in the scene now —
+                // bake ghost-cube collider carves so holes apply to whatever
+                // ended up inside them.
+                GhostCollisionCutter.BakeAllColliderCarves();
             }
 
             if (Input.GetKeyDown(KeyCode.R) && PlayerMovement.me != null

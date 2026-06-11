@@ -15,6 +15,10 @@ namespace BabyBlocks
         public const  int   FreeRotateAxis        = 7;
         public const  float FreeRotSphereDrawScale = 0.85f;  // fraction of gizmo scale; must stay inside rings
 
+        const float RingOuterRadius = 0.65f;
+        const float RingInnerRadius = 0.50f;
+        const float RingPickPadding = 0.05f; // extra click tolerance on either side of the ring band
+
         public static readonly Quaternion[] PivotRots =
         {
             Quaternion.Euler(  0f, 0f, -90f),  // X
@@ -93,6 +97,7 @@ namespace BabyBlocks
         static Transform[]  _axisPivots   = new Transform[3];   // GizmoPivot_i transforms (own arrow collider as child)
         static Transform[]  _planeHandles = new Transform[3];   // plane-handle collider transforms
         static bool[]       _axisFlipped  = new bool[3];        // current per-axis flip state
+        static GizmoHandle[] _ringHandleRefs = new GizmoHandle[3]; // GizmoRingCol_i handle components (ring picking is math-based, see RaycastRing)
 
         public static bool IsReady => _root != null && _overlayCam != null;
         public static Vector3 PivotPosition => _pivotPos;
@@ -208,14 +213,6 @@ namespace BabyBlocks
         {
             InitMeshes();
             InitMaterials();
-
-            // Ring colliders cache a MeshCollider.sharedMesh pointing at the old _ringMesh —
-            // repoint them at the freshly-built one.
-            if (_ringHandles != null)
-            {
-                var cols = _ringHandles.GetComponentsInChildren<MeshCollider>(true);
-                foreach (var c in cols) c.sharedMesh = _ringMesh;
-            }
         }
 
         public static void SetActive(bool on)
@@ -236,21 +233,70 @@ namespace BabyBlocks
 
         public static GizmoHandle RaycastHandle(Ray ray)
         {
-            var hits = Physics.RaycastAll(ray, 2000f, Mask);
-            if (hits == null || hits.Length == 0) return null;
-
             GizmoHandle closest   = null;
             GizmoHandle freeRot   = null;   // axis 7: only wins if no ring is hit
             float       closestDist = float.MaxValue;
-            foreach (var hit in hits)
+
+            // Rotation rings are picked via plane/annulus math rather than their
+            // MeshColliders. PhysX needs to re-cook a MeshCollider whenever its transform
+            // scale changes, and _root is rescaled every frame to keep the gizmo a constant
+            // screen size — that re-cook intermittently lags a frame or more behind, making
+            // RaycastAll randomly miss the rings (the free-rotate sphere and the move/scale
+            // arrows use Sphere/BoxColliders, which don't need re-cooking, so they stay
+            // reliable). Doing the math directly sidesteps the lag entirely.
+            if (_ringHandles != null && _ringHandles.activeSelf)
             {
-                var h = hit.collider.GetComponent<GizmoHandle>();
-                if (h == null) continue;
-                if (h.axisIndex == 3)           return h;               // center free: always wins
-                if (h.axisIndex == FreeRotateAxis) { freeRot = h; continue; } // defer; rings take priority
-                if (hit.distance < closestDist) { closestDist = hit.distance; closest = h; }
+                var origin = _root.transform.position;
+                var rot    = _root.transform.rotation;
+                float s    = _root.transform.localScale.x;
+
+                for (int i = 0; i < 3; i++)
+                {
+                    if (RaycastRing(ray, origin, rot * RingPivotRots[i], s, out float dist) && dist < closestDist)
+                    {
+                        closestDist = dist;
+                        closest = _ringHandleRefs[i];
+                    }
+                }
+            }
+
+            var hits = Physics.RaycastAll(ray, 2000f, Mask);
+            if (hits != null)
+            {
+                foreach (var hit in hits)
+                {
+                    var h = hit.collider.GetComponent<GizmoHandle>();
+                    if (h == null) continue;
+                    if (h.axisIndex == 3)           return h;               // center free: always wins
+                    if (h.axisIndex == FreeRotateAxis) { freeRot = h; continue; } // defer; rings take priority
+                    if (hit.distance < closestDist) { closestDist = hit.distance; closest = h; }
+                }
             }
             return closest ?? freeRot;
+        }
+
+        // Ray-vs-annulus test for a rotation ring lying in the plane through `center` with
+        // normal = ringRot * Vector3.up, matching the geometry built by BuildRingMesh and
+        // drawn in Draw(). `scale` is the gizmo's uniform world scale (_root.localScale.x).
+        static bool RaycastRing(Ray ray, Vector3 center, Quaternion ringRot, float scale, out float dist)
+        {
+            dist = 0f;
+            var normal = ringRot * Vector3.up;
+            float denom = Vector3.Dot(ray.direction, normal);
+            if (Mathf.Abs(denom) < 1e-5f) return false; // ray parallel to ring plane
+
+            float t = Vector3.Dot(center - ray.origin, normal) / denom;
+            if (t < 0f) return false;
+
+            var hitPoint   = ray.origin + ray.direction * t;
+            float hitRadius = Vector3.Distance(hitPoint, center);
+
+            float outer = (RingOuterRadius + RingPickPadding) * scale;
+            float inner = (RingInnerRadius - RingPickPadding) * scale;
+            if (hitRadius < inner || hitRadius > outer) return false;
+
+            dist = t;
+            return true;
         }
 
         public static void Draw(int hoveredAxis, LevelEditor.ToolMode tool)
@@ -621,7 +667,7 @@ namespace BabyBlocks
             if (_sphereMesh  == null) _sphereMesh  = BorrowMesh(PrimitiveType.Sphere);
             if (_cubeTipMesh == null) _cubeTipMesh = BorrowMesh(PrimitiveType.Cube);
             if (_coneTipMesh == null) _coneTipMesh = BuildConeMesh(16);
-            if (_ringMesh    == null) _ringMesh    = BuildRingMesh(48, outerRadius: 0.65f, innerRadius: 0.50f);
+            if (_ringMesh    == null) _ringMesh    = BuildRingMesh(48, outerRadius: RingOuterRadius, innerRadius: RingInnerRadius);
         }
 
         static void InitMaterials()
@@ -792,12 +838,15 @@ namespace BabyBlocks
                 pivot.transform.SetParent(_ringHandles.transform, false);
                 pivot.transform.localRotation = RingPivotRots[i];
 
+                // No collider here — ring picking is done via math in RaycastRing (see
+                // RaycastHandle for why MeshColliders are unreliable on a rescaling transform).
+                // This GameObject just hosts the GizmoHandle returned for axis i.
                 var col = new GameObject($"GizmoRingCol_{i}");
                 col.transform.SetParent(pivot.transform, false);
                 col.layer = Layer;
-                var mc = col.AddComponent<MeshCollider>();
-                mc.sharedMesh = _ringMesh;
-                col.AddComponent<GizmoHandle>().axisIndex = i;
+                var handle = col.AddComponent<GizmoHandle>();
+                handle.axisIndex = i;
+                _ringHandleRefs[i] = handle;
             }
 
             // Free-rotate sphere: collider slightly smaller than inner ring radius (0.50)

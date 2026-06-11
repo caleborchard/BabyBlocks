@@ -129,17 +129,12 @@ namespace BabyBlocks
         static readonly Dictionary<MeshFilter,   CarvedMeshState> _carvedFilters   = new();
         static readonly Dictionary<UnityEngine.Terrain,      CarvedTerrainState> _carvedTerrains = new();
 
+        // All enabled cutters, so the editor-mode-transition / post-load hooks can
+        // drive a one-shot collider carve pass across every ghost cube at once.
+        static readonly List<GhostCollisionCutter> _instances = new();
+
         readonly HashSet<Transform> _activeRoots = new();
         BoxCollider _volume;
-
-        // Physics.OverlapBox intermittently fails to report a collider that's
-        // sitting right at the box's edge — one Refresh sees it, the next doesn't,
-        // even though nothing moved. Treating that as "lost" immediately causes a
-        // restore+recarve every other frame (the flicker). Requiring a root to be
-        // absent for several consecutive checks before restoring it smooths over
-        // these one-frame detection misses.
-        const int MissingStreakThreshold = 5;
-        readonly Dictionary<Transform, int> _missingStreaks = new();
 
         // Extra margin added to the overlap-detection box (but NOT the carve box)
         // to stabilize Physics.OverlapBox results for colliders near the boundary.
@@ -157,17 +152,57 @@ namespace BabyBlocks
         Quaternion _lastRotation;
         string     _lastCarveKey;
 
+        Transform _frameRoot;
+
         void Awake()
         {
-            _volume = GetComponent<BoxCollider>();
+            _volume    = GetComponent<BoxCollider>();
             if (_volume != null) _volume.isTrigger = true;
+
+            _frameRoot = transform.Find("GhostFrame");
         }
 
-        void OnEnable()    => Refresh();
-        void FixedUpdate() => Refresh();
-        void OnDisable()   => ReleaseAll();
-        void OnDestroy()   => ReleaseAll();
+        void OnEnable()
+        {
+            _instances.Add(this);
+            Refresh();
+        }
 
+        void FixedUpdate() => Refresh();
+        void Update()      => UpdateFrameVisibility();
+
+        void OnDisable()
+        {
+            _instances.Remove(this);
+            ReleaseAll();
+        }
+
+        void OnDestroy()
+        {
+            _instances.Remove(this);
+            ReleaseAll();
+        }
+
+        // The yellow wireframe is only useful while editing - hide it during
+        // normal gameplay so it doesn't show up around hole props in-game.
+        void UpdateFrameVisibility()
+        {
+            if (_frameRoot == null) _frameRoot = transform.Find("GhostFrame");
+            if (_frameRoot == null) return;
+
+            bool editorActive = FlyCamController.FlyCamActive && FlyCamController.CursorMode;
+            if (_frameRoot.gameObject.activeSelf != editorActive)
+                _frameRoot.gameObject.SetActive(editorActive);
+        }
+
+        // Terrain carving stays dynamic (cheap geometric check, no physics involved —
+        // see RefreshTerrains). Carving other props' mesh colliders is NOT done here
+        // anymore: it used to run off Physics.OverlapBox every frame, but that only
+        // re-evaluates the cutter's own pose — if some other prop is moved into an
+        // already-stationary ghost cube, the carve key never changes and the new
+        // prop's collider is never carved. Mesh-collider carving is instead baked in
+        // one shot via BakeAllColliderCarves (see SetEditorModeActive and the
+        // post-load settle hook in FlyCamController).
         void Refresh()
         {
             if (_volume == null) _volume = GetComponent<BoxCollider>();
@@ -180,17 +215,30 @@ namespace BabyBlocks
             var rotation    = transform.rotation;
 
             string carveKey = GetDebouncedCarveKey(worldCenter, halfExtents, rotation);
+            RefreshTerrains(carveKey, worldCenter, rotation, halfExtents);
+        }
 
-            // Pad the detection volume slightly beyond the visual/carve box. Colliders
-            // sitting almost exactly on the box boundary cause Physics.OverlapBox to
-            // report them inconsistently frame-to-frame (in on one query, gone the
-            // next) even though nothing moved — the padding gives those edge cases
-            // breathing room so detection is stable. The actual carve geometry below
-            // still uses the precise, unpadded box (CutterHalfSize / halfExtents).
+        // One-shot mesh-collider carve pass: finds every prop currently overlapping
+        // this cutter and carves its MeshColliders, restoring any previously-carved
+        // props that no longer overlap. Call via BakeAllColliderCarves.
+        void BakeColliderCarve()
+        {
+            if (_volume == null) _volume = GetComponent<BoxCollider>();
+            if (_volume == null || !gameObject.activeInHierarchy) return;
+
+            var scale       = transform.lossyScale;
+            var worldCenter = transform.TransformPoint(_volume.center);
+            var halfExtents = Vector3.Scale(_volume.size * 0.5f,
+                new Vector3(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z)));
+            var rotation    = transform.rotation;
+            string carveKey = BuildCarveKey(worldCenter, halfExtents, rotation);
+
+            // Pad the detection volume slightly beyond the visual/carve box so props
+            // sitting almost exactly on the boundary are still picked up.
             var detectHalfExtents = halfExtents + Vector3.one * DetectionPadding;
 
             var nextRoots = new HashSet<Transform>();
-            var hits = Physics.OverlapBox(worldCenter, detectHalfExtents, transform.rotation, ~0, QueryTriggerInteraction.Ignore);
+            var hits = Physics.OverlapBox(worldCenter, detectHalfExtents, rotation, ~0, QueryTriggerInteraction.Ignore);
 
             for (int i = 0; i < hits.Length; i++)
             {
@@ -203,39 +251,39 @@ namespace BabyBlocks
                 nextRoots.Add(root);
             }
 
-            // Roots seen this frame are no longer "missing" — reset their streak.
-            foreach (var root in nextRoots)
-                _missingStreaks.Remove(root);
-
-            // Only restore an active root once it's failed to appear in the
-            // overlap results for several consecutive checks in a row — a single
-            // miss is treated as a detection blip, not an actual departure.
-            var toRestore = new List<Transform>();
             foreach (var root in _activeRoots)
-            {
-                if (nextRoots.Contains(root)) continue;
+                if (!nextRoots.Contains(root)) RestoreRoot(root);
 
-                int streak = _missingStreaks.TryGetValue(root, out var s) ? s + 1 : 1;
-                _missingStreaks[root] = streak;
-
-                if (streak >= MissingStreakThreshold)
-                    toRestore.Add(root);
-            }
-
-            foreach (var root in toRestore)
-            {
-                RestoreRoot(root);
-                _activeRoots.Remove(root);
-                _missingStreaks.Remove(root);
-            }
-
+            _activeRoots.Clear();
             foreach (var root in nextRoots)
             {
                 _activeRoots.Add(root);
                 UpdateRootCarve(root, carveKey);
             }
+        }
 
-            RefreshTerrains(carveKey, worldCenter, rotation, halfExtents);
+        // Restores every prop this cutter has carved, without recomputing overlap —
+        // used when entering editor mode so carved-away geometry doesn't get in the
+        // way of moving/selecting props.
+        void RestoreColliderCarve()
+        {
+            if (_activeRoots.Count == 0) return;
+            foreach (var root in _activeRoots) RestoreRoot(root);
+            _activeRoots.Clear();
+        }
+
+        // Runs BakeColliderCarve for every enabled ghost cube. Called when leaving
+        // editor mode and after a save load settles.
+        internal static void BakeAllColliderCarves()
+        {
+            foreach (var inst in _instances) inst?.BakeColliderCarve();
+        }
+
+        // Runs RestoreColliderCarve for every enabled ghost cube. Called when
+        // entering editor mode.
+        internal static void RestoreAllColliderCarves()
+        {
+            foreach (var inst in _instances) inst?.RestoreColliderCarve();
         }
 
         // Terrains can't be discovered through Physics.OverlapBox like other roots:
@@ -261,7 +309,7 @@ namespace BabyBlocks
                 if (!CutterOverlapsTerrainBounds(terrain, cutterCenter, cutterRotation, cutterHalfExtents)) continue;
 
                 overlapping.Add(terrain);
-                ApplyTerrainCarve(terrain, carveKey);
+                ApplyTerrainCarve(terrain, carveKey, cutterCenter, cutterRotation, cutterHalfExtents);
             }
 
             if (_carvedTerrains.Count == 0) return;
@@ -310,13 +358,8 @@ namespace BabyBlocks
         void ReleaseAll()
         {
             _hasLastCarvePose = false;
-            _missingStreaks.Clear();
 
-            if (_activeRoots.Count > 0)
-            {
-                foreach (var root in _activeRoots) RestoreRoot(root);
-                _activeRoots.Clear();
-            }
+            RestoreColliderCarve();
 
             // Terrains are tracked independently of _activeRoots (see RefreshTerrains),
             // so they need to be restored here too — otherwise deleting/disabling the
@@ -436,7 +479,7 @@ namespace BabyBlocks
             _carvedFilters[filter]  = state;
         }
 
-        void ApplyTerrainCarve(Terrain terrain, string carveKey)
+        void ApplyTerrainCarve(Terrain terrain, string carveKey, Vector3 cutterCenter, Quaternion cutterRotation, Vector3 cutterHalfExtents)
         {
             if (terrain == null || terrain.terrainData == null) return;
 
@@ -460,12 +503,17 @@ namespace BabyBlocks
              && string.Equals(state.carveKey, carveKey, StringComparison.Ordinal))
                 return;
 
-            if (state.carveKey != null)
+            if (!string.IsNullOrEmpty(state.carveKey))
                 RestoreTerrain(terrain, state);
 
-            if (!TryBuildTerrainHolePatch(terrain, data, state.originalHoles, CutterCenter, transform.rotation, CutterHalfSize,
+            if (!TryBuildTerrainHolePatch(terrain, data, state.originalHoles, cutterCenter, cutterRotation, cutterHalfExtents,
                 out int xBase, out int yBase, out Il2CppSystem.Array holes))
             {
+                // Nothing to carve (e.g. the box is hovering above the terrain
+                // surface) — clear carveKey so we don't keep calling RestoreTerrain
+                // every frame for a region that's already restored.
+                state.carveKey = null;
+                state.xBase = state.yBase = state.width = state.height = 0;
                 _carvedTerrains[terrain] = state;
                 return;
             }
@@ -561,17 +609,42 @@ namespace BabyBlocks
             new Il2CppStructArray<long>(new long[] { height, width })
             );
 
+            // Only punch a hole where the cutter box actually intersects the terrain
+            // surface — sample the terrain height at each grid point and test it
+            // against the cutter's 3D bounds (in cutter-local space, so rotation is
+            // respected). Without this, every cell within the XZ footprint became a
+            // hole regardless of how high above (or below) the terrain the cube was.
+            var invRot      = Quaternion.Inverse(cutterRotation);
+            int resMinus1   = Mathf.Max(resolution - 1, 1);
+            bool anyHole    = false;
+
             for (int y = 0; y < height; y++)
             {
                 for (int x = 0; x < width; x++)
                 {
-                    holes.SetValue(originalHoles.GetValue(y0 + y, x0 + x), y, x);
+                    int gx = x0 + x;
+                    int gy = y0 + y;
+
+                    float normX = (float)gx / resMinus1;
+                    float normZ = (float)gy / resMinus1;
+                    float terrainHeight = data.GetInterpolatedHeight(normX, normZ);
+
+                    var localPos = new Vector3(normX * size.x, terrainHeight, normZ * size.z);
+                    var worldPos = terrainTransform.TransformPoint(localPos);
+                    var cutterLocal = invRot * (worldPos - cutterCenter);
+
+                    bool isHole = PointInsideBox(cutterLocal, cutterHalfExtents);
+                    if (isHole) anyHole = true;
+
+                    holes.SetValue(isHole ? false : originalHoles.GetValue(gy, gx), y, x);
                 }
             }
 
-            for (int y = 0; y < height; y++)
-                for (int x = 0; x < width; x++)
-                    holes.SetValue(false, y, x);
+            if (!anyHole)
+            {
+                holes = null;
+                return false;
+            }
 
             return true;
         }
