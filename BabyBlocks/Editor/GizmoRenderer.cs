@@ -196,6 +196,28 @@ namespace BabyBlocks
                 _overlayCam = BuildCam(100f, 500000f, CameraClearFlags.Depth);
         }
 
+        // Some cached gizmo meshes/materials (_mats, _freeMat, _coneTipMesh, the outline
+        // stencil/outline materials, etc.) are plain assets held alive only by these static
+        // fields — no GameObject/scene reference keeps them around. The scene-load burst
+        // triggered by "load a different save" runs Unity's unused-asset cleanup, which can
+        // destroy these even though a managed reference to them still exists, leaving
+        // Graphics.DrawMesh / the outline CommandBuffer silently drawing with destroyed
+        // materials/meshes. _root/_overlayCam/colliders are DontDestroyOnLoad GameObjects and
+        // survive that cleanup, so only the meshes/materials need regenerating.
+        internal static void RefreshAssets()
+        {
+            InitMeshes();
+            InitMaterials();
+
+            // Ring colliders cache a MeshCollider.sharedMesh pointing at the old _ringMesh —
+            // repoint them at the freshly-built one.
+            if (_ringHandles != null)
+            {
+                var cols = _ringHandles.GetComponentsInChildren<MeshCollider>(true);
+                foreach (var c in cols) c.sharedMesh = _ringMesh;
+            }
+        }
+
         public static void SetActive(bool on)
         {
             if (_root       != null) _root.SetActive(on);
@@ -529,7 +551,10 @@ namespace BabyBlocks
                 worldVerts[i] = wPos + wNormal * OutlineThickness;
             }
 
-            var mesh = cached.mesh ?? new Mesh { name = "PropOutlineShell" };
+            // Note: cached.mesh ?? new Mesh(...) would NOT work here — ?? does a raw reference
+            // null check, but a destroyed UnityEngine.Object is a non-null reference that only
+            // compares equal to null via the overridden == operator (Unity's "fake null").
+            var mesh = cached.mesh != null ? cached.mesh : new Mesh { name = "PropOutlineShell" };
             mesh.Clear(false);
             mesh.vertices = worldVerts;
             mesh.triangles = data.tris;
@@ -586,13 +611,17 @@ namespace BabyBlocks
             return result;
         }
 
+        // Each mesh is regenerated only if it's missing. BorrowMesh briefly creates and destroys
+        // a primitive GameObject in the active scene to grab its mesh — calling it when the mesh
+        // is already alive would needlessly spawn/destroy primitives during gameplay (e.g. when
+        // RefreshAssets re-runs this after a save load to replace assets the engine unloaded).
         static void InitMeshes()
         {
-            _shaftMesh   = BorrowMesh(PrimitiveType.Cylinder);
-            _sphereMesh  = BorrowMesh(PrimitiveType.Sphere);
-            _cubeTipMesh = BorrowMesh(PrimitiveType.Cube);
-            _coneTipMesh = BuildConeMesh(16);
-            _ringMesh    = BuildRingMesh(48, outerRadius: 0.65f, innerRadius: 0.50f);
+            if (_shaftMesh   == null) _shaftMesh   = BorrowMesh(PrimitiveType.Cylinder);
+            if (_sphereMesh  == null) _sphereMesh  = BorrowMesh(PrimitiveType.Sphere);
+            if (_cubeTipMesh == null) _cubeTipMesh = BorrowMesh(PrimitiveType.Cube);
+            if (_coneTipMesh == null) _coneTipMesh = BuildConeMesh(16);
+            if (_ringMesh    == null) _ringMesh    = BuildRingMesh(48, outerRadius: 0.65f, innerRadius: 0.50f);
         }
 
         static void InitMaterials()

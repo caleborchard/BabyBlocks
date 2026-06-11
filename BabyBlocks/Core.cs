@@ -90,9 +90,19 @@ namespace BabyBlocks
             new HarmonyLib.Harmony("BabyBlocks.Patches").PatchAll();
         }
 
+        // A "load a different save" triggers a burst of many additive scene loads/unloads in
+        // quick succession (streaming chunks, loading screens, etc). Refreshing the MicroSplat
+        // layer materials mid-burst grabs an intermediate/loading scene's terrain material,
+        // which itself goes stale once the burst finishes loading the final scene. Instead,
+        // each scene load pushes this timestamp out; FlyCamController.OnUpdate fires the
+        // refresh once no further scene load has happened for MicroSplatRefreshSettleDelay.
+        internal static float PendingMicroSplatRefreshTime = -1f;
+        internal const float MicroSplatRefreshSettleDelay = 1.5f;
+
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
             PropMetadataPanel.InvalidateMaterialCache();
+            PendingMicroSplatRefreshTime = Time.realtimeSinceStartup;
         }
 
         public override void OnUpdate() => FlyCamController.OnUpdate();

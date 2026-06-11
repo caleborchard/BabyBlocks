@@ -321,6 +321,12 @@ namespace BabyBlocks
             // Do not force GC.Collect() here — a full collection pause can swallow input events
             // (e.g. teleport clicks) if it fires at the wrong moment. Addressables.Release already
             // frees the native/GPU memory; the managed heap is collected on its own schedule.
+
+            // Releasing a prop's addressable asset can drop a shared MicroSplat texture array's
+            // refcount to zero (e.g. the last MicroSplat-layered prop instance is removed via
+            // RemoveAll() during a level load), causing it to be released/recreated and leaving
+            // the cached "[MicroSplat] Layer N" prop materials referencing destroyed textures.
+            PropMetadataPanel.RefreshMicroSplatLayerMaterials();
         }
 
         static void UnloadPropData(PropInfo info)

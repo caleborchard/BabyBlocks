@@ -171,6 +171,8 @@ namespace BabyBlocks
 
         public static void Update()
         {
+            LevelEditorManager.Instance?.EnsurePropsContainer();
+
             float now = Time.realtimeSinceStartup;
             if (now - _lastUnloadCheck >= UnloadCheckInterval)
             {

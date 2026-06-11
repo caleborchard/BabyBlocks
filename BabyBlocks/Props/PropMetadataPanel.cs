@@ -160,6 +160,10 @@ static bool _showRendererDropdown;
         static LevelEditorObject _selectedLEO;
 
         static readonly List<Material> _microSplatLayerMats = new();
+        static string[] _msControlProps;
+        static Texture2D _msBlankControl;
+        static readonly List<Texture2D> _msActiveControls = new();
+        static bool _msHasPerTexUV;
 
         static readonly Dictionary<string, PropExtraInfo> _byId = new(StringComparer.Ordinal);
         // Maps material name → prop ID of the prop whose asset natively contains that material.
@@ -1196,6 +1200,17 @@ static void SortMaterialList()
         // apply the override once (at placement time) and never retry.
         public static bool IsLoadingMaterialSources => _materialSourcesLoading;
 
+        // Called synchronously the moment the editor first activates, before any GUI frame can
+        // run — without this, PropLibrary.IsInitialized is already true (set in Awake) but
+        // _materialSourcesLoading is still false until ActivateEditorScanCo's later
+        // InvalidateMaterialSources call, so the palette briefly flashes the full prop list
+        // (with not-yet-fixed-up materials) before settling into "Loading materials…".
+        internal static void MarkMaterialSourcesPending()
+        {
+            if (_materialSourcesLoaded || _materialSourcesLoading) return;
+            _materialSourcesLoading = true;
+        }
+
         static List<PropExtraInfo> CollectSourceCandidates()
         {
             var list = new List<PropExtraInfo>();
@@ -1437,6 +1452,51 @@ static void SortMaterialList()
             }
         }
 
+        const float MicroSplatUVScaleMultiplier = 8f; // terrain layers tile at world scale; multiply to fit props
+
+        // Finds a live MicroSplatTerrain material instance and its recognized control-map
+        // property names. Used both to build the layer materials initially and to refresh
+        // their texture-array references after a teleport replaces the loaded terrain chunks.
+        static Material FindMicroSplatBaseMaterial(out string[] controlProps)
+        {
+            controlProps = null;
+            var allMats = Resources.FindObjectsOfTypeAll<Material>();
+
+            // Prefer a material with _CustomControl0 — it has reliably overridable UV-sampled blend textures.
+            // Skip our own cached "[MicroSplat] Layer N" materials — refreshing from one of those would
+            // just copy stale/destroyed texture references back onto themselves (and onto each other).
+            Material baseMat = null;
+            for (int i = 0; i < allMats.Length && baseMat == null; i++)
+            {
+                var m = allMats[i];
+                if (m == null || m.shader == null) continue;
+                if (m.name.StartsWith("[MicroSplat] Layer ", StringComparison.Ordinal)) continue;
+                if (!m.shader.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) continue;
+                if (m.HasProperty("_CustomControl0")) baseMat = m;
+            }
+            for (int i = 0; i < allMats.Length && baseMat == null; i++)
+            {
+                var m = allMats[i];
+                if (m == null || m.shader == null) continue;
+                if (m.name.StartsWith("[MicroSplat] Layer ", StringComparison.Ordinal)) continue;
+                if (m.shader.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) baseMat = m;
+            }
+            if (baseMat == null) return null;
+
+            // All slots must be blanked per clone; leaving higher slots with original terrain data bleeds through.
+            bool useCustom = baseMat.HasProperty("_CustomControl0");
+            var controlPropList = new List<string>();
+            for (int ci = 0; ci <= 7; ci++)
+            {
+                string pn = useCustom ? $"_CustomControl{ci}" : $"_Control{ci}";
+                if (baseMat.HasProperty(pn)) controlPropList.Add(pn);
+            }
+            if (controlPropList.Count == 0) return null;
+
+            controlProps = controlPropList.ToArray();
+            return baseMat;
+        }
+
         static void AddMicroSplatLayerMaterials()
         {
             if (_microSplatLayerMats.Count > 0)
@@ -1453,39 +1513,12 @@ static void SortMaterialList()
             }
             try
             {
-                var allMats = Resources.FindObjectsOfTypeAll<Material>();
-
-                // Prefer a material with _CustomControl0 — it has reliably overridable UV-sampled blend textures.
-                Material baseMat = null;
-                for (int i = 0; i < allMats.Length && baseMat == null; i++)
-                {
-                    var m = allMats[i];
-                    if (m == null || m.shader == null) continue;
-                    if (!m.shader.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (m.HasProperty("_CustomControl0")) baseMat = m;
-                }
-                for (int i = 0; i < allMats.Length && baseMat == null; i++)
-                {
-                    var m = allMats[i];
-                    if (m == null || m.shader == null) continue;
-                    if (m.shader.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) baseMat = m;
-                }
-                if (baseMat == null) return;
-
-                // All slots must be blanked per clone; leaving higher slots with original terrain data bleeds through.
-                bool useCustom = baseMat.HasProperty("_CustomControl0");
-                var controlPropList = new List<string>();
-                for (int ci = 0; ci <= 7; ci++)
-                {
-                    string pn = useCustom ? $"_CustomControl{ci}" : $"_Control{ci}";
-                    if (baseMat.HasProperty(pn)) controlPropList.Add(pn);
-                }
-                if (controlPropList.Count == 0)
+                var baseMat = FindMicroSplatBaseMaterial(out var controlProps);
+                if (baseMat == null)
                 {
                     MelonLogger.Warning("[PropMetadata] MicroSplat material has no recognized control map properties.");
                     return;
                 }
-                string[] controlProps = controlPropList.ToArray();
 
                 int layerCount = 0;
                 var arrays = Resources.FindObjectsOfTypeAll<Texture2DArray>();
@@ -1498,24 +1531,24 @@ static void SortMaterialList()
                 }
                 if (layerCount == 0) layerCount = controlProps.Length * 4;
 
-                bool hasPerTexUV = baseMat.HasProperty("_PerTexUVScaleRotation0");
+                _msHasPerTexUV = baseMat.HasProperty("_PerTexUVScaleRotation0");
 
                 BBLog.Msg(
                     $"[PropMetadata] MicroSplat base: '{baseMat.name}' shader: '{baseMat.shader.name}' " +
-                    $"controlSlots: {controlProps.Length} layers: {layerCount} hasPerTexUV: {hasPerTexUV}");
+                    $"controlSlots: {controlProps.Length} layers: {layerCount} hasPerTexUV: {_msHasPerTexUV}");
 
-                if (hasPerTexUV)
+                if (_msHasPerTexUV)
                 {
                     var v0 = baseMat.GetVector("_PerTexUVScaleRotation0");
                     BBLog.Msg($"[PropMetadata] _PerTexUVScaleRotation0 = ({v0.x:F4},{v0.y:F4},{v0.z:F4},{v0.w:F4})");
                 }
 
-                const float UVScaleMultiplier = 8f; // terrain layers tile at world scale; multiply to fit props
+                _msControlProps = controlProps;
 
-                var blankControl = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-                blankControl.SetPixel(0, 0, Color.clear);
-                blankControl.Apply();
-                blankControl.name = "MicroSplat_BlankControl";
+                _msBlankControl = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+                _msBlankControl.SetPixel(0, 0, Color.clear);
+                _msBlankControl.Apply();
+                _msBlankControl.name = "MicroSplat_BlankControl";
 
                 for (int layer = 0; layer < layerCount; layer++)
                 {
@@ -1533,19 +1566,20 @@ static void SortMaterialList()
                             channel == 3 ? 1f : 0f));
                         activeControl.Apply();
                         activeControl.name = $"MicroSplat_SingleLayer_{layer}";
+                        _msActiveControls.Add(activeControl);
 
                         var mat = new Material(baseMat) { name = $"[MicroSplat] Layer {layer}" };
 
                         for (int c = 0; c < controlProps.Length; c++)
-                            mat.SetTexture(controlProps[c], blankControl);
+                            mat.SetTexture(controlProps[c], _msBlankControl);
                         mat.SetTexture(controlProps[mapIdx], activeControl);
 
-                        if (hasPerTexUV)
+                        if (_msHasPerTexUV)
                         {
                             string uvProp = $"_PerTexUVScaleRotation{layer}";
                             var v = baseMat.GetVector(uvProp);
                             mat.SetVector(uvProp, new Vector4(
-                                v.x * UVScaleMultiplier, v.y * UVScaleMultiplier, v.z, v.w));
+                                v.x * MicroSplatUVScaleMultiplier, v.y * MicroSplatUVScaleMultiplier, v.z, v.w));
                         }
 
                         _microSplatLayerMats.Add(mat);
@@ -1565,6 +1599,57 @@ static void SortMaterialList()
             {
                 MelonLogger.Warning($"[PropMetadata] MicroSplat layer material creation failed: {e.Message}");
             }
+        }
+
+        // Re-points the cached MicroSplat layer materials at a currently-loaded terrain's
+        // texture arrays. FarTeleportCo's parallel chunk drain can drop the global terrain
+        // texture arrays' refcount to zero and force Addressables to release/reload them as
+        // new instances, leaving these cached materials referencing the old, now-destroyed
+        // arrays. CopyPropertiesFromMaterial updates the existing Material objects in place
+        // (rather than replacing them), so already-placed props referencing them are fixed too.
+        public static void RefreshMicroSplatLayerMaterials()
+        {
+            if (_microSplatLayerMats.Count == 0 || _msControlProps == null)
+            {
+                BBLog.Msg($"[PropMetadata] RefreshMicroSplatLayerMaterials: skipped " +
+                    $"(_microSplatLayerMats.Count={_microSplatLayerMats.Count}, " +
+                    $"_msControlProps={(_msControlProps == null ? "null" : "set")})");
+                return;
+            }
+
+            var baseMat = FindMicroSplatBaseMaterial(out _);
+            if (baseMat == null)
+            {
+                BBLog.Msg("[PropMetadata] RefreshMicroSplatLayerMaterials: no MicroSplat base material found.");
+                return;
+            }
+
+            for (int layer = 0; layer < _microSplatLayerMats.Count; layer++)
+            {
+                var mat = _microSplatLayerMats[layer];
+                if (mat == null) continue;
+
+                var name = mat.name;
+                mat.CopyPropertiesFromMaterial(baseMat);
+                mat.name = name;
+
+                int mapIdx = layer / 4;
+                if (mapIdx >= _msControlProps.Length) continue;
+
+                for (int c = 0; c < _msControlProps.Length; c++)
+                    mat.SetTexture(_msControlProps[c], _msBlankControl);
+                mat.SetTexture(_msControlProps[mapIdx], _msActiveControls[layer]);
+
+                if (_msHasPerTexUV)
+                {
+                    string uvProp = $"_PerTexUVScaleRotation{layer}";
+                    var v = baseMat.GetVector(uvProp);
+                    mat.SetVector(uvProp, new Vector4(
+                        v.x * MicroSplatUVScaleMultiplier, v.y * MicroSplatUVScaleMultiplier, v.z, v.w));
+                }
+            }
+
+            BBLog.Msg($"[PropMetadata] Refreshed {_microSplatLayerMats.Count} MicroSplat layer materials.");
         }
 
         static void ApplyCurrent()

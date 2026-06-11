@@ -35,6 +35,20 @@ namespace BabyBlocks
 
         public static void OnUpdate()
         {
+            // Once the post-save-load scene load burst has settled (see
+            // Core.PendingMicroSplatRefreshTime for why this is deferred rather than done in
+            // OnSceneWasLoaded directly): refresh the cached MicroSplat layer materials, and
+            // drop any LevelEditorObjects that a native save load destroyed (physics-managed
+            // props get moved into the scene that gets wiped/rebuilt on load).
+            if (Core.PendingMicroSplatRefreshTime >= 0f
+                && Time.realtimeSinceStartup - Core.PendingMicroSplatRefreshTime >= Core.MicroSplatRefreshSettleDelay)
+            {
+                Core.PendingMicroSplatRefreshTime = -1f;
+                PropMetadataPanel.RefreshMicroSplatLayerMaterials();
+                LevelEditorManager.Instance?.PruneDestroyedObjects();
+                if (GizmoRenderer.IsReady) GizmoRenderer.RefreshAssets();
+            }
+
             if (Input.GetKeyDown(KeyCode.R) && PlayerMovement.me != null
                 && !Menu.me.teleporting && !Core.IsKeyboardCaptured
                 && !PropPalette.IsDragging && !LevelEditor.IsSurfaceSnapDragging)
@@ -147,6 +161,7 @@ namespace BabyBlocks
                 FreezePlayer(player, true);
                 LevelEditor.EnsureManager();
 
+                if (!_editorScanDone) PropMetadataPanel.MarkMaterialSourcesPending();
                 MelonCoroutines.Start(ActivateEditorScanCo());
 
                 var noise = player.flyCam.GetComponentInChildren<CinemachineBasicMultiChannelPerlin>();
@@ -434,6 +449,13 @@ namespace BabyBlocks
             // ragdoll foot-placement sequence and clears Menu.me.teleporting.
             Menu.me.Teleport(target);
             while (Menu.me.teleporting) yield return null;
+
+            // Re-point the cached "[MicroSplat] Layer N" prop materials at the freshly loaded
+            // terrain's texture arrays. The parallel chunk drain above can drop the shared
+            // terrain texture arrays' refcount to zero, causing Addressables to release and
+            // later recreate them as new instances - leaving the cached materials pointing at
+            // destroyed textures (visually "weird" with no logged errors).
+            PropMetadataPanel.RefreshMicroSplatLayerMaterials();
 
             // Snap the fly cam to the player's new body position so that BestRegionLoader
             // streams terrain around the correct area. Without this, the fly cam stays at

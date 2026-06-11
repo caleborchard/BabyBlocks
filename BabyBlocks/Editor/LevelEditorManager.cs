@@ -61,6 +61,58 @@ namespace BabyBlocks
             if (!PropLibrary.IsInitialized) PropLibrary.Init();
         }
 
+        // Physics-managed props (Rigidbody/Grabable/Hat — see LevelEditorObject.isPhysicsManaged)
+        // get moved by native game code into a scene that's wiped and rebuilt on a save load,
+        // so their GameObjects are destroyed out from under us even though LevelEditorManager
+        // itself is DontDestroyOnLoad. _objects/_groupRoots/selection then hold dangling
+        // references to destroyed Il2Cpp objects, which breaks gizmo/selection updates. Drop
+        // those entries and reset selection so the editor recovers cleanly.
+        [HideFromIl2Cpp]
+        internal void PruneDestroyedObjects()
+        {
+            int removedObjs = 0;
+            for (int i = _objects.Count - 1; i >= 0; i--)
+            {
+                if (_objects[i] == null)
+                {
+                    _objects.RemoveAt(i);
+                    removedObjs++;
+                }
+            }
+
+            var deadGroups = new List<int>();
+            foreach (var kvp in _groupRoots)
+                if (kvp.Value == null) deadGroups.Add(kvp.Key);
+            foreach (var gid in deadGroups) _groupRoots.Remove(gid);
+
+            if (removedObjs == 0 && deadGroups.Count == 0) return;
+
+            BBLog.Msg($"[LevelEditorManager] Pruned {removedObjs} destroyed object(s) and " +
+                $"{deadGroups.Count} dead group root(s) after a native save load.");
+
+            LevelEditor.Select(null);
+        }
+
+        // _propsContainer (and every prop parented under it) isn't DontDestroyOnLoad, so a
+        // native save load that reloads the scene destroys them out from under us. _objects
+        // and _groupRoots then hold dangling references to already-destroyed Il2Cpp objects,
+        // which breaks selection/gizmo updates. Detect that and reset to a clean state.
+        [HideFromIl2Cpp]
+        internal void EnsurePropsContainer()
+        {
+            if (_propsContainer != null) return;
+
+            BBLog.Msg("[LevelEditorManager] Props container was destroyed (scene reload?) — resetting editor state.");
+
+            LevelEditor.Select(null);
+            _objects.Clear();
+            _groupRoots.Clear();
+            _nextGroupId = 1;
+            _propsContainer = new GameObject("Baby Blocks");
+
+            PropMetadataPanel.RefreshMicroSplatLayerMaterials();
+        }
+
         [HideFromIl2Cpp]
         internal LevelEditorObject SpawnFromPropInfo(PropInfo info, Vector3 position)
         {
