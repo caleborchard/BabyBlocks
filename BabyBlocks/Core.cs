@@ -1,5 +1,6 @@
 using HarmonyLib;
 using Il2Cpp;
+using Il2CppCinemachine;
 using Il2CppInterop.Runtime.Injection;
 using MelonLoader;
 using UnityEngine;
@@ -180,6 +181,20 @@ namespace BabyBlocks
                 FlyCamController.HandleFarTeleport();
 
             return false;
+        }
+    }
+
+    // While base map is disabled, the FlyCam/GameCam vcams' transforms update
+    // correctly each frame, but CinemachineBrain.LateUpdate stops applying that
+    // state to Camera.main on its own. Forcing a manual re-update keeps the
+    // output camera synced.
+    [HarmonyPatch(typeof(CinemachineBrain), "LateUpdate")]
+    class CinemachineBrainLateUpdatePatch
+    {
+        static void Postfix(CinemachineBrain __instance)
+        {
+            if (LevelEditorManager.BaseMapEnabled) return;
+            __instance.ManualUpdate();
         }
     }
 

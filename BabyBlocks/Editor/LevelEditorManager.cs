@@ -1527,7 +1527,7 @@ namespace BabyBlocks
                                 if (typeName.Contains(frag))
                                 {
                                     var go = mb.gameObject;
-                                    if (go.activeSelf && !tracked.Contains(go))
+                                    if (go.activeSelf && !tracked.Contains(go) && !HasCameraComponent(go))
                                     {
                                         BBLog.Msg($"[BaseMap] SetActive(false) on '{go.name}' ({typeName})");
                                         go.SetActive(false);
@@ -1637,7 +1637,7 @@ namespace BabyBlocks
                         HidePropRenderers(cell.loadedChunk);
                     }
                 }
-                BBLog.Msg($"[BaseMap] terrain components gathered: {_disabledTerrainComponents.Count}, colliders: {_disabledTerrainColliders.Count}, prop colliders: {_disabledPropColliders.Count}");
+                BBLog.Msg($"[BaseMap] terrain components gathered: {_disabledTerrainComponents.Count}, terrain colliders: {_disabledTerrainColliders.Count}, prop colliders: {_disabledPropColliders.Count}");
             }
 
             // Non-GPUI prop instance containers (unnamed root GameObjects) and any
