@@ -693,6 +693,7 @@
 		<Compile Include="Components\GizmoHandle.cs" />
 		<Compile Include="Editor\FlyCamController.cs" />
 		<Compile Include="Editor\GhostCube.cs" />
+		<Compile Include="Editor\SpawnPoint.cs" />
 		<Compile Include="Editor\GizmoRenderer.cs" />
 		<Compile Include="Editor\LevelEditor.cs" />
 		<Compile Include="Editor\LevelEditorManager.cs" />

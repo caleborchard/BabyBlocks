@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using Il2Cpp;
 using MelonLoader;
 using UnityEngine;
 
@@ -59,6 +60,11 @@ namespace BabyBlocks
     {
         static readonly byte[] Magic = { 0x42, 0x42, 0x42 };
         const byte FormatVersion = 6;
+
+        // Reserved MetaIndex value identifying the Spawn Point — it isn't registered in
+        // PropMetadataPanel (no per-instance metadata needed), so a sentinel outside the
+        // valid (>0) PropMetadataPanel index range is used instead.
+        const int SpawnPointMetaIndex = -1;
 
         struct SaveRecord
         {
@@ -171,7 +177,9 @@ namespace BabyBlocks
                     {
                         int metaIndex = r.ReadInt32();
                         chunkIndex = r.ReadByte();
-                        propId = PropMetadataPanel.FindIdByIndex(metaIndex);
+                        propId = metaIndex == SpawnPointMetaIndex
+                            ? PropLibrary.SpawnPointPropId
+                            : PropMetadataPanel.FindIdByIndex(metaIndex);
                         if (string.IsNullOrEmpty(propId))
                         {
                             MelonLogger.Warning($"[SaveLoad] No prop for index {metaIndex}");
@@ -234,7 +242,8 @@ namespace BabyBlocks
                     if (leo == null) continue;
 
                     leo.transform.rotation   = rot;
-                    leo.transform.localScale = scale;
+                    // The spawn point marker is fixed-size — ignore any saved scale.
+                    leo.transform.localScale = PropLibrary.IsSpawnPointProp(propId) ? Vector3.one : scale;
                     mgr.SyncLoopBase(leo);
                     if (version >= 3 && chunkIndex >= 0)
                     {
@@ -268,6 +277,8 @@ namespace BabyBlocks
                 mgr.ApplyPhysicsGroups();
                 mgr.SyncLoadedHatHairValues();
 
+                TeleportToSpawnPoint(leos);
+
                 MelonLogger.Msg($"[SaveLoad] Loaded {spawned}/{count} object(s) from {path}");
                 return (true, spawned, null);
             }
@@ -275,6 +286,27 @@ namespace BabyBlocks
             {
                 MelonLogger.Warning($"[SaveLoad] Load failed: {e.Message}");
                 return (false, 0, e.Message);
+            }
+        }
+
+        // Teleports the player to the level's Spawn Point (if one was loaded). Only
+        // triggered by loading a .bbb level file — never by game saves or other
+        // teleport actions.
+        static void TeleportToSpawnPoint(LevelEditorObject[] leos)
+        {
+            foreach (var leo in leos)
+            {
+                if (leo == null || !PropLibrary.IsSpawnPointProp(leo.addressableKey)) continue;
+
+                var player = PlayerMovement.me;
+                if (player == null || Menu.me == null) return;
+
+                // Face the player the same way the spawn point's arrow points (local +Z)
+                // before handing off to Teleport — TeleportCo preserves whatever rotation
+                // is on player.anim.transform when it places the player.
+                player.anim.transform.rotation = Quaternion.Euler(0f, leo.transform.eulerAngles.y, 0f);
+                Menu.me.Teleport(leo.transform.position);
+                return;
             }
         }
 
@@ -294,8 +326,17 @@ namespace BabyBlocks
             foreach (var leo in mgr.Objects)
             {
                 if (leo == null || string.IsNullOrEmpty(leo.addressableKey)) continue;
-                int metaIndex = PropMetadataPanel.GetMetaIndex(leo.addressableKey);
-                if (metaIndex <= 0) continue;
+
+                int metaIndex;
+                if (PropLibrary.IsSpawnPointProp(leo.addressableKey))
+                {
+                    metaIndex = SpawnPointMetaIndex;
+                }
+                else
+                {
+                    metaIndex = PropMetadataPanel.GetMetaIndex(leo.addressableKey);
+                    if (metaIndex <= 0) continue;
+                }
 
                 var position = leo.hasLoopBasePosition ? leo.loopBasePosition : leo.transform.position;
                 records.Add(new SaveRecord

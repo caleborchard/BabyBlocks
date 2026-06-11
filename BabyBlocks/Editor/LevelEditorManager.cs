@@ -162,6 +162,12 @@ namespace BabyBlocks
                     // collider on the placeholder cylinder would solidly block the player.
                     GhostCubeConfig.Configure(root);
                 }
+                else if (PropLibrary.IsSpawnPointProp(info.id))
+                {
+                    // The spawn point marker provides its own trigger volume — the
+                    // placeholder capsule mesh is hidden and never needs collision.
+                    SpawnPointConfig.Configure(root);
+                }
                 else
                 {
                     ApplyColliderParts(root, info, PropMetadataPanel.GetUseRenderMeshCollider(info.id));
@@ -178,6 +184,17 @@ namespace BabyBlocks
             PropMetadataPanel.ApplyMaterialOverridesToRoot(info.id, root);
             PropMetadataPanel.ApplyDisabledRenderersToRoot(info.id, root);
             PropMetadataPanel.ApplyBushColliderToRoot(info.id, root);
+
+            // Only one Spawn Point may exist at a time — placing a new one replaces
+            // any existing one.
+            if (PropLibrary.IsSpawnPointProp(info.id))
+            {
+                for (int i = _objects.Count - 1; i >= 0; i--)
+                {
+                    if (_objects[i] != null && PropLibrary.IsSpawnPointProp(_objects[i].addressableKey))
+                        Remove(_objects[i]);
+                }
+            }
 
             var leo = root.AddComponent<LevelEditorObject>();
             leo.objectType     = "Addressable";

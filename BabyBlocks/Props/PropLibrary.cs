@@ -15,6 +15,7 @@ namespace BabyBlocks
     public static class PropLibrary
     {
         internal const string NegativeCollisionPropId = "special://negative-hole";
+        internal const string SpawnPointPropId = "special://spawn-point";
 
         static readonly List<PropInfo> _all = new();
         static readonly List<PropInfo> _filtered = new();
@@ -198,6 +199,10 @@ namespace BabyBlocks
             var holeProp = new PropInfo(NegativeCollisionPropId, "Hole");
             _all.Add(holeProp);
             _byId[holeProp.id] = holeProp;
+
+            var spawnPointProp = new PropInfo(SpawnPointPropId, "Spawn Point");
+            _all.Add(spawnPointProp);
+            _byId[spawnPointProp.id] = spawnPointProp;
 
             int primitiveCount = _all.Count;
 
@@ -961,6 +966,12 @@ namespace BabyBlocks
             if (IsNegativeCollisionProp(info.id))
             {
                 LoadNegativeCollisionProp(info);
+                return;
+            }
+
+            if (IsSpawnPointProp(info.id))
+            {
+                LoadSpawnPointProp(info);
                 return;
             }
 
@@ -2026,6 +2037,50 @@ namespace BabyBlocks
         public static bool IsNegativeCollisionProp(string id)
         {
             return !string.IsNullOrEmpty(id) && string.Equals(id, NegativeCollisionPropId, StringComparison.Ordinal);
+        }
+
+        static void LoadSpawnPointProp(PropInfo info)
+        {
+            info.parts.Clear();
+
+            try
+            {
+                var tempGo = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+                var mesh = tempGo.GetComponent<MeshFilter>()?.sharedMesh;
+                var tempMr = tempGo.GetComponent<MeshRenderer>();
+                var defMats = tempMr != null ? tempMr.sharedMaterials : null;
+                UnityEngine.Object.Destroy(tempGo);
+
+                if (mesh == null)
+                {
+                    info.isLoaded  = true;
+                    info.isInvalid = true;
+                    return;
+                }
+
+                info.parts.Add(new PropMeshPart
+                {
+                    mesh          = mesh,
+                    materials     = defMats,
+                    localPosition = new Vector3(0f, 1f, 0f),
+                    localRotation = Quaternion.identity,
+                    localScale    = Vector3.one,
+                });
+
+                info.isLoaded  = true;
+                info.isInvalid = false;
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[PropLibrary] Failed to build Spawn Point placeholder: {e.Message}");
+                info.isLoaded  = true;
+                info.isInvalid = true;
+            }
+        }
+
+        public static bool IsSpawnPointProp(string id)
+        {
+            return !string.IsNullOrEmpty(id) && string.Equals(id, SpawnPointPropId, StringComparison.Ordinal);
         }
 
         static void AddPart(PropInfo info, Mesh mesh, Material[] materials, Transform t, Transform rootT)

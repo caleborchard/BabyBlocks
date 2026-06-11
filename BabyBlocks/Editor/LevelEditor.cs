@@ -483,6 +483,19 @@ namespace BabyBlocks
                 GhostCubeConfig.BuildFrame(root);
             }
 
+            // The spawn point's "mesh" is just a placeholder capsule (see
+            // LoadSpawnPointProp) — hide it and show the same wireframe marker
+            // that SpawnPointConfig.Configure builds once the prop is placed.
+            if (PropLibrary.IsSpawnPointProp(prop.id))
+            {
+                foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>(true))
+                {
+                    renderer.forceRenderingOff = true;
+                    renderer.enabled = false;
+                }
+                SpawnPointConfig.BuildMarker(root);
+            }
+
             return root;
         }
 
@@ -1175,6 +1188,10 @@ namespace BabyBlocks
             {
                 var obj = _dragObjects[i];
                 if (obj == null) continue;
+
+                // Spawn point markers are fixed-size — never scale them, and don't
+                // shift their position when other selected objects are scaled around them.
+                if (PropLibrary.IsSpawnPointProp(obj.addressableKey)) continue;
 
                 var start = _dragStartScales[i];
                 var final = new Vector3(

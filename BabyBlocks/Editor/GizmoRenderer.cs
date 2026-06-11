@@ -943,6 +943,18 @@ namespace BabyBlocks
             {
                 var sel = selection[s];
                 if (sel == null) continue;
+
+                // The spawn point marker's wireframe (ring/pole/arrow) is intentionally
+                // asymmetric around the object's origin, which would otherwise skew the
+                // gizmo bounds forward/up. Pin it to a fixed unit bounds at the pivot.
+                if (PropLibrary.IsSpawnPointProp(sel.addressableKey))
+                {
+                    var spawnBounds = new Bounds(sel.transform.position, Vector3.one);
+                    if (!initialized) { result = spawnBounds; initialized = true; }
+                    else result.Encapsulate(spawnBounds);
+                    continue;
+                }
+
                 var renderers = sel.GetComponentsInChildren<Renderer>();
                 if (renderers != null)
                 {
@@ -976,6 +988,16 @@ namespace BabyBlocks
             {
                 var sel = selection[s];
                 if (sel == null) continue;
+
+                // The spawn point marker's wireframe is asymmetric around the object's
+                // origin (arrow points forward, pole rises up) — pin its pivot to the
+                // actual spawn position rather than the averaged renderer centers.
+                if (PropLibrary.IsSpawnPointProp(sel.addressableKey))
+                {
+                    sum += sel.transform.position;
+                    count++;
+                    continue;
+                }
 
                 // Average enabled-renderer centers, skipping any with implausibly large bounds
                 // (bad mesh export). Fall back to transform.position if none pass.
