@@ -1475,6 +1475,9 @@ namespace BabyBlocks
         internal static Renderer[] _brlRendererCache = Array.Empty<Renderer>();
         static readonly List<MonoBehaviour> _disabledTerrainComponents = new();
         static readonly List<Collider> _disabledTerrainColliders = new();
+        // Player WaterObjects (torso + feet) frozen below sea level while Base
+        // Map is off, so the player doesn't keep "swimming" in the hidden ocean.
+        static readonly List<WaterObject> _suppressedWaterObjects = new();
         // Non-terrain colliders found inside loaded chunks (trash, rocks, candles,
         // etc. placed directly in chunk scenes rather than GPUI-instanced).
         static readonly List<Collider> _disabledPropColliders = new();
@@ -1742,6 +1745,50 @@ namespace BabyBlocks
             }
             BBLog.Msg("[BaseMap] GlobalObjectParent done");
 
+            // Player swim/buoyancy: Crest's water data provider keeps WaterHeights
+            // at its last computed value once the ocean is hidden (GetWaterHeights
+            // is skipped while calculateWaterHeights == false, rather than reset),
+            // so the player would keep "swimming" in the now-invisible water.
+            // Freeze each of the player's WaterObjects (torso + feet) at a height
+            // far below any terrain so ResultForce/ResultStates read as "not in
+            // water"; re-enabling calculateWaterHeights lets Crest repopulate real
+            // heights again.
+            var player = PlayerMovement.me;
+            if (player != null)
+            {
+                if (!enabled)
+                {
+                    _suppressedWaterObjects.Clear();
+                    var allWaterObjs = (player.waterObjects ?? Array.Empty<WaterObject>())
+                        .Concat(player.footWaterObjs ?? Array.Empty<WaterObject>());
+                    foreach (var wo in allWaterObjs)
+                    {
+                        if (wo == null || !wo.calculateWaterHeights) continue;
+                        wo.calculateWaterHeights = false;
+                        if (wo.WaterHeights.IsCreated)
+                            for (int i = 0; i < wo.WaterHeights.Length; i++)
+                                wo.WaterHeights[i] = -10000f;
+                        _suppressedWaterObjects.Add(wo);
+                    }
+                    BBLog.Msg($"[BaseMap] suppressed {_suppressedWaterObjects.Count} player water objects");
+                }
+                else
+                {
+                    foreach (var wo in _suppressedWaterObjects)
+                        if (wo != null) wo.calculateWaterHeights = true;
+                    _suppressedWaterObjects.Clear();
+                    BBLog.Msg("[BaseMap] restored player water objects");
+                }
+            }
+
+            // Crest ocean visuals: toggle the whole CrestWaterRenderer object.
+            var crestWater = GameObject.Find("BigManagerPrefab/CrestWaterRenderer");
+            if (crestWater != null)
+            {
+                crestWater.SetActive(enabled);
+                BBLog.Msg($"[BaseMap] CrestWaterRenderer SetActive({enabled})");
+            }
+
             // Audio
             if (!enabled)
             {
@@ -1812,11 +1859,15 @@ namespace BabyBlocks
             }
         }
 
+        // Only drives the live Menu.curChapter (which WeatherMan reads each frame for
+        // weather/time-of-day) — deliberately does NOT touch SaveGod.theSave.lastCampfire,
+        // which is the persisted "current chapter" written to the player's actual save
+        // file. Writing it here would let this editor-only preview leak into the real
+        // save if the player saves & quits while the override is active.
         static void SetCurChapter(int index)
         {
             index = Mathf.Clamp(index, 0, Menu.me.campfireDatas.Length - 1);
             Menu.me.curChapter = index;
-            if (SaveGod.theSave != null) SaveGod.theSave.lastCampfire = index;
         }
 
         // Number of WeatherMan "Day Weather Playlist" options (Menu.campfireDatas
