@@ -706,9 +706,11 @@
 		<Compile Include="Props\PropMetadataPanel.cs" />
 		<Compile Include="Props\PrimitiveMeshGen.cs" />
 		<Compile Include="Props\MaterialInspectorPanel.cs" />
+		<Compile Include="Props\MaterialConstructionLibrary.cs" />
 		<Compile Include="UI\LevelSaveLoad.cs" />
 		<Compile Include="UI\SaveLoadWindow.cs" />
 		<Compile Include="UI\PropPalette.cs" />
+		<Compile Include="UI\MaterialConstructionPanel.cs" />
 		<Compile Include="UI\PhysicsWindow.cs" />
 		<Compile Include="UI\ObjImportWindow.cs" />
 	</ItemGroup>

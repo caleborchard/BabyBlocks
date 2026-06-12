@@ -37,12 +37,16 @@ namespace BabyBlocks
         // Exposed so PropLibrary.BuildFiltered can read the selected category.
         public static string SelectedCategory = null;
 
+        // Non-debug mode: when true, the main panel shows the Material Constructions
+        // palette (read-only, no "+ New") instead of the prop list.
+        public static bool ShowingMaterials = false;
+
         // Category list cached in non-debug mode; null when stale.
         static List<string> _cachedCategories;
 
         public static void InvalidateCategories() => _cachedCategories = null;
 
-        public static Rect PanelRect { get; private set; }
+        public static Rect PanelRect { get; internal set; }
 
         public static bool     IsDragging   => _draggingIndex >= 0;
         public static PropInfo DraggingProp => IsDragging ? PropLibrary.FilteredProps[_draggingIndex] : null;
@@ -91,6 +95,20 @@ namespace BabyBlocks
         public static void DrawGUI(Event e)
         {
             EnsureStyles();
+
+            if (Core.DebugMode && MaterialConstructionPanel.Active)
+            {
+                MaterialConstructionPanel.DrawPalette(e);
+                return;
+            }
+
+            if (!Core.DebugMode && ShowingMaterials)
+            {
+                MaterialConstructionPanel.DrawPalette(e, showAddButton: false);
+                DrawCategoryPanel(e, PanelRect);
+                return;
+            }
+
             if (!PropLibrary.IsInitialized)
             {
                 PanelRect = new Rect(10f, 10f, PanelW, 40f);
@@ -282,8 +300,8 @@ namespace BabyBlocks
                 _cachedCategories = PropMetadataPanel.GetAllCategories();
 
             var cats = _cachedCategories;
-            // +1 for the "(All)" entry at the top.
-            int count = cats.Count + 1;
+            // +1 for the "(All)" entry at the top, +1 for "Materials" at the bottom.
+            int count = cats.Count + 2;
 
             float catPanelX = mainPanelRect.xMax + 10f;
             float catItemW  = PanelW - CatPad * 2f;
@@ -296,10 +314,13 @@ namespace BabyBlocks
 
             for (int i = 0; i < count; i++)
             {
-                string cat     = i == 0 ? null : cats[i - 1];
-                string label   = cat ?? "(All)";
-                bool   sel     = (cat == null && SelectedCategory == null)
-                              || (cat != null && string.Equals(cat, SelectedCategory, StringComparison.OrdinalIgnoreCase));
+                bool   isMaterials = i == count - 1;
+                string cat         = (i == 0 || isMaterials) ? null : cats[i - 1];
+                string label       = isMaterials ? "Materials" : (cat ?? "(All)");
+                bool   sel         = isMaterials
+                    ? ShowingMaterials
+                    : !ShowingMaterials && ((cat == null && SelectedCategory == null)
+                          || (cat != null && string.Equals(cat, SelectedCategory, StringComparison.OrdinalIgnoreCase)));
                 float  iy      = 10f + CatPad + i * (CatItemH + CatPad);
                 var    itemR   = new Rect(catPanelX + CatPad, iy, catItemW, CatItemH);
 
@@ -309,8 +330,16 @@ namespace BabyBlocks
 
                 if (GUI.Button(itemR, label, _catStyle) && !sel)
                 {
-                    SelectedCategory = cat;
-                    PropLibrary.RebuildFiltered();
+                    if (isMaterials)
+                    {
+                        ShowingMaterials = true;
+                    }
+                    else
+                    {
+                        ShowingMaterials = false;
+                        SelectedCategory = cat;
+                        PropLibrary.RebuildFiltered();
+                    }
                     e.Use();
                 }
 

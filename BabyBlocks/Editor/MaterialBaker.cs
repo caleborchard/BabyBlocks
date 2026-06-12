@@ -595,7 +595,7 @@ namespace BabyBlocks
         // too, baking the background behind the prop into its texture (looks like the baked
         // object is "see-through" to whatever was behind it). Scan actual renderers to find
         // a layer index nothing currently uses.
-        static int FindUnusedLayer()
+        internal static int FindUnusedLayer()
         {
             var used = new bool[32];
             foreach (var r in UnityEngine.Object.FindObjectsOfType<Renderer>())

@@ -44,5 +44,9 @@ namespace BabyBlocks
         // Hat: additive offset on top of the default head placement
         public Vector3 hatOffsetPos = Vector3.zero;
         public Vector3 hatOffsetRot = Vector3.zero; // Euler degrees
+
+        // Per-instance material/surface override applied via MaterialConstructionPanel —
+        // an id into MaterialConstructionLibrary.Entries, -1 if none.
+        public int materialConstructionId = -1;
     }
 }

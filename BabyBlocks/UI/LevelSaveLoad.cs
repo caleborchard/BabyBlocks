@@ -61,10 +61,14 @@ namespace BabyBlocks
     //   BaseMapOff           : bool    (true if the base map was hidden when saved)
     //   DayWeatherPlaylist   : int32   (Menu.curChapter override applied while base map is off)
     //   RestoreDayWeatherPlaylist : int32 (Menu.curChapter to restore when base map is shown)
+    //
+    // Version 8 adds, at the end of each per-object record:
+    //   MaterialConstructionId : length-prefixed UTF8 string (empty if no per-instance
+    //                            material/surface override — see MaterialConstructionPanel)
     static class LevelSaveLoad
     {
         static readonly byte[] Magic = { 0x42, 0x42, 0x42 };
-        const byte FormatVersion = 7;
+        const byte FormatVersion = 8;
 
         // Reserved MetaIndex value identifying the Spawn Point — it isn't registered in
         // PropMetadataPanel (no per-instance metadata needed), so a sentinel outside the
@@ -87,6 +91,7 @@ namespace BabyBlocks
             public Vector3 grabOffsetRot;
             public Vector3 hatOffsetPos;
             public Vector3 hatOffsetRot;
+            public int materialConstructionId;
         }
 
         public static bool Save(string path)
@@ -148,7 +153,7 @@ namespace BabyBlocks
                     return (false, 0, "Not a .bbb file.");
 
                 byte version = r.ReadByte();
-                if (version > 7)
+                if (version > 8)
                     return (false, 0, $"Unsupported format version {version}.");
 
                 bool baseMapOff = false;
@@ -249,6 +254,8 @@ namespace BabyBlocks
                         hatOffsetRot  = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
                     }
 
+                    int materialConstructionId = version >= 8 ? r.ReadInt32() : -1;
+
                     var info = PropLibrary.FindById(propId);
                     if (info == null)
                     {
@@ -285,6 +292,13 @@ namespace BabyBlocks
                     leo.grabOffsetRot    = grabOffsetRot;
                     leo.hatOffsetPos     = hatOffsetPos;
                     leo.hatOffsetRot     = hatOffsetRot;
+                    leo.materialConstructionId = materialConstructionId;
+                    if (materialConstructionId >= 0)
+                    {
+                        var construction = MaterialConstructionLibrary.FindById(materialConstructionId);
+                        if (construction != null)
+                            MaterialConstructionPanel.ApplyToInstance(leo, construction);
+                    }
                     leos[i] = leo;
                     spawned++;
                 }
@@ -386,6 +400,7 @@ namespace BabyBlocks
                     grabOffsetRot    = leo.grabOffsetRot,
                     hatOffsetPos     = leo.hatOffsetPos,
                     hatOffsetRot     = leo.hatOffsetRot,
+                    materialConstructionId = leo.materialConstructionId,
                 });
             }
 
@@ -425,6 +440,7 @@ namespace BabyBlocks
             w.Write(record.grabOffsetRot.x); w.Write(record.grabOffsetRot.y); w.Write(record.grabOffsetRot.z);
             w.Write(record.hatOffsetPos.x);  w.Write(record.hatOffsetPos.y);  w.Write(record.hatOffsetPos.z);
             w.Write(record.hatOffsetRot.x);  w.Write(record.hatOffsetRot.y);  w.Write(record.hatOffsetRot.z);
+            w.Write(record.materialConstructionId);
         }
 
         // Persists every physics-enabled object's already-baked mesh+atlas (see

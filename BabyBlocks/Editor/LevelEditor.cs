@@ -252,6 +252,16 @@ namespace BabyBlocks
                 return;
             }
 
+            if (MaterialConstructionPanel.IsDragging)
+            {
+                if (!Input.GetMouseButton(0))
+                {
+                    if (!overUI) MaterialConstructionPanel.TryApplyToHoveredProp();
+                    MaterialConstructionPanel.CancelDrag();
+                }
+                return;
+            }
+
             if (!overUI && Input.GetMouseButtonDown(0)) TryBeginDrag();
 
             if (_isDragging)

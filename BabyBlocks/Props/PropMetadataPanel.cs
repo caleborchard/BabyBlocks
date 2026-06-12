@@ -26,7 +26,7 @@ namespace BabyBlocks
         const string DisplayNameField = "propMetaDisplayName";
         const string CategoryField    = "propMetaCategory";
         const string OverrideField    = "propMetaOverride";
-        const string NoOverrideLabel  = "(no override)";
+        public const string NoOverrideLabel  = "(no override)";
 
         static Rect _windowRect;
         static bool _windowInitialized;
@@ -79,7 +79,7 @@ static bool _showRendererDropdown;
         static Vector2 _rendererScroll;
         static readonly List<RendererEntry> _rendererEntries = new();
 
-        static readonly string[] KnownSurfaceTags =
+        public static readonly string[] KnownSurfaceTags =
         {
             "",            // (none — don't override tag)
             "Rock",
@@ -177,6 +177,9 @@ static bool _showRendererDropdown;
 
         static bool _loadedFromJson;
 
+        static List<MaterialConstructionEntry> _materialConstructions = new();
+        static int _nextMaterialConstructionId;
+
         static bool _showExportWindow;
         static Rect _exportWindowRect;
         static bool _exportWindowInitialized;
@@ -184,7 +187,7 @@ static bool _showRendererDropdown;
         static Vector2 _exportWindowDragOffset;
         static string _exportStatusMsg = "";
 
-        const byte PmdVersion = 1;
+        const byte PmdVersion = 2;
 
         static string SavePath =>
             Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "prop_metadata.json");
@@ -228,8 +231,9 @@ static bool _showRendererDropdown;
             IsTypingInUI = focused == SearchField
                         || focused == DisplayNameField
                         || focused == CategoryField
-                        || focused == OverrideField;
-            if (string.IsNullOrEmpty(_propId))
+                        || focused == OverrideField
+                        || MaterialConstructionPanel.IsTypingInUI;
+            if (string.IsNullOrEmpty(_propId) && !MaterialConstructionPanel.Active)
                 IsTypingInUI = false;
 
             var mouse = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
@@ -276,9 +280,19 @@ static bool _showRendererDropdown;
             }
             if (GUILayout.Button(_showExportWindow ? "Hide Export" : "Binary Export"))
                 _showExportWindow = !_showExportWindow;
+            if (GUILayout.Button(MaterialConstructionPanel.Active ? "Exit Material Construction" : "Material Construction"))
+                MaterialConstructionPanel.Active = !MaterialConstructionPanel.Active;
             GUILayout.Space(4f);
 
             _mainScroll = GUILayout.BeginScrollView(_mainScroll, false, false, GUIStyle.none, GUI.skin.verticalScrollbar, GUILayout.ExpandHeight(true));
+
+            if (MaterialConstructionPanel.Active)
+            {
+                MaterialConstructionPanel.DrawConstructor();
+                GUILayout.EndScrollView();
+                GUILayout.EndVertical();
+                return;
+            }
 
             if (string.IsNullOrEmpty(_propId))
             {
@@ -2509,6 +2523,54 @@ static void SortMaterialList()
             Load();
         }
 
+        // ── Material constructions (persisted alongside prop metadata) ─────────────
+
+        public static List<MaterialConstructionEntry> MaterialConstructions
+        {
+            get { EnsureLoaded(); return _materialConstructions; }
+        }
+
+        public static MaterialConstructionEntry CreateMaterialConstruction()
+        {
+            EnsureLoaded();
+            var entry = new MaterialConstructionEntry
+            {
+                id = _nextMaterialConstructionId++,
+                name = "New Material " + (_materialConstructions.Count + 1)
+            };
+            _materialConstructions.Add(entry);
+            _loadedFromJson = true;
+            Save();
+            return entry;
+        }
+
+        public static void DeleteMaterialConstruction(MaterialConstructionEntry entry)
+        {
+            EnsureLoaded();
+            if (entry == null) return;
+            _materialConstructions.Remove(entry);
+            _loadedFromJson = true;
+            Save();
+        }
+
+        public static MaterialConstructionEntry FindMaterialConstructionById(int id)
+        {
+            EnsureLoaded();
+            if (id < 0) return null;
+            foreach (var e in _materialConstructions)
+                if (e.id == id) return e;
+            return null;
+        }
+
+        public static void MarkMaterialConstructionsDirty() => _loadedFromJson = true;
+
+        public static void SaveMaterialConstructions()
+        {
+            EnsureLoaded();
+            _loadedFromJson = true;
+            Save();
+        }
+
         static bool TryGetInfoById(string id, out PropExtraInfo info)
         {
             info = null;
@@ -2928,6 +2990,20 @@ static void SortMaterialList()
             return null;
         }
 
+        // ── Shared accessors for MaterialConstructionPanel ──────────────────────
+        // Display names, in the same order/sort as the per-prop override dropdown
+        // (index 0 is always NoOverrideLabel).
+        public static List<string> MaterialNames  => _materialNames;
+        public static List<string> MaterialLabels => _materialLabels;
+
+        // Builds (or refreshes) the in-memory material list/cache used by both
+        // material-name lookups and dropdowns.
+        public static void EnsureMaterialListLoaded() => EnsureMaterialList();
+
+        // Resolves a material by display name, falling back to a catalog/asset load
+        // (unlike TryGetMaterialByName, which only checks the in-memory cache).
+        public static Material ResolveMaterialByName(string name) => ResolveMaterial(name);
+
         public static bool HasMetadata(string id)
         {
             EnsureLoaded();
@@ -3102,6 +3178,8 @@ static void SortMaterialList()
             _loaded = true;
             _byId.Clear();
             _nextIndex = 1;
+            _materialConstructions = new List<MaterialConstructionEntry>();
+            _nextMaterialConstructionId = 0;
 
             try
             {
@@ -3152,6 +3230,10 @@ static void SortMaterialList()
             }
             _nextIndex = Math.Max(_nextIndex, maxIndex + 1);
 
+            _materialConstructions = data.materialConstructions ?? new List<MaterialConstructionEntry>();
+            _nextMaterialConstructionId = Math.Max(0, data.nextMaterialConstructionId);
+            ReconcileMaterialConstructionIds();
+
             // One-time cleanup: MicroSplat materials are runtime-generated so they can't have
             // a real source prop. Clear any that were incorrectly recorded.
             bool anyFixed = false;
@@ -3177,7 +3259,9 @@ static void SortMaterialList()
                 var data = new PropExtraInfoSave
                 {
                     nextIndex = _nextIndex,
-                    items = new List<PropExtraInfo>(_byId.Values)
+                    items = new List<PropExtraInfo>(_byId.Values),
+                    nextMaterialConstructionId = _nextMaterialConstructionId,
+                    materialConstructions = _materialConstructions
                 };
 
                 string json = Serialize(data);
@@ -3289,6 +3373,16 @@ static void SortMaterialList()
                     w.Write(item.soundGrassType);
                 }
             }
+
+            w.Write(_nextMaterialConstructionId);
+            w.Write(_materialConstructions.Count);
+            foreach (var mc in _materialConstructions)
+            {
+                w.Write(mc.id);
+                w.Write(mc.name ?? "");
+                w.Write(mc.materialName ?? "");
+                w.Write(mc.surfaceType ?? "");
+            }
         }
 
         static void LoadFromBinaryStream(Stream stream)
@@ -3299,7 +3393,7 @@ static void SortMaterialList()
             if (b0 != 0x50 || b1 != 0x4D || b2 != 0x44)
                 throw new InvalidDataException("Not a PMD file");
             byte version = r.ReadByte();
-            if (version != PmdVersion)
+            if (version < 1 || version > PmdVersion)
                 throw new InvalidDataException($"Unsupported PMD version {version}");
 
             _nextIndex = r.ReadInt32();
@@ -3370,6 +3464,33 @@ static void SortMaterialList()
 
                 _byId[id] = item;
             }
+
+            _materialConstructions = new List<MaterialConstructionEntry>();
+            _nextMaterialConstructionId = 0;
+            if (version >= 2)
+            {
+                _nextMaterialConstructionId = r.ReadInt32();
+                int mcCount = r.ReadInt32();
+                for (int i = 0; i < mcCount; i++)
+                {
+                    _materialConstructions.Add(new MaterialConstructionEntry
+                    {
+                        id = r.ReadInt32(),
+                        name = r.ReadString(),
+                        materialName = r.ReadString(),
+                        surfaceType = r.ReadString()
+                    });
+                }
+            }
+            ReconcileMaterialConstructionIds();
+        }
+
+        static void ReconcileMaterialConstructionIds()
+        {
+            int maxId = -1;
+            foreach (var e in _materialConstructions)
+                if (e != null && e.id > maxId) maxId = e.id;
+            _nextMaterialConstructionId = Math.Max(_nextMaterialConstructionId, maxId + 1);
         }
 
         static void LoadFromEmbedded()
@@ -3450,6 +3571,22 @@ static void SortMaterialList()
                 }
                 sb.Append("    }");
                 if (i < data.items.Count - 1) sb.Append(",");
+                sb.Append("\n");
+            }
+            sb.Append("  ],\n");
+            sb.Append("  \"nextMaterialConstructionId\": ").Append(data.nextMaterialConstructionId).Append(",\n");
+            sb.Append("  \"materialConstructions\": [\n");
+            for (int i = 0; i < data.materialConstructions.Count; i++)
+            {
+                var mc = data.materialConstructions[i];
+                if (mc == null) continue;
+                sb.Append("    {\n");
+                sb.Append("      \"id\": ").Append(mc.id).Append(",\n");
+                AppendJsonField(sb, "name", mc.name, 6).Append(",\n");
+                AppendJsonField(sb, "materialName", mc.materialName, 6).Append(",\n");
+                AppendJsonField(sb, "surfaceType", mc.surfaceType, 6).Append("\n");
+                sb.Append("    }");
+                if (i < data.materialConstructions.Count - 1) sb.Append(",");
                 sb.Append("\n");
             }
             sb.Append("  ]\n}");
@@ -3551,6 +3688,40 @@ static void SortMaterialList()
                 if (!string.IsNullOrEmpty(item.id))
                     data.items.Add(item);
                 i = objEnd + 1;
+            }
+
+            data.nextMaterialConstructionId = ExtractInt(json, "nextMaterialConstructionId", 0);
+
+            int mcIdx = json.IndexOf("\"materialConstructions\"", StringComparison.OrdinalIgnoreCase);
+            if (mcIdx >= 0)
+            {
+                int mcArrStart = json.IndexOf('[', mcIdx);
+                if (mcArrStart >= 0)
+                {
+                    int mcArrEnd = FindMatching(json, mcArrStart, '[', ']');
+                    if (mcArrEnd >= 0)
+                    {
+                        int j = mcArrStart + 1;
+                        while (j < mcArrEnd)
+                        {
+                            SkipWhitespace(json, ref j);
+                            if (j >= mcArrEnd) break;
+                            if (json[j] == ',') { j++; continue; }
+                            if (json[j] != '{') { j++; continue; }
+                            int mcObjEnd = FindMatching(json, j, '{', '}');
+                            if (mcObjEnd < 0) break;
+                            string mcObj = json.Substring(j, mcObjEnd - j + 1);
+                            data.materialConstructions.Add(new MaterialConstructionEntry
+                            {
+                                id = ExtractInt(mcObj, "id", -1),
+                                name = ExtractString(mcObj, "name"),
+                                materialName = ExtractString(mcObj, "materialName"),
+                                surfaceType = ExtractString(mcObj, "surfaceType")
+                            });
+                            j = mcObjEnd + 1;
+                        }
+                    }
+                }
             }
 
             return data;

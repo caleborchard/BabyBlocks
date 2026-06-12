@@ -32,5 +32,7 @@ namespace BabyBlocks
     {
         public int nextIndex = 1;
         public List<PropExtraInfo> items = new();
+        public int nextMaterialConstructionId = 0;
+        public List<MaterialConstructionEntry> materialConstructions = new();
     }
 }
