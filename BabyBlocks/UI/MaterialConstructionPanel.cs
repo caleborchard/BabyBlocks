@@ -495,13 +495,28 @@ namespace BabyBlocks
         {
             if (leo == null || entry == null) return;
 
+            var renderers = leo.GetComponentsInChildren<Renderer>(true);
+            var matsBefore = new Material[renderers.Length][];
+            for (int i = 0; i < renderers.Length; i++)
+                matsBefore[i] = renderers[i] != null ? renderers[i].sharedMaterials : null;
+
+            var colliders = leo.GetComponentsInChildren<Collider>(true);
+            var tagObjs = new GameObject[1 + colliders.Length];
+            tagObjs[0] = leo.gameObject;
+            for (int i = 0; i < colliders.Length; i++)
+                tagObjs[1 + i] = colliders[i] != null ? colliders[i].gameObject : null;
+            var tagsBefore = new string[tagObjs.Length];
+            for (int i = 0; i < tagObjs.Length; i++)
+                tagsBefore[i] = tagObjs[i] != null ? tagObjs[i].tag : null;
+
+            int idBefore = leo.materialConstructionId;
+
             if (!string.IsNullOrEmpty(entry.materialName))
             {
                 PropMetadataPanel.EnsureMaterialListLoaded();
                 var mat = PropMetadataPanel.ResolveMaterialByName(entry.materialName);
                 if (mat != null)
                 {
-                    var renderers = leo.GetComponentsInChildren<Renderer>(true);
                     for (int i = 0; i < renderers.Length; i++)
                     {
                         var r = renderers[i];
@@ -517,6 +532,8 @@ namespace BabyBlocks
 
             PropMetadataPanel.ApplySurfaceType(leo, entry.surfaceType);
             leo.materialConstructionId = entry.id;
+
+            LevelEditorHistory.PushMaterial(leo, renderers, matsBefore, tagObjs, tagsBefore, idBefore);
         }
 
         // ── Styles ───────────────────────────────────────────────────────────

@@ -128,11 +128,66 @@ namespace BabyBlocks
             public void Redo() { if (_obj != null) { _after.Apply(_obj.transform);  LevelEditor.Select(_obj); } }
         }
 
+        class MaterialAction : IAction
+        {
+            readonly LevelEditorObject _obj;
+            readonly Renderer[]        _renderers;
+            readonly Material[][]      _matsBefore, _matsAfter;
+            readonly GameObject[]      _tagObjs;
+            readonly string[]          _tagsBefore, _tagsAfter;
+            readonly int               _idBefore, _idAfter;
+
+            public MaterialAction(LevelEditorObject obj, Renderer[] renderers,
+                Material[][] matsBefore, Material[][] matsAfter,
+                GameObject[] tagObjs, string[] tagsBefore, string[] tagsAfter,
+                int idBefore, int idAfter)
+            {
+                _obj        = obj;
+                _renderers  = renderers;
+                _matsBefore = matsBefore;
+                _matsAfter  = matsAfter;
+                _tagObjs    = tagObjs;
+                _tagsBefore = tagsBefore;
+                _tagsAfter  = tagsAfter;
+                _idBefore   = idBefore;
+                _idAfter    = idAfter;
+            }
+
+            public void Undo() => Apply(_matsBefore, _tagsBefore, _idBefore);
+            public void Redo() => Apply(_matsAfter, _tagsAfter, _idAfter);
+
+            void Apply(Material[][] mats, string[] tags, int id)
+            {
+                if (_obj == null) return;
+                for (int i = 0; i < _renderers.Length; i++)
+                    if (_renderers[i] != null) _renderers[i].sharedMaterials = mats[i];
+                for (int i = 0; i < _tagObjs.Length; i++)
+                    if (_tagObjs[i] != null) { try { _tagObjs[i].tag = tags[i]; } catch { } }
+                _obj.materialConstructionId = id;
+                LevelEditor.Select(_obj);
+            }
+        }
+
         static readonly List<IAction> _undo = new();
         static readonly List<IAction> _redo = new();
 
         public static void PushSpawn(LevelEditorObject obj)  => Push(new SpawnAction(obj));
         public static void PushDelete(LevelEditorObject obj) => Push(new DeleteAction(obj));
+
+        public static void PushMaterial(LevelEditorObject obj, Renderer[] renderers, Material[][] matsBefore,
+            GameObject[] tagObjs, string[] tagsBefore, int idBefore)
+        {
+            var matsAfter = new Material[renderers.Length][];
+            for (int i = 0; i < renderers.Length; i++)
+                matsAfter[i] = renderers[i] != null ? renderers[i].sharedMaterials : null;
+
+            var tagsAfter = new string[tagObjs.Length];
+            for (int i = 0; i < tagObjs.Length; i++)
+                tagsAfter[i] = tagObjs[i] != null ? tagObjs[i].tag : null;
+
+            Push(new MaterialAction(obj, renderers, matsBefore, matsAfter, tagObjs, tagsBefore, tagsAfter,
+                idBefore, obj.materialConstructionId));
+        }
 
         public static void PushTransform(LevelEditorObject obj,
             Vector3 posBefore, Vector3 scaleBefore, Quaternion rotBefore)
