@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -349,8 +350,19 @@ namespace BabyBlocks
                 // is on player.anim.transform when it places the player.
                 player.anim.transform.rotation = Quaternion.Euler(0f, leo.transform.eulerAngles.y, 0f);
                 Menu.me.Teleport(leo.transform.position);
+                MelonCoroutines.Start(SnapFlyCamToPlayer(player));
                 return;
             }
+        }
+
+        // Mirrors FarTeleportCo's fly-cam snap: once Menu.me.Teleport's coroutine
+        // settles, move the fly cam to the player's new body position so the editor
+        // camera follows the player instead of staying at its pre-load position.
+        static IEnumerator SnapFlyCamToPlayer(PlayerMovement player)
+        {
+            while (Menu.me != null && Menu.me.teleporting) yield return null;
+            if (player != null && player.flyCam != null && player.torsoRbs != null && player.torsoRbs.Length > 0)
+                player.flyCam.transform.position = player.torsoRbs[0].transform.position;
         }
 
         // Version 1 backward-compat: int32 byte-length followed by UTF-8 bytes.

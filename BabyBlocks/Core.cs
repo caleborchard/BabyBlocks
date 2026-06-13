@@ -202,7 +202,33 @@ namespace BabyBlocks
     [HarmonyPatch(typeof(BBConvoStarter), "OnTriggerEnter")]
     class BBConvoStarterTriggerPatch
     {
-        static bool Prefix() => !FlyCamController.FlyCamActive;
+        static bool Prefix(BBConvoStarter __instance)
+        {
+            bool suppress = FlyCamController.SuppressCutsceneTriggers;
+            MelonLogger.Msg($"[Cutscene] OnTriggerEnter on '{__instance?.name}' " +
+                $"(used={__instance?.used}, cutscene={__instance?.cutscene}) " +
+                $"FlyCamActive={FlyCamController.FlyCamActive} suppress={suppress} time={Time.unscaledTime:F2}");
+            return !suppress;
+        }
+    }
+
+    // PlayCutscene is the common choke point for every way a cutscene can start — not just
+    // OnTriggerEnter, but also Menu.qedCutscene, morning/evening checkpoint cutscenes, and
+    // sequelCutscene chaining (BBConvoStarter.OnEnd). Gating here catches scheduled/queued
+    // cutscenes that never go through OnTriggerEnter at all.
+    [HarmonyPatch(typeof(BBConvoStarter), "PlayCutscene")]
+    class BBConvoStarterPlayCutscenePatch
+    {
+        static bool Prefix(BBConvoStarter __instance)
+        {
+            bool suppress = FlyCamController.SuppressCutsceneTriggers;
+            MelonLogger.Msg($"[Cutscene] PlayCutscene on '{__instance?.name}' " +
+                $"(used={__instance?.used}, cutscene={__instance?.cutscene}) " +
+                $"FlyCamActive={FlyCamController.FlyCamActive} suppress={suppress} time={Time.unscaledTime:F2}");
+            if (suppress)
+                FlyCamController.RegisterSuppressedCutscene(__instance);
+            return !suppress;
+        }
     }
 
     // Makes editor bush props produce grass sounds by intercepting TractionByteKeeper.GetGrassAt.

@@ -26,6 +26,7 @@ namespace BabyBlocks
 
         static int   _scrollOffset    = 0;
         static int   _draggingIndex   = -1; // index into PropLibrary.FilteredProps
+        static int   _dragStartFrame  = -1;
         static int   _lastFilterCount = -1;
         static float _scrollTimer;
         static bool  _scrollActive;
@@ -33,6 +34,20 @@ namespace BabyBlocks
 
         const float ScrollInitialDelay  = 0.35f;
         const float ScrollRepeatInterval = 0.08f;
+
+        // Advances a paged scroll offset by one page in `dir`, wrapping around to the
+        // start/end so paging never gets stuck showing a lone leftover item on its
+        // own trailing "page". Shared with MaterialConstructionPanel so every list
+        // pages and loops the same way.
+        public static int StepPageOffset(int current, int dir, int page, int total)
+        {
+            if (total <= 0) return 0;
+            int maxOffset = ((total - 1) / page) * page;
+            int next = current + dir * page;
+            if (next > maxOffset) return 0;
+            if (next < 0) return maxOffset;
+            return next;
+        }
 
         // Exposed so PropLibrary.BuildFiltered can read the selected category.
         public static string SelectedCategory = null;
@@ -51,6 +66,12 @@ namespace BabyBlocks
         public static bool     IsDragging   => _draggingIndex >= 0;
         public static PropInfo DraggingProp => IsDragging ? PropLibrary.FilteredProps[_draggingIndex] : null;
         public static void     CancelDrag() => _draggingIndex = -1;
+
+        // The OnGUI MouseDown that starts a drag and the Update() that checks for
+        // mouse-release can land on the same frame, which would otherwise read the
+        // button as already-up and drop the prop immediately under the palette.
+        // Skip the release check for the frame the drag started on.
+        public static bool JustStartedDrag => _draggingIndex >= 0 && Time.frameCount == _dragStartFrame;
 
         // Call from LevelEditor.Update so - = work even while RMB-orbiting is blocked.
         public static void HandleScrollInput()
@@ -78,7 +99,7 @@ namespace BabyBlocks
                 _scrollActive  = true;
                 _scrollInDelay = true;
                 _scrollTimer   = 0f;
-                _scrollOffset  = Mathf.Clamp(_scrollOffset + dir * page, 0, total - 1);
+                _scrollOffset  = StepPageOffset(_scrollOffset, dir, page, total);
                 return;
             }
 
@@ -88,7 +109,7 @@ namespace BabyBlocks
             {
                 _scrollTimer  -= threshold;
                 _scrollInDelay = false;
-                _scrollOffset  = Mathf.Clamp(_scrollOffset + dir * page, 0, total - 1);
+                _scrollOffset  = StepPageOffset(_scrollOffset, dir, page, total);
             }
         }
 
@@ -187,7 +208,21 @@ namespace BabyBlocks
                             if (isExcluded)
                                 PropMetadataPanel.SetPaletteSelection(prop.id);
                             else
-                                _draggingIndex = propIdx;
+                            {
+                                _draggingIndex  = propIdx;
+                                _dragStartFrame = Time.frameCount;
+                                // Dragging straight out of a focused search field (without
+                                // clicking elsewhere first to defocus it) can leave Unity's
+                                // input state out of sync for the first frames of the drag,
+                                // causing the dragged prop to drop immediately. Clear focus.
+                                GUI.FocusControl(null);
+                                // Load mesh data now, on click, rather than on the first
+                                // ghost-update frame. Loading an unloaded prop can take long
+                                // enough that the user's drag-and-release finishes during the
+                                // hitch, making the prop appear to drop instantly at the click
+                                // point instead of following the cursor.
+                                if (!prop.isLoaded) PropLibrary.LoadPropData(prop);
+                            }
                             e.Use();
                         }
                     }

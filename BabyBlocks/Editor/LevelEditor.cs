@@ -98,6 +98,15 @@ namespace BabyBlocks
         }
         static int _dragStep;
 
+        // Unity's Input.GetMouseButton(0) can spuriously read false for a single
+        // frame (e.g. after a brief hitch resets input state), which would otherwise
+        // be misread as the user releasing the mouse and drop the dragged prop
+        // instantly. Require a few consecutive "not held" frames before treating
+        // it as a real release.
+        const int DragReleaseDebounceFrames = 3;
+        static int _propDragReleaseFrames;
+        static int _matDragReleaseFrames;
+
         public static void EnsureManager()
         {
             if (LevelEditorManager.Instance != null) return;
@@ -198,7 +207,10 @@ namespace BabyBlocks
                 _snapEnabled = !_snapEnabled;
 
             if (!blockShortcuts)
+            {
                 PropPalette.HandleScrollInput();
+                MaterialConstructionPanel.HandleScrollInput();
+            }
 
             // WARNING: EnsureCamera must be called here (once per frame, before Sync),
             // NOT inside Sync() itself. Past attempts to rebuild/reconfigure the overlay
@@ -238,26 +250,38 @@ namespace BabyBlocks
 
             if (PropPalette.IsDragging)
             {
-                if (!Input.GetMouseButton(0))
+                bool mouseHeld = Input.GetMouseButton(0);
+                if (mouseHeld || PropPalette.JustStartedDrag)
+                {
+                    _propDragReleaseFrames = 0;
+                    if (Input.GetKeyDown(KeyCode.R)) _dragStep = (_dragStep + 1) % DragOrientations.Length;
+                    UpdatePropGhostForFrame();
+                }
+                else if (++_propDragReleaseFrames >= DragReleaseDebounceFrames)
                 {
                     if (!overUI) TryDropProp();
                     DestroyPropGhost();
                     PropPalette.CancelDrag();
+                    _propDragReleaseFrames = 0;
                 }
                 else
                 {
-                    if (Input.GetKeyDown(KeyCode.R)) _dragStep = (_dragStep + 1) % DragOrientations.Length;
-                    UpdatePropGhostForFrame(overUI);
+                    UpdatePropGhostForFrame();
                 }
                 return;
             }
 
             if (MaterialConstructionPanel.IsDragging)
             {
-                if (!Input.GetMouseButton(0))
+                if (Input.GetMouseButton(0) || MaterialConstructionPanel.JustStartedDrag)
+                {
+                    _matDragReleaseFrames = 0;
+                }
+                else if (++_matDragReleaseFrames >= DragReleaseDebounceFrames)
                 {
                     if (!overUI) MaterialConstructionPanel.TryApplyToHoveredProp();
                     MaterialConstructionPanel.CancelDrag();
+                    _matDragReleaseFrames = 0;
                 }
                 return;
             }
@@ -358,7 +382,8 @@ namespace BabyBlocks
         static void TryDropProp()
         {
             var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
-            if (!Physics.Raycast(ray, out var hit, 2000f, LayerCache.PropTerrainMask)) return;
+            bool didHit = Physics.Raycast(ray, out var hit, 2000f, LayerCache.PropTerrainMask);
+            if (!didHit) return;
 
             var prop = PropPalette.DraggingProp;
             if (prop == null) return;
@@ -367,7 +392,8 @@ namespace BabyBlocks
             PropLibrary.LoadPropData(prop);
 
             var rot = ComputeDragRotation(hit.normal) * DragOrientations[_dragStep];
-            var obj = LevelEditorManager.Instance.SpawnFromPropInfo(prop, ComputeSpawnPosition(prop, hit, rot));
+            var spawnPos = ComputeSpawnPosition(prop, hit, rot);
+            var obj = LevelEditorManager.Instance.SpawnFromPropInfo(prop, spawnPos);
             if (obj == null) return;
             obj.transform.rotation = rot;
             Select(obj);
@@ -392,24 +418,28 @@ namespace BabyBlocks
 
         // Places the prop so its nearest face (in the surface-normal direction) sits on the hit point,
         // accounting for the prop's spawn rotation so the offset is correct for rotated placements.
-        static Vector3 ComputeSpawnPosition(PropInfo prop, RaycastHit hit, Quaternion rotation)
+        // scale lets callers account for an object whose localScale differs from the prop's default
+        // (1,1,1) bounds — e.g. surface-snapping an already-thinned object — so the offset reflects
+        // its current size rather than floating/sinking relative to the surface.
+        static Vector3 ComputeSpawnPosition(PropInfo prop, RaycastHit hit, Quaternion rotation, Vector3? scale = null)
         {
             var bounds = PropLibrary.GetPropBounds(prop);
             if (!bounds.HasValue)
                 return hit.point + hit.normal * 0.5f;
 
+            Vector3 s = scale ?? Vector3.one;
             Vector3 n = hit.normal;
             // Rotate the local-space center into world space.
-            Vector3 rotCenter = rotation * bounds.Value.center;
+            Vector3 rotCenter = rotation * Vector3.Scale(bounds.Value.center, s);
             // Support function for a rotated AABB: project each rotated half-axis onto n.
             Vector3 e = bounds.Value.extents;
-            float extent = Mathf.Abs(Vector3.Dot(rotation * new Vector3(e.x, 0f,  0f),  n))
-                         + Mathf.Abs(Vector3.Dot(rotation * new Vector3(0f,  e.y, 0f),  n))
-                         + Mathf.Abs(Vector3.Dot(rotation * new Vector3(0f,  0f,  e.z), n));
+            float extent = Mathf.Abs(Vector3.Dot(rotation * new Vector3(e.x * s.x, 0f,  0f),  n))
+                         + Mathf.Abs(Vector3.Dot(rotation * new Vector3(0f,  e.y * s.y, 0f),  n))
+                         + Mathf.Abs(Vector3.Dot(rotation * new Vector3(0f,  0f,  e.z * s.z), n));
             return hit.point - rotCenter + n * extent;
         }
 
-        static void UpdatePropGhostForFrame(bool overUI)
+        static void UpdatePropGhostForFrame()
         {
             var prop = PropPalette.DraggingProp;
             if (prop == null) { DestroyPropGhost(); return; }
@@ -425,10 +455,12 @@ namespace BabyBlocks
 
             if (_propGhost == null) return;
 
-            if (overUI) { _propGhost.SetActive(false); return; }
-
+            // Raycast even while the cursor is over the palette so the ghost is
+            // visible (at the last hit point) the instant the drag starts, rather
+            // than staying hidden until the cursor first leaves the UI.
             var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
-            if (Physics.Raycast(ray, out var hit, 2000f, LayerCache.PropTerrainMask))
+            bool didHit = Physics.Raycast(ray, out var hit, 2000f, LayerCache.PropTerrainMask);
+            if (didHit)
             {
                 var rot = ComputeDragRotation(hit.normal) * DragOrientations[_dragStep];
                 _propGhost.SetActive(true);
@@ -1156,7 +1188,7 @@ namespace BabyBlocks
             if (prop != null)
             {
                 PropLibrary.LoadPropData(prop);
-                targetPos = ComputeSpawnPosition(prop, hit, rot);
+                targetPos = ComputeSpawnPosition(prop, hit, rot, primary.transform.localScale);
             }
             else
             {

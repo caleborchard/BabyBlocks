@@ -194,6 +194,13 @@ namespace BabyBlocks
                 var pi = new PropInfo(id, name);
                 _all.Add(pi);
                 _byId[id] = pi;
+
+                // Load eagerly here (at editor-open time) rather than lazily on first
+                // drag. LoadPrimitive's CreatePrimitive/Destroy churn produces garbage
+                // that the GC can collect a few frames later — if that lands mid-drag
+                // it can swallow the held mouse-button state for a frame, making the
+                // very first drag of a given primitive appear to release early.
+                LoadPropData(pi);
             }
 
             var holeProp = new PropInfo(NegativeCollisionPropId, "Hole");

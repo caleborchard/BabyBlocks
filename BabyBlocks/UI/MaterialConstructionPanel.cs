@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace BabyBlocks
@@ -51,7 +52,14 @@ namespace BabyBlocks
 
         static MaterialConstructionEntry _editing;
         static int _draggingIndex = -1;
+        static int _dragStartFrame = -1;
         static int _scrollOffset;
+        static float _scrollTimer;
+        static bool _scrollActive;
+        static bool _scrollInDelay;
+
+        const float ScrollInitialDelay   = 0.35f;
+        const float ScrollRepeatInterval = 0.08f;
 
         static bool _showMaterialDropdown;
         static bool _showSurfaceDropdown;
@@ -67,9 +75,60 @@ namespace BabyBlocks
         static GUIStyle _buttonStyle;
         static GUIStyle _headerStyle;
 
-        public static bool IsDragging => _draggingIndex >= 0 && _draggingIndex < MaterialConstructionLibrary.Entries.Count;
-        public static MaterialConstructionEntry DraggingEntry => IsDragging ? MaterialConstructionLibrary.Entries[_draggingIndex] : null;
+        // Display order, sorted alphabetically by name and refreshed each DrawPalette
+        // call. _draggingIndex indexes into this list rather than the raw entry list
+        // so dragging stays consistent with what's on screen.
+        static readonly List<MaterialConstructionEntry> _displayEntries = new List<MaterialConstructionEntry>();
+
+        public static bool IsDragging => _draggingIndex >= 0 && _draggingIndex < _displayEntries.Count;
+        public static MaterialConstructionEntry DraggingEntry => IsDragging ? _displayEntries[_draggingIndex] : null;
         public static void CancelDrag() => _draggingIndex = -1;
+
+        // See PropPalette.JustStartedDrag — same one-frame grace period to avoid
+        // dropping/applying immediately on the frame the drag started.
+        public static bool JustStartedDrag => IsDragging && Time.frameCount == _dragStartFrame;
+
+        // Call from LevelEditor.Update so - = page through the materials palette
+        // while it's visible, mirroring PropPalette.HandleScrollInput.
+        public static void HandleScrollInput()
+        {
+            bool paletteVisible = (Core.DebugMode && Active) || (!Core.DebugMode && PropPalette.ShowingMaterials);
+            if (!paletteVisible) return;
+
+            int total = MaterialConstructionLibrary.Entries.Count;
+            if (total == 0) return;
+
+            bool minusHeld  = Input.GetKey(KeyCode.Minus);
+            bool equalsHeld = Input.GetKey(KeyCode.Equals);
+
+            if (!minusHeld && !equalsHeld)
+            {
+                _scrollActive = false;
+                _scrollTimer  = 0f;
+                return;
+            }
+
+            int dir  = minusHeld ? -1 : 1;
+            int page = VisibleSlots;
+
+            if (!_scrollActive)
+            {
+                _scrollActive  = true;
+                _scrollInDelay = true;
+                _scrollTimer   = 0f;
+                _scrollOffset  = PropPalette.StepPageOffset(_scrollOffset, dir, page, total);
+                return;
+            }
+
+            _scrollTimer += Time.unscaledDeltaTime;
+            float threshold = _scrollInDelay ? ScrollInitialDelay : ScrollRepeatInterval;
+            if (_scrollTimer >= threshold)
+            {
+                _scrollTimer  -= threshold;
+                _scrollInDelay = false;
+                _scrollOffset  = PropPalette.StepPageOffset(_scrollOffset, dir, page, total);
+            }
+        }
 
         // ── Left-side palette (replaces PropPalette while active) ───────────────
 
@@ -77,13 +136,16 @@ namespace BabyBlocks
         {
             EnsureStyles();
 
-            var entries = MaterialConstructionLibrary.Entries;
+            _displayEntries.Clear();
+            _displayEntries.AddRange(MaterialConstructionLibrary.Entries);
+            _displayEntries.Sort((a, b) => string.Compare(a.name, b.name, StringComparison.OrdinalIgnoreCase));
+            var entries = _displayEntries;
             int total   = entries.Count;
             int visible = VisibleSlots;
 
-            _scrollOffset = Mathf.Clamp(_scrollOffset, 0, Mathf.Max(0, total - visible));
+            _scrollOffset = Mathf.Clamp(_scrollOffset, 0, Mathf.Max(0, total - 1));
 
-            float panelH    = Pad + visible * (ItemH + Pad) + (showAddButton ? 22f : 0f);
+            float panelH    = Pad + visible * (ItemH + Pad) + (showAddButton ? 22f : 0f) + 18f;
             var   panelRect = new Rect(10f, 10f, PanelW, panelH);
             PropPalette.PanelRect = panelRect;
 
@@ -93,7 +155,8 @@ namespace BabyBlocks
 
             if (e.type == EventType.ScrollWheel && panelRect.Contains(e.mousePosition) && total > visible)
             {
-                _scrollOffset = Mathf.Clamp(_scrollOffset + (int)Mathf.Sign(e.delta.y), 0, Mathf.Max(0, total - visible));
+                int dir = (int)Mathf.Sign(e.delta.y);
+                _scrollOffset = PropPalette.StepPageOffset(_scrollOffset, dir, visible, total);
                 e.Use();
             }
 
@@ -122,7 +185,13 @@ namespace BabyBlocks
                             _showMaterialDropdown = false;
                             _showSurfaceDropdown = false;
                         }
-                        _draggingIndex = entryIdx;
+                        _draggingIndex  = entryIdx;
+                        _dragStartFrame = Time.frameCount;
+                        // Dragging straight out of a focused search/name field (without
+                        // clicking elsewhere first to defocus it) can leave Unity's input
+                        // state out of sync for the first frames of the drag, causing the
+                        // dragged item to drop immediately. Clear focus up front.
+                        GUI.FocusControl(null);
                         e.Use();
                     }
                 }
@@ -145,6 +214,17 @@ namespace BabyBlocks
                     _showMaterialDropdown = false;
                     _showSurfaceDropdown = false;
                 }
+            }
+
+            // Page label at bottom of panel.
+            if (total > 0)
+            {
+                int pageCount   = Mathf.CeilToInt(total / (float)visible);
+                int currentPage = (_scrollOffset / visible) + 1;
+                GUI.color = new Color(0.75f, 0.75f, 0.75f, 1f);
+                float pageLabelY = 10f + Pad + visible * (ItemH + Pad) + (showAddButton ? 22f : 2f);
+                GUI.Label(new Rect(10f + Pad, pageLabelY, ItemW, 18f), $"{currentPage}/{pageCount}");
+                GUI.color = Color.white;
             }
 
             if (total == 0)

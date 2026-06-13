@@ -1515,15 +1515,43 @@ static void SortMaterialList()
         {
             if (_microSplatLayerMats.Count > 0)
             {
-                // Already built — just re-register in case _materialByName was cleared by EnsureMaterialList.
+                bool anyDestroyed = false;
                 foreach (var mat in _microSplatLayerMats)
+                    if (mat == null) { anyDestroyed = true; break; }
+
+                if (!anyDestroyed)
                 {
-                    if (mat == null || _materialByName.ContainsKey(mat.name)) continue;
-                    _materialNames.Add(mat.name);
-                    _materialLabels.Add(mat.name);
-                    _materialByName[mat.name] = mat;
+                    // Already built — just re-register in case _materialByName was cleared by EnsureMaterialList.
+                    foreach (var mat in _microSplatLayerMats)
+                    {
+                        if (_materialByName.ContainsKey(mat.name)) continue;
+                        _materialNames.Add(mat.name);
+                        _materialLabels.Add(mat.name);
+                        _materialByName[mat.name] = mat;
+                    }
+                    return;
                 }
-                return;
+
+                // One or more cached layer materials were destroyed (e.g. Addressables released
+                // their backing assets during a far-teleport chunk drain). Drop their stale
+                // "[MicroSplat] Layer N" entries — by index, since destroyed Materials can't
+                // report their own name — and rebuild below so the search list and any
+                // categorized-material entries referencing them resolve again.
+                for (int layer = 0; layer < _microSplatLayerMats.Count; layer++)
+                {
+                    string staleName = $"[MicroSplat] Layer {layer}";
+                    int idx = _materialNames.IndexOf(staleName);
+                    if (idx >= 0)
+                    {
+                        _materialNames.RemoveAt(idx);
+                        _materialLabels.RemoveAt(idx);
+                    }
+                    _materialByName.Remove(staleName);
+                }
+                _microSplatLayerMats.Clear();
+                _msActiveControls.Clear();
+                _msBlankControl = null;
+                _msControlProps = null;
             }
             try
             {

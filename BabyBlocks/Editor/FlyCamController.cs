@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using Il2Cpp;
 using Il2CppCinemachine;
 using MelonLoader;
@@ -11,6 +12,46 @@ namespace BabyBlocks
     {
         public static bool FlyCamActive;
         public static bool CursorMode;
+
+        // Grace period after leaving fly/editor mode during which cutscene triggers stay
+        // suppressed. The player can be placed inside a BBConvoStarter trigger volume by the
+        // exit teleport itself, but Unity's OnTriggerEnter for the newly-overlapping collider
+        // fires on a later FixedUpdate — after FlyCamActive has already gone false — so a
+        // same-frame check alone misses it.
+        const float CutsceneSuppressGraceTime = 0.3f;
+        static float _cutsceneSuppressUntil = -1f;
+
+        public static bool SuppressCutsceneTriggers =>
+            FlyCamActive || Time.unscaledTime < _cutsceneSuppressUntil;
+
+        // PlayCutscene calls swallowed while suppressed — OnTriggerEnter is one-shot, so
+        // dropping the call silently means the cutscene would never get another chance to
+        // play (the player is already standing inside the trigger volume, no further
+        // enter/exit to re-fire it). Replayed once suppression lifts.
+        static readonly List<BBConvoStarter> _pendingCutscenes = new();
+
+        public static void RegisterSuppressedCutscene(BBConvoStarter bcs)
+        {
+            if (bcs == null) return;
+            string saveName = bcs.GetSaveName();
+            foreach (var pending in _pendingCutscenes)
+                if (pending != null && pending.GetSaveName() == saveName) return;
+            _pendingCutscenes.Add(bcs);
+        }
+
+        static void ReplaySuppressedCutscenes()
+        {
+            if (_pendingCutscenes.Count == 0 || SuppressCutsceneTriggers) return;
+
+            var pending = new List<BBConvoStarter>(_pendingCutscenes);
+            _pendingCutscenes.Clear();
+            foreach (var bcs in pending)
+            {
+                if (bcs == null) continue;
+                MelonLogger.Msg($"[Cutscene] Replaying suppressed PlayCutscene on '{bcs.name}'");
+                bcs.PlayCutscene();
+            }
+        }
 
         static float _noiseAmplitude = -1f;
         static bool  _refreezePending;
@@ -35,6 +76,8 @@ namespace BabyBlocks
 
         public static void OnUpdate()
         {
+            ReplaySuppressedCutscenes();
+
             // Once the post-save-load scene load burst has settled (see
             // Core.PendingMicroSplatRefreshTime for why this is deferred rather than done in
             // OnSceneWasLoaded directly): refresh the cached MicroSplat layer materials, and
@@ -54,14 +97,27 @@ namespace BabyBlocks
                 GhostCollisionCutter.BakeAllColliderCarves();
             }
 
+            // Toggling fly/editor mode while a cutscene is playing leaves PlayerMovement and
+            // the fly cam rig in an inconsistent state (player.flyCam ends up null, OnStandUp
+            // NREs, etc.) — block entry/exit entirely until the cutscene finishes.
             if (Input.GetKeyDown(KeyCode.R) && PlayerMovement.me != null
                 && !Menu.me.teleporting && !Core.IsKeyboardCaptured
                 && !PropPalette.IsDragging && !LevelEditor.IsSurfaceSnapDragging)
-                ToggleFlyEditorMode();
+            {
+                if (PlayerMovement.me.inCutscene)
+                    MelonLogger.Msg("[Cutscene] R pressed but inCutscene=true — ignoring.");
+                else
+                    ToggleFlyEditorMode();
+            }
 
             if (Input.GetKeyDown(KeyCode.BackQuote) && PlayerMovement.me != null
                 && !Menu.me.teleporting && !Core.IsKeyboardCaptured)
-                ToggleTeleportMode();
+            {
+                if (PlayerMovement.me.inCutscene)
+                    MelonLogger.Msg("[Cutscene] BackQuote pressed but inCutscene=true — ignoring.");
+                else
+                    ToggleTeleportMode();
+            }
 
             // G: unified teleport. In non-cursor mode aims along the crosshair (infinite
             // distance); in cursor mode drops to fly-cam position. Both paths go through
@@ -126,6 +182,7 @@ namespace BabyBlocks
         // BackQuote key: direct game ↔ editor toggle (skips bare fly mode).
         static void ToggleTeleportMode()
         {
+            MelonLogger.Msg($"[Cutscene] ToggleTeleportMode pressed, FlyCamActive(before)={FlyCamActive}");
             if (!FlyCamActive)
             {
                 ToggleFlyMode();
@@ -179,7 +236,6 @@ namespace BabyBlocks
             else
             {
                 LevelEditorManager.Instance?.SetEditorModeActive(false);
-                FlyCamActive     = false;
                 CursorMode       = false;
                 _refreezePending = false;
                 Cursor.lockState = CursorLockMode.Locked;
@@ -190,6 +246,14 @@ namespace BabyBlocks
                 player.pm.SwitchModes();
                 player.OnStandUp();
                 LevelEditor.HideGizmo();
+
+                // Cleared only after the unfreeze/mode-switch sequence above so
+                // BBConvoStarterTriggerPatch keeps suppressing cutscene triggers while the
+                // player's physics/collider are being reactivated at the exit position.
+                FlyCamActive = false;
+                _cutsceneSuppressUntil = Time.unscaledTime + CutsceneSuppressGraceTime;
+                MelonLogger.Msg($"[Cutscene] Exited fly/editor mode at player pos {player.transform.position}, " +
+                    $"suppressUntil={_cutsceneSuppressUntil:F2} (now={Time.unscaledTime:F2})");
 
                 if (_noiseAmplitude >= 0f)
                 {

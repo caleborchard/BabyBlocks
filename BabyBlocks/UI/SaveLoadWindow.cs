@@ -150,6 +150,16 @@ namespace BabyBlocks
         static Vector2 _dragOffset;
         static bool   _weatherDropdownOpen;
 
+        // Clear/Load both wipe the current scene — the first click swaps that
+        // button's label to "Are you sure?" and a second click within
+        // ConfirmTimeout actually performs the action, unless the scene is
+        // already empty.
+        static bool  _confirmClear;
+        static bool  _confirmLoad;
+        static float _confirmClearTime;
+        static float _confirmLoadTime;
+        const float ConfirmTimeout = 3f;
+
         static string _filePath = "";
         static string _status   = "";
         static float  _statusTime;
@@ -221,17 +231,25 @@ namespace BabyBlocks
             float contentX = _windowRect.x + Pad;
             float innerW   = WinW - Pad * 2f;
 
-            // Save / Load buttons
             float btnW = (innerW - Pad) * 0.5f;
+
+            // Auto-revert a pending confirmation if it's not acted on promptly.
+            if (_confirmClear && Time.realtimeSinceStartup - _confirmClearTime > ConfirmTimeout) _confirmClear = false;
+            if (_confirmLoad  && Time.realtimeSinceStartup - _confirmLoadTime  > ConfirmTimeout) _confirmLoad  = false;
+
+            // Save / Load buttons
             if (GUI.Button(new Rect(contentX, contentY, btnW, 22f), "Save"))
+            {
+                _confirmLoad = false;
                 DoSave();
-            if (GUI.Button(new Rect(contentX + btnW + Pad, contentY, btnW, 22f), "Load"))
-                DoLoad();
+            }
+            if (GUI.Button(new Rect(contentX + btnW + Pad, contentY, btnW, 22f), _confirmLoad ? "Are you sure?" : "Load"))
+                RequestLoad();
 
             contentY += 26f;
 
-            if (GUI.Button(new Rect(contentX, contentY, innerW, 22f), "Clear"))
-                DoClear();
+            if (GUI.Button(new Rect(contentX, contentY, innerW, 22f), _confirmClear ? "Are you sure?" : "Clear"))
+                RequestClear();
 
             contentY += 26f;
 
@@ -306,12 +324,61 @@ namespace BabyBlocks
             SetStatus(ok ? "Saved." : "Save failed — see log.");
         }
 
+        // Scene is already empty — clearing it would have no effect, so skip the
+        // "Are you sure?" prompt. Otherwise the first click arms the prompt and
+        // the second (within ConfirmTimeout) actually clears.
+        static void RequestClear()
+        {
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null) { SetStatus("Level editor not ready."); return; }
+            if (mgr.Objects.Count == 0) { SetStatus("Nothing to clear."); return; }
+
+            if (_confirmClear)
+            {
+                _confirmClear = false;
+                DoClear();
+            }
+            else
+            {
+                _confirmClear     = true;
+                _confirmClearTime = Time.realtimeSinceStartup;
+            }
+        }
+
         static void DoClear()
         {
             var mgr = LevelEditorManager.Instance;
             if (mgr == null) { SetStatus("Level editor not ready."); return; }
             mgr.RemoveAll();
             SetStatus("Cleared.");
+        }
+
+        // Loading replaces the whole scene — only prompt if there's something to lose.
+        static void RequestLoad()
+        {
+            if (string.IsNullOrWhiteSpace(_filePath))
+            {
+                SetStatus("No file path set.");
+                return;
+            }
+
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null || mgr.Objects.Count == 0)
+            {
+                DoLoad();
+                return;
+            }
+
+            if (_confirmLoad)
+            {
+                _confirmLoad = false;
+                DoLoad();
+            }
+            else
+            {
+                _confirmLoad     = true;
+                _confirmLoadTime = Time.realtimeSinceStartup;
+            }
         }
 
         static void DoLoad()
