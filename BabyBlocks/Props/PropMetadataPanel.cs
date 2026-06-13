@@ -1099,6 +1099,17 @@ static void SortMaterialList()
                 MelonLogger.Warning($"[PropMetadata] Material scan failed: {e.Message}");
             }
 
+            // Every rebuild above starts from a clean _materialNames/_materialLabels and only
+            // re-populates from whatever is currently resident in memory (Resources.FindObjectsOfTypeAll)
+            // — so a material from an area that's since streamed out (e.g. "NewMat_Ice" after flying
+            // away) drops off the list entirely. Re-merge the full catalog index every time so
+            // previously-seen, area-specific materials stay listed (resolved lazily via
+            // PropLibrary.TryLoadMaterialByName when actually applied). On the very first call this
+            // is also done inside EnsureMaterialSources/FinishMaterialSourcesScan, but subsequent
+            // rebuilds (after InvalidateMaterialCache) need it re-applied too since
+            // EnsureMaterialSources is one-shot.
+            AddCatalogMaterialsToList();
+
             EnsureMaterialSources();
         }
 
@@ -1359,10 +1370,17 @@ static void SortMaterialList()
                 catch { }
             }
 
-            // Full catalog index: add every material name from the catalog so the search list
-            // is complete regardless of which asset bundles are currently loaded. Actual Material
-            // objects are lazy-loaded on first use (see ApplyPreviewMaterial / ApplySlotMaterial).
-            // IndexAllCatalogMaterials is a no-op on subsequent sessions (sentinel in cache).
+            AddCatalogMaterialsToList();
+        }
+
+        // Adds every material name from the full catalog index to the display list that isn't
+        // already present, so the search list is complete regardless of which asset bundles are
+        // currently loaded. Actual Material objects for these are lazy-loaded on first use (see
+        // ApplyPreviewMaterial / ApplySlotMaterial / ResolveMaterial's PropLibrary.TryLoadMaterialByName
+        // fallback). IndexAllCatalogMaterials itself is a one-time, idempotent scan (sentinel in
+        // cache) — this merge is cheap and safe to re-run on every EnsureMaterialList rebuild.
+        static void AddCatalogMaterialsToList()
+        {
             PropLibrary.IndexAllCatalogMaterials();
             var alreadyListed = new HashSet<string>(_materialNames, StringComparer.OrdinalIgnoreCase);
             bool anyCatalogAdded = false;
@@ -1372,9 +1390,8 @@ static void SortMaterialList()
                 if (name == "__IDX__") continue;
                 if (ShouldHideMaterial(name)) continue;
                 if (!alreadyListed.Add(name)) continue;
-                string catalogLabel = name;
                 _materialNames.Add(name);
-                _materialLabels.Add(catalogLabel);
+                _materialLabels.Add(name);
                 anyCatalogAdded = true;
             }
 
@@ -2935,6 +2952,47 @@ static void SortMaterialList()
                     if (existing != null && existing.Length > 0) count = existing.Length;
                     var mats = new Material[count];
                     for (int m = 0; m < count; m++) mats[m] = singleMat;
+                    r.sharedMaterials = mats;
+                }
+            }
+        }
+
+        // Re-resolves and re-assigns every placed prop's material overrides (both the catalog-level
+        // overrides handled by ApplyMaterialOverridesToRoot, and per-instance MaterialConstruction
+        // overrides) against the current _materialByName cache. Call this after the cache has been
+        // rebuilt (InvalidateMaterialCache + EnsureMaterialList) following a far-teleport or area
+        // change — FarTeleportCo's chunk drain can destroy the Material instances that placed props'
+        // renderers were pointing at, leaving them pink/missing until re-pointed at fresh instances.
+        // Does not push undo history — this is a silent repair pass, not a user edit.
+        public static void ReapplyAllMaterialOverrides()
+        {
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null) return;
+
+            foreach (var leo in mgr.Objects)
+            {
+                if (leo == null) continue;
+                var root = leo.gameObject;
+                if (root == null) continue;
+
+                ApplyMaterialOverridesToRoot(leo.addressableKey, root);
+
+                if (leo.materialConstructionId < 0) continue;
+                var entry = FindMaterialConstructionById(leo.materialConstructionId);
+                if (entry == null || string.IsNullOrEmpty(entry.materialName)) continue;
+
+                var mat = ResolveMaterial(entry.materialName, leo.addressableKey);
+                if (mat == null) continue;
+
+                var renderers = root.GetComponentsInChildren<Renderer>(true);
+                for (int i = 0; i < renderers.Length; i++)
+                {
+                    var r = renderers[i];
+                    if (r == null) continue;
+                    var existing = r.sharedMaterials;
+                    int count = existing != null && existing.Length > 0 ? existing.Length : 1;
+                    var mats = new Material[count];
+                    for (int m = 0; m < count; m++) mats[m] = mat;
                     r.sharedMaterials = mats;
                 }
             }

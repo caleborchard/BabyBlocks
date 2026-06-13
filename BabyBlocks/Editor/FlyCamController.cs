@@ -88,6 +88,18 @@ namespace BabyBlocks
             {
                 Core.PendingMicroSplatRefreshTime = -1f;
                 PropMetadataPanel.RefreshMicroSplatLayerMaterials();
+
+                // The general material cache (_materialByName) may have been rebuilt mid-stream by
+                // an earlier OnSceneWasLoaded -> InvalidateMaterialCache, before the destination
+                // area's materials had actually settled into memory. Force one more rebuild now
+                // that streaming has settled, then re-point every placed prop's material overrides
+                // at the freshly resolved instances — the chunk drain during a far-teleport can
+                // destroy the Material instances those overrides were previously pointing at,
+                // which otherwise leaves the prop rendering pink/missing.
+                PropMetadataPanel.InvalidateMaterialCache();
+                PropMetadataPanel.EnsureMaterialListLoaded();
+                PropMetadataPanel.ReapplyAllMaterialOverrides();
+
                 LevelEditorManager.Instance?.PruneDestroyedObjects();
                 if (GizmoRenderer.IsReady) GizmoRenderer.RefreshAssets();
 
@@ -101,7 +113,7 @@ namespace BabyBlocks
             // the fly cam rig in an inconsistent state (player.flyCam ends up null, OnStandUp
             // NREs, etc.) — block entry/exit entirely until the cutscene finishes.
             if (Input.GetKeyDown(KeyCode.R) && PlayerMovement.me != null
-                && !Menu.me.teleporting && !Core.IsKeyboardCaptured
+                && !Menu.me.teleporting && !_farTeleportActive && !Core.IsKeyboardCaptured
                 && !PropPalette.IsDragging && !LevelEditor.IsSurfaceSnapDragging)
             {
                 if (PlayerMovement.me.inCutscene)
@@ -111,7 +123,7 @@ namespace BabyBlocks
             }
 
             if (Input.GetKeyDown(KeyCode.BackQuote) && PlayerMovement.me != null
-                && !Menu.me.teleporting && !Core.IsKeyboardCaptured)
+                && !Menu.me.teleporting && !_farTeleportActive && !Core.IsKeyboardCaptured)
             {
                 if (PlayerMovement.me.inCutscene)
                     MelonLogger.Msg("[Cutscene] BackQuote pressed but inCutscene=true — ignoring.");
@@ -513,6 +525,30 @@ namespace BabyBlocks
             // its SetActive(true) re-enables the player correctly at the new position.
             player.gameObject.SetActive(false);
 
+            // --- Pre-converge the chunk-position grid toward target ---
+            // BestRegionLoader.LoopChunkMapPositions (called from br.Update()) recenters the
+            // chunkPositions[] grid toward loadingTransform.position by shifting whole
+            // columns/rows by one grid-width per call, only once they're more than ~60% of
+            // the world size away. During normal flight this keeps pace with the fly cam, but
+            // a fast G-teleport can outrun it — chunkPositions[] is still centered on the OLD
+            // area when Menu.me.Teleport() runs below. TeleportCo then checks
+            // BestRegionLoader.fullyLoaded against a grid that doesn't cover `target` at all:
+            // every cell already reads "shouldn't load"/unloaded, so fullyLoaded is vacuously
+            // true on the very first check, TeleportCo's raycast finds no terrain near target,
+            // and it falls back to a void position — the camera then looks "stuck" while
+            // chunkPositions[] slowly catches up over many subsequent frames. Drive the
+            // recentering to convergence here first, synchronously, before handing off.
+            player.flyCam.transform.position = target;
+            br.loadingTransform = player.flyCam.transform;
+            var chunkPositions = br.chunkPositions;
+            int idx00 = BestRegionLoader.ToChunkIndex(0, 0);
+            for (int i = 0; i < 64; i++)
+            {
+                var before = chunkPositions[idx00];
+                br.Update();
+                if (chunkPositions[idx00] == before) break;
+            }
+
             // Hand off to the game's teleport machinery. It forces one BestRegionLoader
             // update, waits for fullyLoaded (1 chunk = very fast), then runs the full
             // ragdoll foot-placement sequence and clears Menu.me.teleporting.
@@ -525,6 +561,16 @@ namespace BabyBlocks
             // later recreate them as new instances - leaving the cached materials pointing at
             // destroyed textures (visually "weird" with no logged errors).
             PropMetadataPanel.RefreshMicroSplatLayerMaterials();
+
+            // Do the same for the general material cache and every placed prop's overrides right
+            // away — the single destination chunk is already fully loaded at this point (we waited
+            // for fullyLoaded above), so most overrides can be repointed immediately rather than
+            // waiting out the full settle delay below and showing pink for a second. The
+            // settle-delay pass (OnUpdate) still runs afterwards as a safety net for any material
+            // that hadn't settled yet.
+            PropMetadataPanel.InvalidateMaterialCache();
+            PropMetadataPanel.EnsureMaterialListLoaded();
+            PropMetadataPanel.ReapplyAllMaterialOverrides();
 
             // Snap the fly cam to the player's new body position so that BestRegionLoader
             // streams terrain around the correct area. Without this, the fly cam stays at
