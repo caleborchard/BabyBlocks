@@ -1629,34 +1629,6 @@ namespace BabyBlocks
             }
         }
 
-        // Diagnostic: counts distinct sharedMaterial instances (and total renderer/material
-        // slots) across all editor-placed props, to check whether material-cloning
-        // elsewhere (e.g. SetEditorPropsSnowDisabled's r.materials access) has fragmented
-        // what should be a small shared catalog into many per-renderer instances.
-        [HideFromIl2Cpp]
-        internal static (int uniqueMaterials, int totalSlots, int rendererCount) CountPropMaterials()
-        {
-            var propsContainer = Instance != null ? Instance._propsContainer : null;
-            if (propsContainer == null) return (0, 0, 0);
-
-            var seen = new HashSet<Material>();
-            int totalSlots = 0;
-            int rendererCount = 0;
-            foreach (var r in propsContainer.GetComponentsInChildren<Renderer>(true))
-            {
-                if (r == null) continue;
-                rendererCount++;
-                var mats = r.sharedMaterials;
-                if (mats == null) continue;
-                foreach (var m in mats)
-                {
-                    totalSlots++;
-                    if (m != null) seen.Add(m);
-                }
-            }
-            return (seen.Count, totalSlots, rendererCount);
-        }
-
         static IEnumerable<GameObject> AllSceneRoots()
         {
             for (int i = 0; i < SceneManager.sceneCount; i++)

@@ -122,18 +122,6 @@ namespace BabyBlocks
 
         public override void OnUpdate()
         {
-            if (Input.GetKeyDown(KeyCode.F3))
-                PerfMonitor.Toggle();
-            PerfMonitor.OnUpdate();
-
-            if (Input.GetKeyDown(KeyCode.F5))
-            {
-                var (uniqueMats, totalSlots, rendererCount) = LevelEditorManager.CountPropMaterials();
-                MelonLogger.Msg($"[MaterialDiag] props: {uniqueMats} unique materials, " +
-                    $"{totalSlots} renderer-material slots, {rendererCount} renderers, " +
-                    $"BaseMapEnabled={LevelEditorManager.BaseMapEnabled}");
-            }
-
             FlyCamController.OnUpdate();
 
             // Suppress any terrain chunks or prop containers that BRL streams in
@@ -211,7 +199,6 @@ namespace BabyBlocks
         public override void OnGUI()
         {
             FlyCamController.OnGUI();
-            PerfMonitor.OnGUI();
         }
     }
 
