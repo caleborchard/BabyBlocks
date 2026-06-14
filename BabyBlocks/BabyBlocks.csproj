@@ -678,6 +678,10 @@
 
 	</ItemGroup>
 
+	<ItemGroup>
+		<ProjectReference Include="..\..\BabyStepsNetworking\BabyStepsNetworking\BabyStepsNetworking.csproj" />
+	</ItemGroup>
+
 	<PropertyGroup>
 		<AllowUnsafeBlocks>True</AllowUnsafeBlocks>
 		<EnableDefaultCompileItems>false</EnableDefaultCompileItems>
@@ -713,6 +717,7 @@
 		<Compile Include="UI\MaterialConstructionPanel.cs" />
 		<Compile Include="UI\PhysicsWindow.cs" />
 		<Compile Include="UI\ObjImportWindow.cs" />
+		<Compile Include="Networking\ModNetworking.cs" />
 	</ItemGroup>
 
 	<ItemGroup>
@@ -721,5 +726,6 @@
 	
 	<Target Name="PostBuild" AfterTargets="PostBuildEvent">
 		<Exec Command="COPY &quot;$(TargetPath)&quot; &quot;C:\Program Files (x86)\Steam\steamapps\common\Baby Steps\Mods&quot;" />
+		<Exec Command="COPY &quot;$(TargetDir)BabyStepsNetworking.dll&quot; &quot;C:\Program Files (x86)\Steam\steamapps\common\Baby Steps\Mods&quot;" />
 	</Target>
 </Project>

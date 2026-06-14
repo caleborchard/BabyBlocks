@@ -398,6 +398,9 @@ namespace BabyBlocks
             obj.transform.rotation = rot;
             Select(obj);
             LevelEditorHistory.PushSpawn(obj);
+
+            BabyBlocks.Networking.ModNetworking.SendPropPlaced(
+                prop.id, obj.transform.position, obj.transform.rotation, obj.transform.localScale);
         }
 
         // While dragging a prop from the palette, holding shift suppresses surface-rotate

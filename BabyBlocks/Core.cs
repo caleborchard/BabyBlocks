@@ -1,3 +1,4 @@
+using BabyBlocks.Networking;
 using HarmonyLib;
 using Il2Cpp;
 using Il2CppCinemachine;
@@ -12,7 +13,7 @@ namespace BabyBlocks
 {
     public class Core : MelonMod
     {
-        public static bool DebugMode = true; // for categorizing props and materials in the library
+        public static bool DebugMode = false; // for categorizing props and materials in the library
 
         static MelonPreferences_Category _prefs;
         static MelonPreferences_Entry<string> _lastSavePath;
@@ -122,6 +123,8 @@ namespace BabyBlocks
 
         public override void OnUpdate()
         {
+            ModNetworking.Update();
+
             FlyCamController.OnUpdate();
 
             // Suppress any terrain chunks or prop containers that BRL streams in
