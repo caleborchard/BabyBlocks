@@ -101,6 +101,19 @@ namespace BabyBlocks
         internal static float PendingMicroSplatRefreshTime = -1f;
         internal const float MicroSplatRefreshSettleDelay = 1.5f;
 
+        // Tracks whether FarTeleportCo was active last frame, so OnUpdate can
+        // detect the true->false transition and start the post-teleport rescan
+        // window (see OnUpdate).
+        static bool _wasFarTeleportActive;
+
+        // After FarTeleportCo finishes, BRL keeps streaming in surrounding chunks
+        // for a bit as the restored chunkLoadDist/propLoadDists take effect (most
+        // were still "loading" — loadedChunk == null — at the single rescan done on
+        // the finish frame, so they were missed). Keep brl.off == false and rescan
+        // every frame for this many frames afterward, then flip brl.off = true once.
+        const int PostTeleportRescanFrames = 90;
+        static int _postTeleportRescanFramesRemaining;
+
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
             PropMetadataPanel.InvalidateMaterialCache();
@@ -114,12 +127,45 @@ namespace BabyBlocks
             // Suppress any terrain chunks or prop containers that BRL streams in
             // while the base map is hidden. Runs unconditionally so it works even
             // before the fly cam editor has been opened.
-            if (!LevelEditorManager.BaseMapEnabled)
+            //
+            // Skipped entirely while FarTeleportCo is running: that coroutine needs
+            // uncontested control of brl.off (it flips it false to stream the
+            // destination chunk — forcing it back to true here every frame stalls
+            // BestRegionLoader.fullyLoaded forever, leaving Menu.me.teleporting stuck
+            // true and the player permanently SetActive(false)/invisible) and of
+            // player.gameObject's active state during the ragdoll handoff.
+            if (!LevelEditorManager.BaseMapEnabled && !FlyCamController.FarTeleportActive)
             {
+                // FarTeleportCo just finished (this frame's the first one back with
+                // FarTeleportActive == false). brl.off is still false at this point
+                // (FarTeleportCo never restores it) and chunkLoadDist/propLoadDists
+                // were just restored to normal — BRL will stream in surrounding
+                // chunks over the next several frames. Start the rescan window so
+                // those chunks get hidden as they finish loading, instead of just
+                // the single chunk that's loaded on this exact frame.
+                if (_wasFarTeleportActive)
+                {
+                    // TEMP DIAGNOSTIC
+                    MelonLogger.Msg($"[BaseMapDiag] Core.OnUpdate: FarTeleportActive->false transition, brl.off={(BestRegionLoader.me != null ? BestRegionLoader.me.off : true)}, starting rescan window");
+                    _postTeleportRescanFramesRemaining = PostTeleportRescanFrames;
+                }
+                _wasFarTeleportActive = false;
+
                 var brl = BestRegionLoader.me;
                 if (brl != null)
                 {
-                    if (!brl.off) brl.off = true;
+                    if (_postTeleportRescanFramesRemaining > 0)
+                    {
+                        LevelEditorManager.RescanLoadedChunksForBaseMapOff();
+                        _postTeleportRescanFramesRemaining--;
+                        if (_postTeleportRescanFramesRemaining == 0)
+                        {
+                            MelonLogger.Msg("[BaseMapDiag] Core.OnUpdate: post-teleport rescan window done");
+                        }
+                    }
+
+                    if (!brl.off && !LevelEditorManager.DeferBrlOff && _postTeleportRescanFramesRemaining == 0)
+                        brl.off = true;
 
                     // Suppress BRL child renderers (proxies).
                     var cache = LevelEditorManager._brlRendererCache;
@@ -127,7 +173,13 @@ namespace BabyBlocks
                     foreach (var r in cache)
                     {
                         if (r == null) { needsRefresh = true; break; }
-                        if (r.enabled) r.enabled = false;
+                        if (r.enabled)
+                        {
+                            // TEMP DIAGNOSTIC
+                            if (LevelEditorManager.IsUnderPlayer(r.transform))
+                                MelonLogger.Msg($"[BaseMapDiag] Core.OnUpdate disabling PLAYER renderer '{r.name}' from _brlRendererCache");
+                            r.enabled = false;
+                        }
                     }
                     if (needsRefresh)
                         LevelEditorManager._brlRendererCache =
@@ -137,6 +189,10 @@ namespace BabyBlocks
                 // Re-assert hidden lights/colliders that game logic (day-night cycle,
                 // quest/cutscene state) may have re-enabled since the last toggle.
                 LevelEditorManager.SuppressHiddenWhileBaseMapOff();
+            }
+            else if (FlyCamController.FarTeleportActive)
+            {
+                _wasFarTeleportActive = true;
             }
         }
 

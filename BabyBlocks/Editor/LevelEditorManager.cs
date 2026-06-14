@@ -24,6 +24,12 @@ namespace BabyBlocks
         public static bool ChunkLoopingEnabled = true;
         public static bool BaseMapEnabled = true;
 
+        // While true, Core.OnUpdate's "!BaseMapEnabled" block must not force
+        // brl.off = true on its own — ApplyLoadedBaseMapStateDelayed is mid-rescan
+        // and needs BRL to keep streaming so trailing chunks finish loading and get
+        // hidden, before it sets brl.off = true itself.
+        public static bool DeferBrlOff;
+
         // Selected WeatherMan "Day Weather Playlist" (Menu.curChapter index) applied
         // while the base map is hidden. Edited via the Save/Load window dropdown,
         // which is only enabled while BaseMapEnabled == false.
@@ -1481,6 +1487,10 @@ namespace BabyBlocks
         internal static bool[] _brlLightOrigStates = Array.Empty<bool>();
         static readonly List<MonoBehaviour> _disabledTerrainComponents = new();
         static readonly List<Collider> _disabledTerrainColliders = new();
+        // Tracks loadedChunk.GetInstanceID() for chunks already scanned by
+        // SetBaseMapEnabled/RescanLoadedChunksForBaseMapOff, so the rescan can skip
+        // chunks it's already handled and only pick up newly-streamed-in ones.
+        static readonly HashSet<int> _scannedChunkIds = new();
         // Player WaterObjects (torso + feet) frozen below sea level while Base
         // Map is off, so the player doesn't keep "swimming" in the hidden ocean.
         static readonly List<WaterObject> _suppressedWaterObjects = new();
@@ -1545,6 +1555,9 @@ namespace BabyBlocks
             {
                 if (r != null && r.enabled)
                 {
+                    // TEMP DIAGNOSTIC
+                    if (IsUnderPlayer(r.transform))
+                        MelonLogger.Msg($"[BaseMapDiag] HidePropRenderers disabling PLAYER renderer '{r.name}' while hiding go='{go.name}'");
                     r.enabled = false;
                     _hiddenPropRenderers.Add(r);
                 }
@@ -1698,6 +1711,119 @@ namespace BabyBlocks
             }
         }
 
+        // --- TEMP DIAGNOSTICS for the save-load "player invisible" investigation.
+        // Always-on (not gated by BBLog.Verbose) so they show up in the log without
+        // needing a debug toggle. Remove once the root cause is found.
+        internal static bool IsUnderPlayer(Transform t)
+        {
+            var player = PlayerMovement.me;
+            if (player == null) return false;
+            for (var cur = t; cur != null; cur = cur.parent)
+                if (cur == player.transform) return true;
+            return false;
+        }
+
+        internal static string PlayerRendererSummary()
+        {
+            var player = PlayerMovement.me;
+            if (player == null) return "player=null";
+            var renderers = player.GetComponentsInChildren<Renderer>(true);
+            int en = 0, dis = 0;
+            foreach (var r in renderers)
+            {
+                if (r == null) continue;
+                if (r.enabled) en++; else dis++;
+            }
+            return $"player.activeSelf={player.gameObject.activeSelf} " +
+                   $"activeInHierarchy={player.gameObject.activeInHierarchy} " +
+                   $"renderers enabled={en} disabled={dis} total={renderers.Length}";
+        }
+        // --- end TEMP DIAGNOSTICS helpers
+
+        // Hides a single loaded chunk's terrain (Terrain/MicroSplat MonoBehaviours),
+        // TerrainCollider, and decoration props (via HidePropRenderers). Factored out
+        // of SetBaseMapEnabled's chunk loop so RescanLoadedChunksForBaseMapOff can
+        // apply the same hide logic to chunks that stream in afterwards.
+        //
+        // disableNow:false (used by SetBaseMapEnabled) only gathers terrain/colliders
+        // into _disabledTerrainComponents/_disabledTerrainColliders for the caller's
+        // own bulk-disable pass; disableNow:true (used by the rescan) disables them
+        // immediately since there's no later bulk pass for these chunks.
+        // HidePropRenderers always disables immediately regardless of disableNow.
+        static void ScanChunkTerrainAndProps(GameObject loadedChunk, bool disableNow)
+        {
+            foreach (var mb in loadedChunk.GetComponentsInChildren<MonoBehaviour>(true))
+            {
+                if (mb == null || !mb.enabled) continue;
+                try
+                {
+                    var n = mb.GetIl2CppType().Name;
+                    if (n == "Terrain" || n.Contains("MicroSplat") || n.Contains("Terrain"))
+                    {
+                        _disabledTerrainComponents.Add(mb);
+                        if (disableNow) mb.enabled = false;
+                    }
+                }
+                catch { }
+            }
+
+            foreach (var col in loadedChunk.GetComponentsInChildren<Collider>(true))
+            {
+                if (col == null || !col.enabled) continue;
+                try
+                {
+                    if (col.GetIl2CppType().Name == "TerrainCollider")
+                    {
+                        _disabledTerrainColliders.Add(col);
+                        if (disableNow) col.enabled = false;
+                    }
+                }
+                catch { }
+            }
+
+            // Decoration props (trash, rocks, candles, etc.) placed directly in the
+            // chunk scene rather than GPUI-instanced. Hide via Renderer.enabled only —
+            // same reasoning as elsewhere in HidePropRenderers.
+            HidePropRenderers(loadedChunk);
+        }
+
+        // Catches chunks that were still mid-load (loadedChunk == null in
+        // SetBaseMapEnabled's chunkMap scan) and finished streaming in afterwards —
+        // their terrain/MicroSplat/TerrainCollider/decoration props would otherwise
+        // stay fully active and visible ("terrain loading back in" after a
+        // save-load teleport with Base Map off). Idempotent via _scannedChunkIds;
+        // safe to call repeatedly.
+        public static void RescanLoadedChunksForBaseMapOff()
+        {
+            if (BaseMapEnabled) return;
+            var brl = BestRegionLoader.me;
+            if (brl?.chunkMap == null) return;
+
+            // GetComponentsInChildren on BRL's children crashes natively while
+            // brl.off == true — see the brl.off ordering note on SetBaseMapEnabled.
+            // Callers must keep brl.off == false for the duration they expect this
+            // to actually do anything (see ApplyLoadedBaseMapStateDelayed).
+            if (brl.off)
+            {
+                // TEMP DIAGNOSTIC
+                MelonLogger.Msg("[BaseMapDiag] RescanLoadedChunksForBaseMapOff: brl.off==true, no-op");
+                return;
+            }
+
+            int loadedCount = 0, newCount = 0;
+            foreach (var cell in brl.chunkMap)
+            {
+                if (cell?.loadedChunk == null) continue;
+                loadedCount++;
+                if (!_scannedChunkIds.Add(cell.loadedChunk.GetInstanceID())) continue;
+                newCount++;
+                ScanChunkTerrainAndProps(cell.loadedChunk, disableNow: true);
+            }
+
+            // TEMP DIAGNOSTIC
+            MelonLogger.Msg($"[BaseMapDiag] RescanLoadedChunksForBaseMapOff: loadedChunks={loadedCount} newlyHidden={newCount}");
+        }
+
         // Toggles the base map (terrain, props, vegetation, water/audio) for an empty
         // canvas to build on. The fly cam and player are left untouched throughout.
         //
@@ -1705,7 +1831,12 @@ namespace BabyBlocks
         // FIRST (when restoring). Calling GetComponentsInChildren on BRL or its
         // children (or on scene roots that include BRL) while brl.off == true causes
         // a native Il2Cpp crash with no managed exception/log.
-        public static void SetBaseMapEnabled(bool enabled, bool captureRestoreChapter = true)
+        // deferBrlOff: when hiding (enabled == false), skip the final brl.off = true
+        // so BRL keeps streaming normally afterward. Used by
+        // ApplyLoadedBaseMapStateDelayed, which follows up with
+        // RescanLoadedChunksForBaseMapOff over the next ~1.5s to hide chunks that
+        // finish loading after this call returns, then sets brl.off = true itself.
+        public static void SetBaseMapEnabled(bool enabled, bool captureRestoreChapter = true, bool deferBrlOff = false)
         {
             BBLog.Msg($"[BaseMap] SetBaseMapEnabled({enabled}) — start");
             BaseMapEnabled = enabled;
@@ -1738,6 +1869,7 @@ namespace BabyBlocks
                 foreach (var col in _disabledTerrainColliders)
                     if (col != null) col.enabled = true;
                 _disabledTerrainColliders.Clear();
+                _scannedChunkIds.Clear();
 
                 for (int i = 0; i < _disabledPropColliders.Count; i++)
                     if (_disabledPropColliders[i] != null) _disabledPropColliders[i].enabled = _disabledPropCollidersOrigState[i];
@@ -1765,6 +1897,17 @@ namespace BabyBlocks
                 _brlRendererCache = brl.GetComponentsInChildren<Renderer>(true);
                 BBLog.Msg($"[BaseMap] brl renderer cache gathered: {_brlRendererCache.Length}");
 
+                // TEMP DIAGNOSTIC: does BRL's hierarchy (and therefore _brlRendererCache,
+                // which Core.OnUpdate disables every frame while BaseMapEnabled==false)
+                // include any of the player's own renderers?
+                {
+                    int playerOverlap = 0;
+                    foreach (var r in _brlRendererCache)
+                        if (r != null && IsUnderPlayer(r.transform)) playerOverlap++;
+                    MelonLogger.Msg($"[BaseMapDiag] SetBaseMapEnabled(false): _brlRendererCache count={_brlRendererCache.Length} " +
+                        $"playerOverlap={playerOverlap} {PlayerRendererSummary()}");
+                }
+
                 // Lights parented directly under BRL (e.g. day/night sun rig), outside
                 // any chunk's loadedChunk — those are handled separately via
                 // HidePropRenderers(cell.loadedChunk) below. Gathered regardless of
@@ -1781,39 +1924,17 @@ namespace BabyBlocks
                 _disabledTerrainColliders.Clear();
                 _disabledPropColliders.Clear();
                 _disabledPropCollidersOrigState.Clear();
+                _scannedChunkIds.Clear();
                 if (brl.chunkMap != null)
                 {
                     BBLog.Msg($"[BaseMap] chunkMap count: {brl.chunkMap.Length}");
                     foreach (var cell in brl.chunkMap)
                     {
                         if (cell?.loadedChunk == null) continue;
-                        foreach (var mb in cell.loadedChunk.GetComponentsInChildren<MonoBehaviour>(true))
-                        {
-                            if (mb == null || !mb.enabled) continue;
-                            try
-                            {
-                                var n = mb.GetIl2CppType().Name;
-                                if (n == "Terrain" || n.Contains("MicroSplat") || n.Contains("Terrain"))
-                                    _disabledTerrainComponents.Add(mb);
-                            }
-                            catch { }
-                        }
-
-                        foreach (var col in cell.loadedChunk.GetComponentsInChildren<Collider>(true))
-                        {
-                            if (col == null || !col.enabled) continue;
-                            try
-                            {
-                                if (col.GetIl2CppType().Name == "TerrainCollider")
-                                    _disabledTerrainColliders.Add(col);
-                            }
-                            catch { }
-                        }
-
-                        // Decoration props (trash, rocks, candles, etc.) placed directly
-                        // in the chunk scene rather than GPUI-instanced. Hide via
-                        // Renderer.enabled only — same reasoning as HidePropRenderers.
-                        HidePropRenderers(cell.loadedChunk);
+                        _scannedChunkIds.Add(cell.loadedChunk.GetInstanceID());
+                        // disableNow:false — terrain/colliders are bulk-disabled at the
+                        // end of this method, alongside _brlRendererCache/brl.off.
+                        ScanChunkTerrainAndProps(cell.loadedChunk, disableNow: false);
                     }
                 }
                 BBLog.Msg($"[BaseMap] terrain components gathered: {_disabledTerrainComponents.Count}, terrain colliders: {_disabledTerrainColliders.Count}, prop colliders: {_disabledPropColliders.Count}");
@@ -1919,7 +2040,11 @@ namespace BabyBlocks
             }
 
             // Crest ocean visuals: toggle the whole CrestWaterRenderer object.
-            var crestWater = GameObject.Find("BigManagerPrefab/CrestWaterRenderer");
+            // GameObject.Find can't locate it once it's inactive (e.g. on the
+            // enabled==true restore path after a prior hide) — use Transform.Find on
+            // the (always-active) BigManagerPrefab instead, which finds inactive
+            // children fine.
+            var crestWater = GameObject.Find("BigManagerPrefab")?.transform.Find("CrestWaterRenderer")?.gameObject;
             if (crestWater != null)
             {
                 crestWater.SetActive(enabled);
@@ -1968,8 +2093,8 @@ namespace BabyBlocks
                 // brl.off stops UpdateDirtyGpuis → GPUI instance buffers go stale → rocks fade.
                 // Chunks must stay ACTIVE (not SetActive false) so OnPreCull keeps its
                 // world-position terrain reference and the camera doesn't break.
-                if (brl != null) brl.off = true;
-                BBLog.Msg("[BaseMap] brl.off=true done");
+                if (brl != null && !deferBrlOff) brl.off = true;
+                BBLog.Msg($"[BaseMap] brl.off=true done (deferred={deferBrlOff})");
 
                 _nextLightSweepTime = 0f;
             }
@@ -2099,12 +2224,13 @@ namespace BabyBlocks
 
         // Applies a loaded level's saved base-map/weather state. restoreChapter comes
         // from the save file rather than being captured from the live Menu.curChapter.
-        public static void ApplyLoadedBaseMapState(bool baseMapOff, int dayWeatherPlaylist, int restoreChapter)
+        // deferBrlOff is forwarded to SetBaseMapEnabled — see ApplyLoadedBaseMapStateDelayed.
+        public static void ApplyLoadedBaseMapState(bool baseMapOff, int dayWeatherPlaylist, int restoreChapter, bool deferBrlOff = false)
         {
             DayWeatherPlaylist = dayWeatherPlaylist;
             RestoreDayWeatherPlaylist = restoreChapter;
             _weatherPlaylistOverridden = false;
-            SetBaseMapEnabled(!baseMapOff, captureRestoreChapter: false);
+            SetBaseMapEnabled(!baseMapOff, captureRestoreChapter: false, deferBrlOff: deferBrlOff);
         }
 
         // Defers ApplyLoadedBaseMapState until Menu.me.Teleport's coroutine (started by
@@ -2117,8 +2243,48 @@ namespace BabyBlocks
         [HideFromIl2Cpp]
         internal static IEnumerator ApplyLoadedBaseMapStateDelayed(bool baseMapOff, int dayWeatherPlaylist, int restoreChapter)
         {
+            // TEMP DIAGNOSTIC
+            MelonLogger.Msg($"[BaseMapDiag] ApplyLoadedBaseMapStateDelayed start baseMapOff={baseMapOff} " +
+                $"teleporting={Menu.me?.teleporting} {PlayerRendererSummary()}");
+
             while (Menu.me != null && Menu.me.teleporting) yield return null;
-            ApplyLoadedBaseMapState(baseMapOff, dayWeatherPlaylist, restoreChapter);
+
+            // TEMP DIAGNOSTIC
+            MelonLogger.Msg($"[BaseMapDiag] teleporting finished {PlayerRendererSummary()}");
+
+            if (!baseMapOff)
+            {
+                ApplyLoadedBaseMapState(baseMapOff, dayWeatherPlaylist, restoreChapter);
+                yield break;
+            }
+
+            // Hide what's loaded now, but leave brl.off == false (deferBrlOff) so BRL
+            // keeps streaming normally for a moment — any chunks still mid-load near
+            // the destination finish loading and get caught by the rescan below,
+            // instead of staying fully visible/active ("terrain loading back in").
+            // DeferBrlOff also stops Core.OnUpdate from forcing brl.off = true behind
+            // our back the moment BaseMapEnabled flips false.
+            DeferBrlOff = true;
+            ApplyLoadedBaseMapState(baseMapOff, dayWeatherPlaylist, restoreChapter, deferBrlOff: true);
+
+            // TEMP DIAGNOSTIC
+            MelonLogger.Msg($"[BaseMapDiag] after ApplyLoadedBaseMapState(deferBrlOff:true) {PlayerRendererSummary()}");
+
+            for (int i = 0; i < 90 && !BaseMapEnabled; i++)
+            {
+                yield return null;
+                RescanLoadedChunksForBaseMapOff();
+                // TEMP DIAGNOSTIC: sample every ~0.25s
+                if (i % 15 == 0)
+                    MelonLogger.Msg($"[BaseMapDiag] rescan frame {i} {PlayerRendererSummary()}");
+            }
+
+            DeferBrlOff = false;
+            var brl = BestRegionLoader.me;
+            if (brl != null && !BaseMapEnabled) brl.off = true;
+
+            // TEMP DIAGNOSTIC
+            MelonLogger.Msg($"[BaseMapDiag] ApplyLoadedBaseMapStateDelayed done {PlayerRendererSummary()}");
         }
     }
 }
