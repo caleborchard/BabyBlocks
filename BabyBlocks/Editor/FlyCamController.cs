@@ -22,7 +22,7 @@ namespace BabyBlocks
         static float _cutsceneSuppressUntil = -1f;
 
         public static bool SuppressCutsceneTriggers =>
-            FlyCamActive || Time.unscaledTime < _cutsceneSuppressUntil;
+            FlyCamActive || !LevelEditorManager.BaseMapEnabled || Time.unscaledTime < _cutsceneSuppressUntil;
 
         // PlayCutscene calls swallowed while suppressed — OnTriggerEnter is one-shot, so
         // dropping the call silently means the cutscene would never get another chance to
@@ -194,7 +194,6 @@ namespace BabyBlocks
         // BackQuote key: direct game ↔ editor toggle (skips bare fly mode).
         static void ToggleTeleportMode()
         {
-            MelonLogger.Msg($"[Cutscene] ToggleTeleportMode pressed, FlyCamActive(before)={FlyCamActive}");
             if (!FlyCamActive)
             {
                 ToggleFlyMode();
@@ -264,8 +263,6 @@ namespace BabyBlocks
                 // player's physics/collider are being reactivated at the exit position.
                 FlyCamActive = false;
                 _cutsceneSuppressUntil = Time.unscaledTime + CutsceneSuppressGraceTime;
-                MelonLogger.Msg($"[Cutscene] Exited fly/editor mode at player pos {player.transform.position}, " +
-                    $"suppressUntil={_cutsceneSuppressUntil:F2} (now={Time.unscaledTime:F2})");
 
                 if (_noiseAmplitude >= 0f)
                 {
@@ -538,15 +535,25 @@ namespace BabyBlocks
             // and it falls back to a void position — the camera then looks "stuck" while
             // chunkPositions[] slowly catches up over many subsequent frames. Drive the
             // recentering to convergence here first, synchronously, before handing off.
+            //
+            // Each LoopChunkMapPositions pass shifts whichever columns/rows are individually
+            // out of range — not all in lockstep — so checking a single cell (e.g. (0,0)) can
+            // report "converged" while other cells are still mid-shift, leaving the grid in an
+            // inconsistent intermediate state. Compare the WHOLE array each pass instead.
             player.flyCam.transform.position = target;
             br.loadingTransform = player.flyCam.transform;
             var chunkPositions = br.chunkPositions;
-            int idx00 = BestRegionLoader.ToChunkIndex(0, 0);
+            var prevPositions = new Vector3[chunkPositions.Length];
             for (int i = 0; i < 64; i++)
             {
-                var before = chunkPositions[idx00];
+                for (int j = 0; j < chunkPositions.Length; j++) prevPositions[j] = chunkPositions[j];
                 br.Update();
-                if (chunkPositions[idx00] == before) break;
+                bool changed = false;
+                for (int j = 0; j < chunkPositions.Length; j++)
+                {
+                    if (chunkPositions[j] != prevPositions[j]) { changed = true; break; }
+                }
+                if (!changed) break;
             }
 
             // Hand off to the game's teleport machinery. It forces one BestRegionLoader

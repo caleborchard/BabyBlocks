@@ -1473,14 +1473,37 @@ namespace BabyBlocks
         // Cached BRL child renderers (MegaProxy LODs, GPUI pool objects) so OnUpdate
         // can suppress newly-activated ones cheaply without calling GetComponentsInChildren.
         internal static Renderer[] _brlRendererCache = Array.Empty<Renderer>();
+        // Cached BRL child lights (e.g. day/night sun rig parented directly under BRL,
+        // outside any chunk's loadedChunk) so they can be hidden/restored alongside
+        // _brlRendererCache. Parallel array records each light's enabled state at
+        // toggle-off time so it can be restored exactly.
+        internal static Light[] _brlLightCache = Array.Empty<Light>();
+        internal static bool[] _brlLightOrigStates = Array.Empty<bool>();
         static readonly List<MonoBehaviour> _disabledTerrainComponents = new();
         static readonly List<Collider> _disabledTerrainColliders = new();
         // Player WaterObjects (torso + feet) frozen below sea level while Base
         // Map is off, so the player doesn't keep "swimming" in the hidden ocean.
         static readonly List<WaterObject> _suppressedWaterObjects = new();
-        // Non-terrain colliders found inside loaded chunks (trash, rocks, candles,
-        // etc. placed directly in chunk scenes rather than GPUI-instanced).
+        // Non-terrain colliders found inside loaded chunks and elsewhere (trash, rocks,
+        // candles, cutscene/convo trigger volumes, etc.). Gathered regardless of their
+        // current enabled state — some triggers start disabled and get enabled later by
+        // quest/cutscene logic, which would otherwise re-arm them while Base Map is off.
+        // _disabledPropCollidersOrigState is the parallel "was enabled before we hid it"
+        // record used to restore exactly.
         static readonly List<Collider> _disabledPropColliders = new();
+        static readonly List<bool> _disabledPropCollidersOrigState = new();
+        // Lights hidden alongside renderers/colliders (see HidePropRenderers). Also
+        // gathered regardless of current enabled state — some lights (e.g. streetlamps
+        // driven by PointAtPlayer's day/night logic) start off and get switched on
+        // later, which would otherwise make them pop back on while Base Map is off.
+        // _hiddenLightsOrigState is the parallel "was enabled before we hid it" record.
+        static readonly List<Light> _hiddenLights = new();
+        static readonly List<bool> _hiddenLightsOrigState = new();
+        // Light-controller MonoBehaviours (e.g. PointAtPlayer) disabled alongside a
+        // hidden Light — without this, their Update() keeps flipping Light.enabled back
+        // on every frame based on time-of-day/etc, fighting the suppression above.
+        // Always re-enabled (they were enabled to have been driving the light at all).
+        static readonly List<MonoBehaviour> _disabledLightControllers = new();
 
         static IEnumerable<GameObject> AllSceneRoots()
         {
@@ -1507,10 +1530,15 @@ namespace BabyBlocks
 
         // Hide a GameObject visually without touching SetActive/OnDisable — safe for
         // props with Rigidbody/WaterObject components. Tracks hidden renderers so
-        // they can be restored exactly. Also disables non-terrain colliders on the
-        // same hierarchy (Collider.enabled = false, unlike SetActive, doesn't fire
-        // OnDisable so it's safe for WaterObject/Rigidbody props) so the player
-        // can't collide with now-invisible props.
+        // they can be restored exactly. Also disables non-terrain, non-trigger
+        // colliders on the same hierarchy (Collider.enabled = false, unlike
+        // SetActive, doesn't fire OnDisable so it's safe for WaterObject/Rigidbody
+        // props) so the player can't collide with now-invisible props. Trigger
+        // colliders (cutscene/convo volumes etc.) are left alone — those are gated
+        // instead via FlyCamController.SuppressCutsceneTriggers so OnTriggerEnter
+        // keeps firing normally and replays correctly when Base Map is re-enabled.
+        // Also disables Lights (Light.enabled = false) so light sources go dark
+        // with the rest of the map.
         static void HidePropRenderers(GameObject go)
         {
             foreach (var r in go.GetComponentsInChildren<Renderer>(true))
@@ -1524,15 +1552,107 @@ namespace BabyBlocks
 
             foreach (var col in go.GetComponentsInChildren<Collider>(true))
             {
-                if (col == null || !col.enabled) continue;
+                if (col == null) continue;
+                if (col.isTrigger) continue;
                 try
                 {
                     if (col.GetIl2CppType().Name == "TerrainCollider") continue;
                 }
                 catch { }
+                _disabledPropCollidersOrigState.Add(col.enabled);
                 col.enabled = false;
                 _disabledPropColliders.Add(col);
             }
+
+            foreach (var light in go.GetComponentsInChildren<Light>(true))
+                HideLight(light);
+        }
+
+        // Disables a Light and, alongside it, any sibling MonoBehaviour whose type
+        // name looks like a light controller (e.g. Il2Cpp.PointAtPlayer's day/night
+        // logic) — otherwise that controller's Update() keeps flipping
+        // Light.enabled back on every frame, fighting our suppression.
+        static void HideLight(Light light)
+        {
+            if (light == null) return;
+            _hiddenLightsOrigState.Add(light.enabled);
+            light.enabled = false;
+            _hiddenLights.Add(light);
+            DisableLightControllers(light);
+        }
+
+        // Walks up from the light's own GameObject through a few ancestor levels —
+        // e.g. "Beacon/Point Light" -> "Beacon" carries BeaconLight/ConductedBeacon,
+        // which drive the child Light's .enabled every frame based on beacon state.
+        static void DisableLightControllers(Light light)
+        {
+            var t = light.transform;
+            for (int depth = 0; t != null && depth < 3; t = t.parent, depth++)
+            {
+                foreach (var mb in t.gameObject.GetComponents<MonoBehaviour>())
+                {
+                    if (mb == null || !mb.enabled) continue;
+                    try
+                    {
+                        var n = mb.GetIl2CppType().Name;
+                        if (n.Contains("PointAtPlayer") || n.Contains("Beacon"))
+                        {
+                            mb.enabled = false;
+                            _disabledLightControllers.Add(mb);
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+
+        // True only if `go` itself (not its children) carries a camera-related
+        // component — i.e. this GameObject IS part of the player/fly cam rig.
+        static bool HasOwnCameraComponent(GameObject go)
+        {
+            foreach (var comp in go.GetComponents<Component>())
+            {
+                if (comp == null) continue;
+                try
+                {
+                    var name = comp.GetIl2CppType().Name;
+                    if (name.Contains("Camera") || name.Contains("Cinemachine")
+                        || name.Contains("FlyCam") || name.Contains("PlayerMovement")) return true;
+                }
+                catch { }
+            }
+            return false;
+        }
+
+        // Recursively hides a scene-root subtree, except for branches that ARE the
+        // player/fly cam rig (which must stay alive). Used so we don't have to skip
+        // an entire root just because *some* descendant (e.g. BigManagerPrefab >
+        // Camera) carries a camera component — sibling branches (lights, cutscene
+        // trigger volumes, etc.) under the same root still get hidden.
+        static void HideNonCameraSubtree(GameObject go)
+        {
+            if (go == null) return;
+            var brl = BestRegionLoader.me;
+            if (brl != null && go == brl.gameObject) return;
+
+            // Never touch our own placed props — everything spawned by the level
+            // editor lives under Instance._propsContainer ("Baby Blocks").
+            if (Instance != null && go == Instance._propsContainer) return;
+
+            // This GameObject is itself part of the camera/player rig — protect the
+            // whole subtree, don't hide anything underneath it.
+            if (HasOwnCameraComponent(go)) return;
+
+            if (HasCameraComponent(go))
+            {
+                // Camera/player lives somewhere in a descendant; recurse so sibling
+                // branches still get hidden.
+                for (int i = 0; i < go.transform.childCount; i++)
+                    HideNonCameraSubtree(go.transform.GetChild(i).gameObject);
+                return;
+            }
+
+            HidePropRenderers(go);
         }
 
         // Disable GameObjects whose Il2Cpp type name matches any fragment.
@@ -1597,7 +1717,13 @@ namespace BabyBlocks
             // Clear here (before any HidePropRenderers calls below) so hiding
             // performed during the chunk-scan isn't wiped by the prop-container
             // section's scan further down.
-            if (!enabled) _hiddenPropRenderers.Clear();
+            if (!enabled)
+            {
+                _hiddenPropRenderers.Clear();
+                _hiddenLights.Clear();
+                _hiddenLightsOrigState.Clear();
+                _disabledLightControllers.Clear();
+            }
 
             if (enabled)
             {
@@ -1613,14 +1739,24 @@ namespace BabyBlocks
                     if (col != null) col.enabled = true;
                 _disabledTerrainColliders.Clear();
 
-                foreach (var col in _disabledPropColliders)
-                    if (col != null) col.enabled = true;
+                for (int i = 0; i < _disabledPropColliders.Count; i++)
+                    if (_disabledPropColliders[i] != null) _disabledPropColliders[i].enabled = _disabledPropCollidersOrigState[i];
                 _disabledPropColliders.Clear();
+                _disabledPropCollidersOrigState.Clear();
 
                 foreach (var r in _brlRendererCache)
                     if (r != null) r.enabled = true;
                 _brlRendererCache = Array.Empty<Renderer>();
-                BBLog.Msg("[BaseMap] terrain/renderer restore done");
+
+                for (int i = 0; i < _brlLightCache.Length; i++)
+                    if (_brlLightCache[i] != null) _brlLightCache[i].enabled = _brlLightOrigStates[i];
+                _brlLightCache = Array.Empty<Light>();
+                _brlLightOrigStates = Array.Empty<bool>();
+
+                foreach (var mb in _disabledLightControllers)
+                    if (mb != null) mb.enabled = true;
+                _disabledLightControllers.Clear();
+                BBLog.Msg("[BaseMap] terrain/renderer/light restore done");
             }
             else if (brl != null)
             {
@@ -1629,9 +1765,22 @@ namespace BabyBlocks
                 _brlRendererCache = brl.GetComponentsInChildren<Renderer>(true);
                 BBLog.Msg($"[BaseMap] brl renderer cache gathered: {_brlRendererCache.Length}");
 
+                // Lights parented directly under BRL (e.g. day/night sun rig), outside
+                // any chunk's loadedChunk — those are handled separately via
+                // HidePropRenderers(cell.loadedChunk) below. Gathered regardless of
+                // current enabled state (see _hiddenLights) so day/night-driven lights
+                // that are off right now but get switched on later stay suppressed.
+                _brlLightCache = brl.GetComponentsInChildren<Light>(true)
+                    .Where(l => l != null).ToArray();
+                _brlLightOrigStates = _brlLightCache.Select(l => l.enabled).ToArray();
+                foreach (var light in _brlLightCache)
+                    DisableLightControllers(light);
+                BBLog.Msg($"[BaseMap] brl light cache gathered: {_brlLightCache.Length}");
+
                 _disabledTerrainComponents.Clear();
                 _disabledTerrainColliders.Clear();
                 _disabledPropColliders.Clear();
+                _disabledPropCollidersOrigState.Clear();
                 if (brl.chunkMap != null)
                 {
                     BBLog.Msg($"[BaseMap] chunkMap count: {brl.chunkMap.Length}");
@@ -1670,12 +1819,15 @@ namespace BabyBlocks
                 BBLog.Msg($"[BaseMap] terrain components gathered: {_disabledTerrainComponents.Count}, terrain colliders: {_disabledTerrainColliders.Count}, prop colliders: {_disabledPropColliders.Count}");
             }
 
-            // Non-GPUI prop instance containers (unnamed root GameObjects) and any
-            // DynamicPropSpitter-spawned props (small rocks/debris with Rigidbody +
-            // WaterObject). These are hidden via Renderer.enabled only — never
-            // SetActive — because SetActive(false) on a WaterObject (DWP2) can crash
-            // natively mid-simulation. Skip any root that carries a camera so the fly
-            // cam stays alive. Done before brl.off is flipped so this scan is crash-safe.
+            // Everything else in the scene not already handled above: non-GPUI prop
+            // instance containers, DynamicPropSpitter-spawned props, cutscene/convo
+            // trigger volumes, standalone lights, etc. Hidden via Renderer.enabled /
+            // Collider.enabled / Light.enabled only — never SetActive — because
+            // SetActive(false) on a WaterObject (DWP2) can crash natively mid-simulation.
+            // BRL is excluded (handled separately above); branches under a root that
+            // carry a camera are recursed into rather than skipped wholesale, so
+            // siblings of the camera (e.g. lights/triggers under BigManagerPrefab)
+            // still get hidden. Done before brl.off is flipped so this scan is crash-safe.
             if (!enabled)
             {
                 int rootCount = 0;
@@ -1683,39 +1835,24 @@ namespace BabyBlocks
                 {
                     rootCount++;
                     BBLog.Msg($"[BaseMap] scanning root #{rootCount} '{root.name}'");
-                    if (HasCameraComponent(root)) continue;
-
-                    if (root.name == "New Game Object" || root.name == "")
-                    {
-                        int before = _hiddenPropRenderers.Count;
-                        HidePropRenderers(root);
-                        BBLog.Msg($"[BaseMap]   hid {_hiddenPropRenderers.Count - before} renderers on '{root.name}' (prop container)");
-                        continue;
-                    }
-
-                    foreach (var mb in root.GetComponentsInChildren<MonoBehaviour>(true))
-                    {
-                        if (mb == null) continue;
-                        try
-                        {
-                            if (mb.GetIl2CppType().Name.Contains("DynamicPropSpitter"))
-                            {
-                                int before = _hiddenPropRenderers.Count;
-                                HidePropRenderers(mb.gameObject);
-                                BBLog.Msg($"[BaseMap]   hid {_hiddenPropRenderers.Count - before} renderers on '{mb.gameObject.name}' (DynamicPropSpitter)");
-                            }
-                        }
-                        catch { }
-                    }
+                    int beforeR = _hiddenPropRenderers.Count;
+                    int beforeL = _hiddenLights.Count;
+                    HideNonCameraSubtree(root);
+                    BBLog.Msg($"[BaseMap]   hid {_hiddenPropRenderers.Count - beforeR} renderers, {_hiddenLights.Count - beforeL} lights on '{root.name}'");
                 }
-                BBLog.Msg($"[BaseMap] hid {_hiddenPropRenderers.Count} prop renderers across {rootCount} scene roots");
+                BBLog.Msg($"[BaseMap] hid {_hiddenPropRenderers.Count} renderers, {_hiddenLights.Count} lights across {rootCount} scene roots");
             }
             else
             {
                 foreach (var r in _hiddenPropRenderers)
                     if (r != null) r.enabled = true;
                 _hiddenPropRenderers.Clear();
-                BBLog.Msg("[BaseMap] restored prop renderers");
+
+                for (int i = 0; i < _hiddenLights.Count; i++)
+                    if (_hiddenLights[i] != null) _hiddenLights[i].enabled = _hiddenLightsOrigState[i];
+                _hiddenLights.Clear();
+                _hiddenLightsOrigState.Clear();
+                BBLog.Msg("[BaseMap] restored prop renderers and lights");
             }
 
             // TVE (The Vegetation Engine) and GPUI managers/pool objects.
@@ -1824,17 +1961,93 @@ namespace BabyBlocks
                     if (col != null) col.enabled = false;
                 foreach (var r in _brlRendererCache)
                     if (r != null) r.enabled = false;
-                BBLog.Msg("[BaseMap] terrain/renderer disable done");
+                foreach (var light in _brlLightCache)
+                    if (light != null) light.enabled = false;
+                BBLog.Msg("[BaseMap] terrain/renderer/light disable done");
 
                 // brl.off stops UpdateDirtyGpuis → GPUI instance buffers go stale → rocks fade.
                 // Chunks must stay ACTIVE (not SetActive false) so OnPreCull keeps its
                 // world-position terrain reference and the camera doesn't break.
                 if (brl != null) brl.off = true;
                 BBLog.Msg("[BaseMap] brl.off=true done");
+
+                _nextLightSweepTime = 0f;
             }
 
             BBLog.Msg($"[BaseMap] SetBaseMapEnabled({enabled}) — end");
         }
+
+        // Some lights (e.g. PointAtPlayer-driven streetlamps) aren't switched on by
+        // their day/night logic until well after the hide pass runs — a one-time scan
+        // at toggle time can never catch these. This sweep finds any Light that is
+        // *currently* enabled but not one we're tracking, and hides it on the spot
+        // (excluding the props container and the player/fly-cam rig). Origin state is
+        // recorded as "on" so re-enabling Base Map turns it back on correctly.
+        static void SuppressNewlyEnabledLights()
+        {
+            foreach (var light in Resources.FindObjectsOfTypeAll<Light>())
+            {
+                if (light == null || !light.enabled) continue;
+                if (!light.gameObject.scene.IsValid()) continue;
+                if (_hiddenLights.Contains(light)) continue;
+                if (_brlLightCache.Contains(light)) continue;
+                if (IsLightProtected(light)) continue;
+
+                var sb = new System.Text.StringBuilder(light.gameObject.name);
+                for (var p = light.transform.parent; p != null; p = p.parent)
+                    sb.Insert(0, p.name + "/");
+                MelonLogger.Msg($"[BaseMap] Hiding newly-enabled light: {sb}");
+                HideLight(light);
+            }
+        }
+
+        // True if `light` (or any ancestor) is part of the editor's props container
+        // or the player/fly-cam rig, and so must never be hidden.
+        static bool IsLightProtected(Light light)
+        {
+            for (var t = light.transform; t != null; t = t.parent)
+            {
+                if (Instance != null && t.gameObject == Instance._propsContainer) return true;
+                if (HasOwnCameraComponent(t.gameObject)) return true;
+            }
+            return false;
+        }
+
+        // Called every frame (from Core.OnUpdate) while Base Map is off. The one-time
+        // hide in SetBaseMapEnabled snapshots renderer/collider/light state at the
+        // moment of toggling, but the world keeps running: BRL renderer proxies get
+        // re-enabled by streaming, and lights/cutscene triggers driven by day-night or
+        // quest logic (e.g. PointAtPlayer-controlled streetlamps, BBConvoTrigger
+        // colliders gated on quest state) can flip from off to on afterwards. Re-assert
+        // "off"/"disabled" on everything we're tracking so those changes don't leak
+        // through while the map is hidden.
+        internal static void SuppressHiddenWhileBaseMapOff()
+        {
+            foreach (var r in _brlRendererCache)
+                if (r != null && r.enabled) r.enabled = false;
+
+            foreach (var light in _brlLightCache)
+                if (light != null && light.enabled) light.enabled = false;
+
+            foreach (var light in _hiddenLights)
+                if (light != null && light.enabled) light.enabled = false;
+
+            foreach (var col in _disabledPropColliders)
+                if (col != null && col.enabled) col.enabled = false;
+
+            foreach (var mb in _disabledLightControllers)
+                if (mb != null && mb.enabled) mb.enabled = false;
+
+            // Resources.FindObjectsOfTypeAll is relatively expensive — throttle to a
+            // few times a second rather than every frame.
+            if (Time.unscaledTime >= _nextLightSweepTime)
+            {
+                _nextLightSweepTime = Time.unscaledTime + 0.5f;
+                SuppressNewlyEnabledLights();
+            }
+        }
+
+        static float _nextLightSweepTime;
 
         // Applies/restores the Day Weather Playlist override that goes with the base
         // map toggle. Disabling the base map captures Menu.curChapter (so it can be

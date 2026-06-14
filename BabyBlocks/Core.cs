@@ -133,6 +133,10 @@ namespace BabyBlocks
                         LevelEditorManager._brlRendererCache =
                             brl.GetComponentsInChildren<Renderer>(true);
                 }
+
+                // Re-assert hidden lights/colliders that game logic (day-night cycle,
+                // quest/cutscene state) may have re-enabled since the last toggle.
+                LevelEditorManager.SuppressHiddenWhileBaseMapOff();
             }
         }
 
