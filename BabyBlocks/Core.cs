@@ -122,6 +122,18 @@ namespace BabyBlocks
 
         public override void OnUpdate()
         {
+            if (Input.GetKeyDown(KeyCode.F3))
+                PerfMonitor.Toggle();
+            PerfMonitor.OnUpdate();
+
+            if (Input.GetKeyDown(KeyCode.F5))
+            {
+                var (uniqueMats, totalSlots, rendererCount) = LevelEditorManager.CountPropMaterials();
+                MelonLogger.Msg($"[MaterialDiag] props: {uniqueMats} unique materials, " +
+                    $"{totalSlots} renderer-material slots, {rendererCount} renderers, " +
+                    $"BaseMapEnabled={LevelEditorManager.BaseMapEnabled}");
+            }
+
             FlyCamController.OnUpdate();
 
             // Suppress any terrain chunks or prop containers that BRL streams in
@@ -146,7 +158,7 @@ namespace BabyBlocks
                 if (_wasFarTeleportActive)
                 {
                     // TEMP DIAGNOSTIC
-                    MelonLogger.Msg($"[BaseMapDiag] Core.OnUpdate: FarTeleportActive->false transition, brl.off={(BestRegionLoader.me != null ? BestRegionLoader.me.off : true)}, starting rescan window");
+                    BBLog.Msg($"[BaseMapDiag] Core.OnUpdate: FarTeleportActive->false transition, brl.off={(BestRegionLoader.me != null ? BestRegionLoader.me.off : true)}, starting rescan window");
                     _postTeleportRescanFramesRemaining = PostTeleportRescanFrames;
                 }
                 _wasFarTeleportActive = false;
@@ -160,7 +172,7 @@ namespace BabyBlocks
                         _postTeleportRescanFramesRemaining--;
                         if (_postTeleportRescanFramesRemaining == 0)
                         {
-                            MelonLogger.Msg("[BaseMapDiag] Core.OnUpdate: post-teleport rescan window done");
+                            BBLog.Msg("[BaseMapDiag] Core.OnUpdate: post-teleport rescan window done");
                         }
                     }
 
@@ -177,7 +189,7 @@ namespace BabyBlocks
                         {
                             // TEMP DIAGNOSTIC
                             if (LevelEditorManager.IsUnderPlayer(r.transform))
-                                MelonLogger.Msg($"[BaseMapDiag] Core.OnUpdate disabling PLAYER renderer '{r.name}' from _brlRendererCache");
+                                BBLog.Msg($"[BaseMapDiag] Core.OnUpdate disabling PLAYER renderer '{r.name}' from _brlRendererCache");
                             r.enabled = false;
                         }
                     }
@@ -196,7 +208,11 @@ namespace BabyBlocks
             }
         }
 
-        public override void OnGUI() => FlyCamController.OnGUI();
+        public override void OnGUI()
+        {
+            FlyCamController.OnGUI();
+            PerfMonitor.OnGUI();
+        }
     }
 
     // Replaces FlyCam.Update to add right-click look in cursor mode and left-click far-teleport.

@@ -395,7 +395,7 @@ namespace BabyBlocks
         public static void HandleFarTeleport()
         {
             // TEMP DIAGNOSTIC
-            MelonLogger.Msg($"[BaseMapDiag] HandleFarTeleport called, teleporting={Menu.me.teleporting} refreezePending={_refreezePending} farTeleportActive={_farTeleportActive}");
+            BBLog.Msg($"[BaseMapDiag] HandleFarTeleport called, teleporting={Menu.me.teleporting} refreezePending={_refreezePending} farTeleportActive={_farTeleportActive}");
 
             if (Menu.me.teleporting || _refreezePending || _farTeleportActive) return;
 
@@ -449,7 +449,7 @@ namespace BabyBlocks
         static IEnumerator FarTeleportCo(PlayerMovement player, Vector3 target, float facingY)
         {
             // TEMP DIAGNOSTIC
-            MelonLogger.Msg($"[BaseMapDiag] FarTeleportCo start target={target} BaseMapEnabled={LevelEditorManager.BaseMapEnabled} brl.off={BestRegionLoader.me.off}");
+            BBLog.Msg($"[BaseMapDiag] FarTeleportCo start target={target} BaseMapEnabled={LevelEditorManager.BaseMapEnabled} brl.off={BestRegionLoader.me.off}");
 
             // Pause autosave; stamp target so any stray save writes a consistent position.
             SaveGod.me.stopSaving = true;
@@ -530,7 +530,7 @@ namespace BabyBlocks
             br.off = false;
 
             // TEMP DIAGNOSTIC
-            MelonLogger.Msg($"[BaseMapDiag] FarTeleportCo chunks drained, brl.off=false, about to FreezePlayer/SwitchModes {LevelEditorManager.PlayerRendererSummary()}");
+            BBLog.Msg($"[BaseMapDiag] FarTeleportCo chunks drained, brl.off=false, about to FreezePlayer/SwitchModes {LevelEditorManager.PlayerRendererSummary()}");
 
             // Set up player so TeleportCo's ragdoll sequence has the right puppet state.
             FreezePlayer(player, false);
@@ -601,12 +601,12 @@ namespace BabyBlocks
                 crestWater = crestTransform?.gameObject;
 
                 // TEMP DIAGNOSTIC
-                MelonLogger.Msg($"[BaseMapDiag] FarTeleportCo: CrestWaterRenderer found={crestWater != null} activeSelf={(crestWater != null ? crestWater.activeSelf : (bool?)null)}");
+                BBLog.Msg($"[BaseMapDiag] FarTeleportCo: CrestWaterRenderer found={crestWater != null} activeSelf={(crestWater != null ? crestWater.activeSelf : (bool?)null)}");
 
                 if (crestWater != null && !crestWater.activeSelf)
                 {
                     crestWater.SetActive(true);
-                    MelonLogger.Msg("[BaseMapDiag] FarTeleportCo: temporarily re-enabled CrestWaterRenderer for Menu.me.Teleport");
+                    BBLog.Msg("[BaseMapDiag] FarTeleportCo: temporarily re-enabled CrestWaterRenderer for Menu.me.Teleport");
                 }
                 else
                 {
@@ -620,23 +620,23 @@ namespace BabyBlocks
             Menu.me.Teleport(target);
 
             // TEMP DIAGNOSTIC
-            MelonLogger.Msg($"[BaseMapDiag] FarTeleportCo called Menu.me.Teleport, teleporting={Menu.me.teleporting} fullyLoaded={BestRegionLoader.fullyLoaded} brl.off={br.off} {LevelEditorManager.PlayerRendererSummary()}");
+            BBLog.Msg($"[BaseMapDiag] FarTeleportCo called Menu.me.Teleport, teleporting={Menu.me.teleporting} fullyLoaded={BestRegionLoader.fullyLoaded} brl.off={br.off} {LevelEditorManager.PlayerRendererSummary()}");
             int waitFrames = 0;
             while (Menu.me.teleporting)
             {
                 yield return null;
                 waitFrames++;
                 if (waitFrames % 30 == 0)
-                    MelonLogger.Msg($"[BaseMapDiag] FarTeleportCo still waiting on teleporting, frame={waitFrames} fullyLoaded={BestRegionLoader.fullyLoaded} brl.off={br.off} FarTeleportActive={_farTeleportActive} BaseMapEnabled={LevelEditorManager.BaseMapEnabled} {LevelEditorManager.PlayerRendererSummary()}");
+                    BBLog.Msg($"[BaseMapDiag] FarTeleportCo still waiting on teleporting, frame={waitFrames} fullyLoaded={BestRegionLoader.fullyLoaded} brl.off={br.off} FarTeleportActive={_farTeleportActive} BaseMapEnabled={LevelEditorManager.BaseMapEnabled} {LevelEditorManager.PlayerRendererSummary()}");
             }
 
             // TEMP DIAGNOSTIC
-            MelonLogger.Msg($"[BaseMapDiag] FarTeleportCo teleporting finished after {waitFrames} frames {LevelEditorManager.PlayerRendererSummary()}");
+            BBLog.Msg($"[BaseMapDiag] FarTeleportCo teleporting finished after {waitFrames} frames {LevelEditorManager.PlayerRendererSummary()}");
 
             if (crestWater != null && !LevelEditorManager.BaseMapEnabled)
             {
                 crestWater.SetActive(false);
-                MelonLogger.Msg("[BaseMapDiag] FarTeleportCo: re-disabled CrestWaterRenderer after Menu.me.Teleport");
+                BBLog.Msg("[BaseMapDiag] FarTeleportCo: re-disabled CrestWaterRenderer after Menu.me.Teleport");
             }
 
             // Re-point the cached "[MicroSplat] Layer N" prop materials at the freshly loaded
@@ -686,7 +686,7 @@ namespace BabyBlocks
             _farTeleportActive = false;
 
             // TEMP DIAGNOSTIC
-            MelonLogger.Msg($"[BaseMapDiag] FarTeleportCo end, brl.off={br.off} {LevelEditorManager.PlayerRendererSummary()}");
+            BBLog.Msg($"[BaseMapDiag] FarTeleportCo end, brl.off={br.off} {LevelEditorManager.PlayerRendererSummary()}");
         }
     }
 }

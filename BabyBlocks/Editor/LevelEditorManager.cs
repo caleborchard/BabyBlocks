@@ -1515,9 +1515,9 @@ namespace BabyBlocks
         // Always re-enabled (they were enabled to have been driving the light at all).
         static readonly List<MonoBehaviour> _disabledLightControllers = new();
 
-        // Editor-placed props' per-renderer material instances whose altitude/area
-        // snow effect has been suppressed while Base Map is off. Two unrelated
-        // mechanisms:
+        // Editor-placed props' snow-suppressed material clones, shared across every
+        // renderer that referenced the same original ("catalog") material. Two
+        // unrelated snow mechanisms:
         //  - Kronnect "Better Lit" shader: the `_SNOW` LOCAL keyword is the master
         //    switch (a `_SnowMode` property exists but only selects a sub-mode once
         //    _SNOW is enabled — setting _SnowMode=0 alone does NOT disable the effect).
@@ -1526,78 +1526,135 @@ namespace BabyBlocks
         //    how much of the height/angle-based snow (_SnowHeightAngleRange/
         //    _SnowParams) is blended in. Distinguish from Better Lit by
         //    `!mat.HasProperty("_SnowMode") && mat.HasProperty("_SnowAmount")`.
-        static readonly List<Material> _suppressedSnowMaterials = new();
-        static readonly List<(Material mat, float origAmount, Vector4 origHeightRange)> _suppressedSnowAmountMaterials = new();
+        //
+        // Previously this read r.materials, which clones one material PER RENDERER —
+        // on a map with ~4800 prop renderers sharing ~22 materials, that turned 22
+        // shared materials into ~4800 unique ones (one toggle of Base Map was enough
+        // to wreck batching for the whole map). Instead we clone each original
+        // material once, share that single clone across every renderer that used the
+        // original, and just flip the clone's snow state — preserving sharing while
+        // still never mutating the original catalog material asset.
+        static readonly Dictionary<Material, Material> _propSnowCloneByOriginal = new();
+        static readonly HashSet<Material> _propSnowClones = new();
+        static readonly HashSet<Material> _snowKeywordClones = new();
+        static readonly Dictionary<Material, (float origAmount, Vector4 origHeightRange)> _snowAmountClones = new();
 
         // Suppresses (disable=true) or restores (disable=false) the altitude/area snow
-        // effect on every editor-placed prop's renderer materials. Accessing
-        // Renderer.materials (not .sharedMaterials) creates per-renderer instances, so
-        // this never mutates shared catalog material assets. Called from
+        // effect on every editor-placed prop's renderer materials. Called from
         // SetBaseMapEnabled via SetEditorPropsSnowDisabled(!enabled), and re-run after
         // FarTeleportCo's ReapplyAllMaterialOverrides — that repair pass repoints
-        // override renderers at freshly-resolved (unsuppressed) shared materials,
-        // orphaning whatever instance this method previously suppressed. Re-running
-        // this is idempotent: it clears and rebuilds both tracking lists from whatever
-        // materials are currently on the renderers.
+        // override renderers at freshly-resolved original materials, orphaning
+        // whatever clone this method previously assigned. Re-running with
+        // disable=true is idempotent/cheap: original materials we've already cloned
+        // are recognized via _propSnowCloneByOriginal and re-pointed at the existing
+        // shared clone (no new clone created), and renderers already on a clone are
+        // skipped entirely.
         [HideFromIl2Cpp]
         internal static void SetEditorPropsSnowDisabled(bool disable)
         {
             if (disable)
             {
-                _suppressedSnowMaterials.Clear();
-                _suppressedSnowAmountMaterials.Clear();
                 var propsContainer = Instance != null ? Instance._propsContainer : null;
                 if (propsContainer == null) return;
 
+                int reassigned = 0;
                 foreach (var r in propsContainer.GetComponentsInChildren<Renderer>(true))
                 {
                     if (r == null) continue;
-                    foreach (var mat in r.materials)
+                    var mats = r.sharedMaterials;
+                    bool changed = false;
+                    for (int i = 0; i < mats.Length; i++)
                     {
-                        if (mat == null) continue;
+                        var mat = mats[i];
+                        if (mat == null || _propSnowClones.Contains(mat)) continue;
 
-                        if (mat.IsKeywordEnabled("_SNOW"))
+                        if (!_propSnowCloneByOriginal.TryGetValue(mat, out var clone))
                         {
-                            mat.DisableKeyword("_SNOW");
-                            _suppressedSnowMaterials.Add(mat);
+                            bool hasSnowKeyword = mat.IsKeywordEnabled("_SNOW");
+                            bool hasSnowAmount = !mat.HasProperty("_SnowMode") && mat.HasProperty("_SnowAmount");
+                            if (!hasSnowKeyword && !hasSnowAmount) continue;
+
+                            clone = new Material(mat) { name = mat.name };
+                            _propSnowCloneByOriginal[mat] = clone;
+                            _propSnowClones.Add(clone);
+
+                            if (hasSnowKeyword) _snowKeywordClones.Add(clone);
+                            if (hasSnowAmount)
+                            {
+                                float origAmount = mat.GetFloat("_SnowAmount");
+                                Vector4 origRange = mat.HasProperty("_SnowHeightAngleRange")
+                                    ? mat.GetVector("_SnowHeightAngleRange") : default;
+                                _snowAmountClones[clone] = (origAmount, origRange);
+                            }
                         }
 
-                        if (!mat.HasProperty("_SnowMode") && mat.HasProperty("_SnowAmount"))
-                        {
-                            float origAmount = mat.GetFloat("_SnowAmount");
-                            Vector4 origRange = mat.HasProperty("_SnowHeightAngleRange")
-                                ? mat.GetVector("_SnowHeightAngleRange") : default;
-                            mat.SetFloat("_SnowAmount", 0f);
-                            // Also push the snow line height threshold (x) far above any
-                            // real world height with a tiny falloff range (y), in case
-                            // this shader variant gates the height/angle blend on
-                            // _SnowHeightAngleRange rather than (or in addition to)
-                            // _SnowAmount.
-                            if (mat.HasProperty("_SnowHeightAngleRange"))
-                                mat.SetVector("_SnowHeightAngleRange", new Vector4(1000000f, 1f, origRange.z, origRange.w));
-                            _suppressedSnowAmountMaterials.Add((mat, origAmount, origRange));
-                        }
+                        mats[i] = clone;
+                        changed = true;
+                        reassigned++;
                     }
+                    if (changed) r.sharedMaterials = mats;
                 }
-                BBLog.Msg($"[BaseMap] suppressed snow on {_suppressedSnowMaterials.Count} keyword + " +
-                    $"{_suppressedSnowAmountMaterials.Count} _SnowAmount editor-prop material(s)");
+
+                foreach (var clone in _snowKeywordClones)
+                    clone.DisableKeyword("_SNOW");
+                foreach (var kvp in _snowAmountClones)
+                {
+                    var (_, origRange) = kvp.Value;
+                    kvp.Key.SetFloat("_SnowAmount", 0f);
+                    // Also push the snow line height threshold (x) far above any real
+                    // world height with a tiny falloff range (y), in case this shader
+                    // variant gates the height/angle blend on _SnowHeightAngleRange
+                    // rather than (or in addition to) _SnowAmount.
+                    if (kvp.Key.HasProperty("_SnowHeightAngleRange"))
+                        kvp.Key.SetVector("_SnowHeightAngleRange", new Vector4(1000000f, 1f, origRange.z, origRange.w));
+                }
+
+                BBLog.Msg($"[BaseMap] suppressed snow on {_snowKeywordClones.Count} keyword + " +
+                    $"{_snowAmountClones.Count} _SnowAmount clone(s), {reassigned} renderer slot(s) repointed");
             }
             else
             {
-                foreach (var mat in _suppressedSnowMaterials)
-                    if (mat != null) mat.EnableKeyword("_SNOW");
-                foreach (var (mat, origAmount, origRange) in _suppressedSnowAmountMaterials)
+                foreach (var clone in _snowKeywordClones)
+                    clone.EnableKeyword("_SNOW");
+                foreach (var kvp in _snowAmountClones)
                 {
-                    if (mat == null) continue;
-                    mat.SetFloat("_SnowAmount", origAmount);
-                    if (mat.HasProperty("_SnowHeightAngleRange"))
-                        mat.SetVector("_SnowHeightAngleRange", origRange);
+                    var (origAmount, origRange) = kvp.Value;
+                    kvp.Key.SetFloat("_SnowAmount", origAmount);
+                    if (kvp.Key.HasProperty("_SnowHeightAngleRange"))
+                        kvp.Key.SetVector("_SnowHeightAngleRange", origRange);
                 }
-                BBLog.Msg($"[BaseMap] restored snow on {_suppressedSnowMaterials.Count} keyword + " +
-                    $"{_suppressedSnowAmountMaterials.Count} _SnowAmount editor-prop material(s)");
-                _suppressedSnowMaterials.Clear();
-                _suppressedSnowAmountMaterials.Clear();
+
+                BBLog.Msg($"[BaseMap] restored snow on {_snowKeywordClones.Count} keyword + " +
+                    $"{_snowAmountClones.Count} _SnowAmount clone(s)");
             }
+        }
+
+        // Diagnostic: counts distinct sharedMaterial instances (and total renderer/material
+        // slots) across all editor-placed props, to check whether material-cloning
+        // elsewhere (e.g. SetEditorPropsSnowDisabled's r.materials access) has fragmented
+        // what should be a small shared catalog into many per-renderer instances.
+        [HideFromIl2Cpp]
+        internal static (int uniqueMaterials, int totalSlots, int rendererCount) CountPropMaterials()
+        {
+            var propsContainer = Instance != null ? Instance._propsContainer : null;
+            if (propsContainer == null) return (0, 0, 0);
+
+            var seen = new HashSet<Material>();
+            int totalSlots = 0;
+            int rendererCount = 0;
+            foreach (var r in propsContainer.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null) continue;
+                rendererCount++;
+                var mats = r.sharedMaterials;
+                if (mats == null) continue;
+                foreach (var m in mats)
+                {
+                    totalSlots++;
+                    if (m != null) seen.Add(m);
+                }
+            }
+            return (seen.Count, totalSlots, rendererCount);
         }
 
         static IEnumerable<GameObject> AllSceneRoots()
@@ -1642,7 +1699,7 @@ namespace BabyBlocks
                 {
                     // TEMP DIAGNOSTIC
                     if (IsUnderPlayer(r.transform))
-                        MelonLogger.Msg($"[BaseMapDiag] HidePropRenderers disabling PLAYER renderer '{r.name}' while hiding go='{go.name}'");
+                        BBLog.Msg($"[BaseMapDiag] HidePropRenderers disabling PLAYER renderer '{r.name}' while hiding go='{go.name}'");
                     r.enabled = false;
                     _hiddenPropRenderers.Add(r);
                 }
@@ -1891,7 +1948,7 @@ namespace BabyBlocks
             if (brl.off)
             {
                 // TEMP DIAGNOSTIC
-                MelonLogger.Msg("[BaseMapDiag] RescanLoadedChunksForBaseMapOff: brl.off==true, no-op");
+                BBLog.Msg("[BaseMapDiag] RescanLoadedChunksForBaseMapOff: brl.off==true, no-op");
                 return;
             }
 
@@ -1906,7 +1963,7 @@ namespace BabyBlocks
             }
 
             // TEMP DIAGNOSTIC
-            MelonLogger.Msg($"[BaseMapDiag] RescanLoadedChunksForBaseMapOff: loadedChunks={loadedCount} newlyHidden={newCount}");
+            BBLog.Msg($"[BaseMapDiag] RescanLoadedChunksForBaseMapOff: loadedChunks={loadedCount} newlyHidden={newCount}");
         }
 
         // Toggles the base map (terrain, props, vegetation, water/audio) for an empty
@@ -1990,7 +2047,7 @@ namespace BabyBlocks
                     int playerOverlap = 0;
                     foreach (var r in _brlRendererCache)
                         if (r != null && IsUnderPlayer(r.transform)) playerOverlap++;
-                    MelonLogger.Msg($"[BaseMapDiag] SetBaseMapEnabled(false): _brlRendererCache count={_brlRendererCache.Length} " +
+                    BBLog.Msg($"[BaseMapDiag] SetBaseMapEnabled(false): _brlRendererCache count={_brlRendererCache.Length} " +
                         $"playerOverlap={playerOverlap} {PlayerRendererSummary()}");
                 }
 
@@ -2330,13 +2387,13 @@ namespace BabyBlocks
         internal static IEnumerator ApplyLoadedBaseMapStateDelayed(bool baseMapOff, int dayWeatherPlaylist, int restoreChapter)
         {
             // TEMP DIAGNOSTIC
-            MelonLogger.Msg($"[BaseMapDiag] ApplyLoadedBaseMapStateDelayed start baseMapOff={baseMapOff} " +
+            BBLog.Msg($"[BaseMapDiag] ApplyLoadedBaseMapStateDelayed start baseMapOff={baseMapOff} " +
                 $"teleporting={Menu.me?.teleporting} {PlayerRendererSummary()}");
 
             while (Menu.me != null && Menu.me.teleporting) yield return null;
 
             // TEMP DIAGNOSTIC
-            MelonLogger.Msg($"[BaseMapDiag] teleporting finished {PlayerRendererSummary()}");
+            BBLog.Msg($"[BaseMapDiag] teleporting finished {PlayerRendererSummary()}");
 
             if (!baseMapOff)
             {
@@ -2354,7 +2411,7 @@ namespace BabyBlocks
             ApplyLoadedBaseMapState(baseMapOff, dayWeatherPlaylist, restoreChapter, deferBrlOff: true);
 
             // TEMP DIAGNOSTIC
-            MelonLogger.Msg($"[BaseMapDiag] after ApplyLoadedBaseMapState(deferBrlOff:true) {PlayerRendererSummary()}");
+            BBLog.Msg($"[BaseMapDiag] after ApplyLoadedBaseMapState(deferBrlOff:true) {PlayerRendererSummary()}");
 
             for (int i = 0; i < 90 && !BaseMapEnabled; i++)
             {
@@ -2362,7 +2419,7 @@ namespace BabyBlocks
                 RescanLoadedChunksForBaseMapOff();
                 // TEMP DIAGNOSTIC: sample every ~0.25s
                 if (i % 15 == 0)
-                    MelonLogger.Msg($"[BaseMapDiag] rescan frame {i} {PlayerRendererSummary()}");
+                    BBLog.Msg($"[BaseMapDiag] rescan frame {i} {PlayerRendererSummary()}");
             }
 
             DeferBrlOff = false;
@@ -2370,7 +2427,7 @@ namespace BabyBlocks
             if (brl != null && !BaseMapEnabled) brl.off = true;
 
             // TEMP DIAGNOSTIC
-            MelonLogger.Msg($"[BaseMapDiag] ApplyLoadedBaseMapStateDelayed done {PlayerRendererSummary()}");
+            BBLog.Msg($"[BaseMapDiag] ApplyLoadedBaseMapStateDelayed done {PlayerRendererSummary()}");
         }
     }
 }
