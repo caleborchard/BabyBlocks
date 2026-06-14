@@ -1515,6 +1515,91 @@ namespace BabyBlocks
         // Always re-enabled (they were enabled to have been driving the light at all).
         static readonly List<MonoBehaviour> _disabledLightControllers = new();
 
+        // Editor-placed props' per-renderer material instances whose altitude/area
+        // snow effect has been suppressed while Base Map is off. Two unrelated
+        // mechanisms:
+        //  - Kronnect "Better Lit" shader: the `_SNOW` LOCAL keyword is the master
+        //    switch (a `_SnowMode` property exists but only selects a sub-mode once
+        //    _SNOW is enabled — setting _SnowMode=0 alone does NOT disable the effect).
+        //  - MicroSplat "Terrain_TerrainRockBlend" (rock props, e.g. "[MicroSplat]
+        //    Layer 0"): no keyword involved; `_SnowAmount` (0..1) directly controls
+        //    how much of the height/angle-based snow (_SnowHeightAngleRange/
+        //    _SnowParams) is blended in. Distinguish from Better Lit by
+        //    `!mat.HasProperty("_SnowMode") && mat.HasProperty("_SnowAmount")`.
+        static readonly List<Material> _suppressedSnowMaterials = new();
+        static readonly List<(Material mat, float origAmount, Vector4 origHeightRange)> _suppressedSnowAmountMaterials = new();
+
+        // Suppresses (disable=true) or restores (disable=false) the altitude/area snow
+        // effect on every editor-placed prop's renderer materials. Accessing
+        // Renderer.materials (not .sharedMaterials) creates per-renderer instances, so
+        // this never mutates shared catalog material assets. Called from
+        // SetBaseMapEnabled via SetEditorPropsSnowDisabled(!enabled), and re-run after
+        // FarTeleportCo's ReapplyAllMaterialOverrides — that repair pass repoints
+        // override renderers at freshly-resolved (unsuppressed) shared materials,
+        // orphaning whatever instance this method previously suppressed. Re-running
+        // this is idempotent: it clears and rebuilds both tracking lists from whatever
+        // materials are currently on the renderers.
+        [HideFromIl2Cpp]
+        internal static void SetEditorPropsSnowDisabled(bool disable)
+        {
+            if (disable)
+            {
+                _suppressedSnowMaterials.Clear();
+                _suppressedSnowAmountMaterials.Clear();
+                var propsContainer = Instance != null ? Instance._propsContainer : null;
+                if (propsContainer == null) return;
+
+                foreach (var r in propsContainer.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (r == null) continue;
+                    foreach (var mat in r.materials)
+                    {
+                        if (mat == null) continue;
+
+                        if (mat.IsKeywordEnabled("_SNOW"))
+                        {
+                            mat.DisableKeyword("_SNOW");
+                            _suppressedSnowMaterials.Add(mat);
+                        }
+
+                        if (!mat.HasProperty("_SnowMode") && mat.HasProperty("_SnowAmount"))
+                        {
+                            float origAmount = mat.GetFloat("_SnowAmount");
+                            Vector4 origRange = mat.HasProperty("_SnowHeightAngleRange")
+                                ? mat.GetVector("_SnowHeightAngleRange") : default;
+                            mat.SetFloat("_SnowAmount", 0f);
+                            // Also push the snow line height threshold (x) far above any
+                            // real world height with a tiny falloff range (y), in case
+                            // this shader variant gates the height/angle blend on
+                            // _SnowHeightAngleRange rather than (or in addition to)
+                            // _SnowAmount.
+                            if (mat.HasProperty("_SnowHeightAngleRange"))
+                                mat.SetVector("_SnowHeightAngleRange", new Vector4(1000000f, 1f, origRange.z, origRange.w));
+                            _suppressedSnowAmountMaterials.Add((mat, origAmount, origRange));
+                        }
+                    }
+                }
+                BBLog.Msg($"[BaseMap] suppressed snow on {_suppressedSnowMaterials.Count} keyword + " +
+                    $"{_suppressedSnowAmountMaterials.Count} _SnowAmount editor-prop material(s)");
+            }
+            else
+            {
+                foreach (var mat in _suppressedSnowMaterials)
+                    if (mat != null) mat.EnableKeyword("_SNOW");
+                foreach (var (mat, origAmount, origRange) in _suppressedSnowAmountMaterials)
+                {
+                    if (mat == null) continue;
+                    mat.SetFloat("_SnowAmount", origAmount);
+                    if (mat.HasProperty("_SnowHeightAngleRange"))
+                        mat.SetVector("_SnowHeightAngleRange", origRange);
+                }
+                BBLog.Msg($"[BaseMap] restored snow on {_suppressedSnowMaterials.Count} keyword + " +
+                    $"{_suppressedSnowAmountMaterials.Count} _SnowAmount editor-prop material(s)");
+                _suppressedSnowMaterials.Clear();
+                _suppressedSnowAmountMaterials.Clear();
+            }
+        }
+
         static IEnumerable<GameObject> AllSceneRoots()
         {
             for (int i = 0; i < SceneManager.sceneCount; i++)
@@ -1841,6 +1926,7 @@ namespace BabyBlocks
             BBLog.Msg($"[BaseMap] SetBaseMapEnabled({enabled}) — start");
             BaseMapEnabled = enabled;
             ApplyDayWeatherPlaylistOverride(enabled, captureRestoreChapter);
+            SetEditorPropsSnowDisabled(!enabled);
 
             var brl = BestRegionLoader.me;
             BBLog.Msg($"[BaseMap] brl={(brl != null ? "found" : "null")}");

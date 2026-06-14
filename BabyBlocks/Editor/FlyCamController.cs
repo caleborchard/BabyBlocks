@@ -107,6 +107,12 @@ namespace BabyBlocks
                 PropMetadataPanel.EnsureMaterialListLoaded();
                 PropMetadataPanel.ReapplyAllMaterialOverrides();
 
+                // ReapplyAllMaterialOverrides just repointed override renderers at
+                // freshly-resolved shared materials, which were never snow-suppressed —
+                // re-derive the suppression for whatever materials are on the renderers now.
+                if (!LevelEditorManager.BaseMapEnabled)
+                    LevelEditorManager.SetEditorPropsSnowDisabled(true);
+
                 LevelEditorManager.Instance?.PruneDestroyedObjects();
                 if (GizmoRenderer.IsReady) GizmoRenderer.RefreshAssets();
 
@@ -649,6 +655,12 @@ namespace BabyBlocks
             PropMetadataPanel.InvalidateMaterialCache();
             PropMetadataPanel.EnsureMaterialListLoaded();
             PropMetadataPanel.ReapplyAllMaterialOverrides();
+
+            // ReapplyAllMaterialOverrides just repointed override renderers at
+            // freshly-resolved shared materials, which were never snow-suppressed —
+            // re-derive the suppression for whatever materials are on the renderers now.
+            if (!LevelEditorManager.BaseMapEnabled)
+                LevelEditorManager.SetEditorPropsSnowDisabled(true);
 
             // Snap the fly cam to the player's new body position so that BestRegionLoader
             // streams terrain around the correct area. Without this, the fly cam stays at
