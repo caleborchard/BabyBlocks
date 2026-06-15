@@ -489,6 +489,11 @@ namespace BabyBlocks
 
             if (foundLeo == null) return;
             ApplyToInstance(foundLeo, entry);
+
+            // Only synced for props placed/received over the network this session (netId
+            // != 0) - applying to a non-networked prop is a purely local edit.
+            if (foundLeo.netId != 0)
+                BabyBlocks.Networking.ModNetworking.SendMaterialApplied(foundLeo.netId, entry.id);
         }
 
         public static void ApplyToInstance(LevelEditorObject leo, MaterialConstructionEntry entry)

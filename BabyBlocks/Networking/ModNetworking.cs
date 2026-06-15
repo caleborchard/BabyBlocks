@@ -25,8 +25,20 @@ namespace BabyBlocks.Networking
         private const byte HelloMarker = 0xB5; // arbitrary "I have Baby Blocks" marker byte
         private const byte PropPlacedMarker = 0xB6; // a peer dropped a prop from the palette
         private const byte FreecamUpdateMarker = 0xB7; // a peer entered/moved/left fly-cam
+        private const byte PropTransformMarker = 0xB8; // a peer moved/rotated/scaled a networked prop
+        private const byte PropSelectedMarker = 0xB9; // a peer selected/deselected a networked prop
+        private const byte PropGhostUpdateMarker = 0xBA; // a peer is dragging a prop out of the palette
+        private const byte PropGhostEndMarker = 0xBB; // a peer's in-progress palette placement ended without placing
+        private const byte PropDeletedMarker = 0xBC; // a peer deleted a networked prop
+        private const byte MaterialAppliedMarker = 0xBD; // a peer dragged a material construction onto a networked prop
         private const float AnnounceIntervalSeconds = 5f;
         private const float FreecamSendIntervalSeconds = 0.15f;
+
+        // Networked props, keyed by a netId shared between both clients' copies of the
+        // same logical prop. Lets HandlePropTransformUpdate/HandlePropSelected apply
+        // updates in-place instead of spawning duplicates. Entries whose object has been
+        // destroyed are pruned lazily on lookup.
+        private static readonly Dictionary<ulong, LevelEditorObject> _networkedObjects = new();
 
         // Most freecam updates are sent Unreliable (cheap, high-frequency). Every
         // FreecamReliableIntervalSeconds, one is sent ReliableOrdered instead, so a peer
@@ -115,6 +127,8 @@ namespace BabyBlocks.Networking
             }
 
             RemoteFreecamManager.Update();
+            RemotePropHighlightManager.Update();
+            RemotePropGhostManager.Update();
         }
 
         private static void EnsureReflection()
@@ -242,7 +256,10 @@ namespace BabyBlocks.Networking
 
             _channel = null;
             PeersWithBabyBlocks.Clear();
+            _networkedObjects.Clear();
             RemoteFreecamManager.ClearAll();
+            RemotePropHighlightManager.ClearAll();
+            RemotePropGhostManager.ClearAll();
         }
 
         private static void Announce()
@@ -257,19 +274,41 @@ namespace BabyBlocks.Networking
             }
         }
 
+        // Generates a process-unique-enough id for tagging newly-placed networked props.
+        // Both clients use the same id for their copy of a given prop, derived from a
+        // random GUID — no negotiation needed since collisions are astronomically unlikely.
+        private static ulong GenerateNetId()
+        {
+            var bytes = Guid.NewGuid().ToByteArray();
+            ulong id = BitConverter.ToUInt64(bytes, 0);
+            return id == 0 ? 1 : id;
+        }
+
+        // Assigns a fresh netId to a locally-placed object and registers it for future
+        // transform/selection sync. Returns the assigned id (unchanged if already assigned).
+        public static ulong RegisterNetworkedObject(LevelEditorObject obj)
+        {
+            if (obj == null) return 0;
+            if (obj.netId != 0) return obj.netId;
+            obj.netId = GenerateNetId();
+            _networkedObjects[obj.netId] = obj;
+            return obj.netId;
+        }
+
         // Broadcasts that a prop was just placed via the level editor's drag-and-drop
-        // palette, so peers can spawn the same prop at the same transform as a basic
-        // sync test. Payload layout:
-        //   [marker][idLen:ushort LE][idBytes UTF8][pos.xyz][rot.xyzw][scale.xyz] (floats LE)
-        public static void SendPropPlaced(string propId, Vector3 position, Quaternion rotation, Vector3 scale)
+        // palette, so peers can spawn the same prop at the same transform and track it
+        // under the same netId for future transform/selection sync. Payload layout:
+        //   [marker][netId:ulong LE][idLen:ushort LE][idBytes UTF8][pos.xyz][rot.xyzw][scale.xyz] (floats LE)
+        public static void SendPropPlaced(ulong netId, string propId, Vector3 position, Quaternion rotation, Vector3 scale)
         {
             if (_channel == null) return;
             try
             {
                 var idBytes = System.Text.Encoding.UTF8.GetBytes(propId);
-                var payload = new byte[1 + 2 + idBytes.Length + 4 * (3 + 4 + 3)];
+                var payload = new byte[1 + 8 + 2 + idBytes.Length + 4 * (3 + 4 + 3)];
                 int o = 0;
                 payload[o++] = PropPlacedMarker;
+                WriteULong(payload, ref o, netId);
                 payload[o++] = (byte)(idBytes.Length & 0xFF);
                 payload[o++] = (byte)((idBytes.Length >> 8) & 0xFF);
                 Buffer.BlockCopy(idBytes, 0, payload, o, idBytes.Length);
@@ -352,6 +391,19 @@ namespace BabyBlocks.Networking
             return value;
         }
 
+        private static void WriteULong(byte[] buf, ref int offset, ulong value)
+        {
+            Buffer.BlockCopy(BitConverter.GetBytes(value), 0, buf, offset, 8);
+            offset += 8;
+        }
+
+        private static ulong ReadULong(byte[] buf, ref int offset)
+        {
+            ulong value = BitConverter.ToUInt64(buf, offset);
+            offset += 8;
+            return value;
+        }
+
         private static void OnDataReceived(byte senderUuid, byte[] payload)
         {
             if (payload == null || payload.Length < 1) return;
@@ -369,6 +421,30 @@ namespace BabyBlocks.Networking
 
                 case FreecamUpdateMarker:
                     HandleFreecamUpdate(senderUuid, payload);
+                    break;
+
+                case PropTransformMarker:
+                    HandlePropTransformUpdate(senderUuid, payload);
+                    break;
+
+                case PropSelectedMarker:
+                    HandlePropSelected(senderUuid, payload);
+                    break;
+
+                case PropGhostUpdateMarker:
+                    HandlePropGhostUpdate(senderUuid, payload);
+                    break;
+
+                case PropGhostEndMarker:
+                    RemotePropGhostManager.NotifyDragEnded(senderUuid);
+                    break;
+
+                case PropDeletedMarker:
+                    HandlePropDeleted(senderUuid, payload);
+                    break;
+
+                case MaterialAppliedMarker:
+                    HandleMaterialApplied(senderUuid, payload);
                     break;
             }
         }
@@ -404,6 +480,7 @@ namespace BabyBlocks.Networking
             try
             {
                 int o = 1;
+                ulong netId = ReadULong(payload, ref o);
                 int idLen = payload[o] | (payload[o + 1] << 8);
                 o += 2;
                 string propId = System.Text.Encoding.UTF8.GetString(payload, o, idLen);
@@ -429,11 +506,316 @@ namespace BabyBlocks.Networking
                 obj.transform.SetPositionAndRotation(position, rotation);
                 obj.transform.localScale = scale;
 
+                // SpawnFromPropInfo's InitializeLoopBase ran before the transform above was
+                // applied (so its loopBaseRotation/Scale are stale, and chunk data was
+                // computed from the pre-sync transform) - re-sync against the final transform
+                // so this copy loops/chunks identically to the placing client's.
+                LevelEditorManager.Instance.SyncLoopBase(obj);
+
+                if (netId != 0)
+                {
+                    obj.netId = netId;
+                    _networkedObjects[netId] = obj;
+                }
+
+                // The real prop has now appeared - remove the sender's in-progress ghost
+                // preview so it isn't left behind alongside the placed prop, and briefly
+                // suppress further ghost updates from this sender. PropPlaced is
+                // ReliableOrdered while ghost updates are mostly Unreliable, so a few
+                // late in-flight ghost packets can otherwise arrive afterwards and
+                // resurrect a duplicate ghost next to the now-real prop.
+                RemotePropGhostManager.NotifyDragEnded(senderUuid);
+
                 MelonLogger.Msg($"[BabyBlocks] Player {senderUuid} placed prop '{propId}'");
             }
             catch (Exception ex)
             {
                 MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandlePropPlaced failed: {ex.Message}");
+            }
+        }
+
+        // Broadcasts a transform update for a networked prop (move/rotate/scale), e.g. during
+        // an active drag. Sent Unreliable at high frequency with periodic ReliableOrdered
+        // keyframes (mirroring SendFreecamUpdate), plus always-reliable on drag release.
+        // Payload layout: [marker][netId:ulong LE][pos.xyz][rot.xyzw][scale.xyz] (floats LE)
+        public static void SendPropTransform(ulong netId, Vector3 position, Quaternion rotation, Vector3 scale, bool reliable = false)
+        {
+            if (_channel == null || netId == 0) return;
+            try
+            {
+                var payload = new byte[1 + 8 + 4 * (3 + 4 + 3)];
+                int o = 0;
+                payload[o++] = PropTransformMarker;
+                WriteULong(payload, ref o, netId);
+                WriteFloat(payload, ref o, position.x);
+                WriteFloat(payload, ref o, position.y);
+                WriteFloat(payload, ref o, position.z);
+                WriteFloat(payload, ref o, rotation.x);
+                WriteFloat(payload, ref o, rotation.y);
+                WriteFloat(payload, ref o, rotation.z);
+                WriteFloat(payload, ref o, rotation.w);
+                WriteFloat(payload, ref o, scale.x);
+                WriteFloat(payload, ref o, scale.y);
+                WriteFloat(payload, ref o, scale.z);
+
+                _channel.Send(payload, reliable ? PacketDelivery.ReliableOrdered : PacketDelivery.Unreliable);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendPropTransform failed: {ex.Message}");
+            }
+        }
+
+        private static void HandlePropTransformUpdate(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                int o = 1;
+                ulong netId = ReadULong(payload, ref o);
+                var position = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var rotation  = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var scale     = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+
+                if (!_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
+                {
+                    _networkedObjects.Remove(netId);
+                    return;
+                }
+
+                obj.transform.SetPositionAndRotation(position, rotation);
+                obj.transform.localScale = scale;
+                LevelEditorManager.Instance?.SyncLoopBase(obj);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandlePropTransformUpdate failed: {ex.Message}");
+            }
+        }
+
+        // Broadcasts that a networked prop was deleted, so peers remove their copy too.
+        // Payload layout: [marker][netId:ulong LE]
+        public static void SendPropDeleted(ulong netId)
+        {
+            if (_channel == null || netId == 0) return;
+            _networkedObjects.Remove(netId);
+            try
+            {
+                var payload = new byte[1 + 8];
+                int o = 0;
+                payload[o++] = PropDeletedMarker;
+                WriteULong(payload, ref o, netId);
+
+                _channel.Send(payload, PacketDelivery.ReliableOrdered);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendPropDeleted failed: {ex.Message}");
+            }
+        }
+
+        private static void HandlePropDeleted(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                int o = 1;
+                ulong netId = ReadULong(payload, ref o);
+
+                if (!_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
+                {
+                    _networkedObjects.Remove(netId);
+                    return;
+                }
+
+                _networkedObjects.Remove(netId);
+                LevelEditor.RemoveDeletedObject(obj);
+                LevelEditorManager.Instance?.Remove(obj);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandlePropDeleted failed: {ex.Message}");
+            }
+        }
+
+        // Broadcasts that a peer dragged a material construction onto a networked prop, so
+        // peers re-skin their copy of that prop the same way. Only synced for props that
+        // already have a netId (i.e. placed/received over the network this session) -
+        // applying to a non-networked prop is a purely local edit. Payload layout:
+        //   [marker][netId:ulong LE][materialConstructionId:int LE]
+        public static void SendMaterialApplied(ulong netId, int materialConstructionId)
+        {
+            if (_channel == null || netId == 0) return;
+            try
+            {
+                var payload = new byte[1 + 8 + 4];
+                int o = 0;
+                payload[o++] = MaterialAppliedMarker;
+                WriteULong(payload, ref o, netId);
+                Buffer.BlockCopy(BitConverter.GetBytes(materialConstructionId), 0, payload, o, 4);
+
+                _channel.Send(payload, PacketDelivery.ReliableOrdered);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendMaterialApplied failed: {ex.Message}");
+            }
+        }
+
+        private static void HandleMaterialApplied(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                int o = 1;
+                ulong netId = ReadULong(payload, ref o);
+                int materialConstructionId = BitConverter.ToInt32(payload, o);
+
+                if (!_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
+                {
+                    _networkedObjects.Remove(netId);
+                    return;
+                }
+
+                var entry = MaterialConstructionLibrary.FindById(materialConstructionId);
+                if (entry == null) return;
+
+                MaterialConstructionPanel.ApplyToInstance(obj, entry);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleMaterialApplied failed: {ex.Message}");
+            }
+        }
+
+        // Broadcasts the local player's current selection (of a networked prop) so peers can
+        // show a highlight around it in our suit color. netId == 0 means "nothing selected" /
+        // selection cleared. Payload layout:
+        //   [marker][netId:ulong LE][selected:byte][color.rgb bytes (only if selected)]
+        public static void SendPropSelected(ulong netId)
+        {
+            if (_channel == null) return;
+            try
+            {
+                bool selected = netId != 0;
+                Color color = Color.white;
+                if (selected) TryGetLocalAppearance(out color, out _);
+
+                var payload = new byte[1 + 8 + 1 + (selected ? 3 : 0)];
+                int o = 0;
+                payload[o++] = PropSelectedMarker;
+                WriteULong(payload, ref o, netId);
+                payload[o++] = (byte)(selected ? 1 : 0);
+                if (selected)
+                {
+                    payload[o++] = (byte)Mathf.Clamp(Mathf.RoundToInt(color.r * 255f), 0, 255);
+                    payload[o++] = (byte)Mathf.Clamp(Mathf.RoundToInt(color.g * 255f), 0, 255);
+                    payload[o++] = (byte)Mathf.Clamp(Mathf.RoundToInt(color.b * 255f), 0, 255);
+                }
+
+                _channel.Send(payload, PacketDelivery.ReliableOrdered);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendPropSelected failed: {ex.Message}");
+            }
+        }
+
+        private static void HandlePropSelected(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                int o = 1;
+                ulong netId = ReadULong(payload, ref o);
+                bool selected = payload[o++] != 0;
+
+                if (!selected || netId == 0 || !_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
+                {
+                    _networkedObjects.Remove(netId);
+                    RemotePropHighlightManager.Remove(senderUuid);
+                    return;
+                }
+
+                var color = new Color(payload[o++] / 255f, payload[o++] / 255f, payload[o++] / 255f);
+                RemotePropHighlightManager.SetHighlight(senderUuid, obj, color);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandlePropSelected failed: {ex.Message}");
+            }
+        }
+
+        // Broadcasts the live position/rotation/scale of a prop being dragged out of the
+        // palette (before it's dropped), so peers can show a matching ghost preview. Sent at
+        // the same cadence as SendPropTransform. Payload layout:
+        //   [marker][idLen:ushort LE][idBytes UTF8][pos.xyz][rot.xyzw][scale.xyz] (floats LE)
+        public static void SendPropGhostUpdate(string propId, Vector3 position, Quaternion rotation, Vector3 scale, bool reliable)
+        {
+            if (_channel == null) return;
+            try
+            {
+                var idBytes = System.Text.Encoding.UTF8.GetBytes(propId);
+                var payload = new byte[1 + 2 + idBytes.Length + 4 * (3 + 4 + 3)];
+                int o = 0;
+                payload[o++] = PropGhostUpdateMarker;
+                payload[o++] = (byte)(idBytes.Length & 0xFF);
+                payload[o++] = (byte)((idBytes.Length >> 8) & 0xFF);
+                Buffer.BlockCopy(idBytes, 0, payload, o, idBytes.Length);
+                o += idBytes.Length;
+
+                WriteFloat(payload, ref o, position.x);
+                WriteFloat(payload, ref o, position.y);
+                WriteFloat(payload, ref o, position.z);
+                WriteFloat(payload, ref o, rotation.x);
+                WriteFloat(payload, ref o, rotation.y);
+                WriteFloat(payload, ref o, rotation.z);
+                WriteFloat(payload, ref o, rotation.w);
+                WriteFloat(payload, ref o, scale.x);
+                WriteFloat(payload, ref o, scale.y);
+                WriteFloat(payload, ref o, scale.z);
+
+                _channel.Send(payload, reliable ? PacketDelivery.ReliableOrdered : PacketDelivery.Unreliable);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendPropGhostUpdate failed: {ex.Message}");
+            }
+        }
+
+        // Sent when a peer's in-progress palette placement ends without placing a prop
+        // (e.g. dropped over UI), so peers remove the ghost preview.
+        public static void SendPropGhostEnd()
+        {
+            if (_channel == null) return;
+            try
+            {
+                _channel.Send(new byte[] { PropGhostEndMarker }, PacketDelivery.ReliableOrdered);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendPropGhostEnd failed: {ex.Message}");
+            }
+        }
+
+        private static void HandlePropGhostUpdate(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                int o = 1;
+                int idLen = payload[o] | (payload[o + 1] << 8);
+                o += 2;
+                string propId = System.Text.Encoding.UTF8.GetString(payload, o, idLen);
+                o += idLen;
+
+                var position = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var rotation  = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var scale     = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+
+                var info = PropLibrary.FindById(propId);
+                if (info == null) return;
+
+                RemotePropGhostManager.UpdateGhost(senderUuid, info, position, rotation, scale);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandlePropGhostUpdate failed: {ex.Message}");
             }
         }
     }

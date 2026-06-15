@@ -731,6 +731,8 @@
 		<Compile Include="UI\ObjImportWindow.cs" />
 		<Compile Include="Networking\ModNetworking.cs" />
 		<Compile Include="Networking\RemoteFreecamManager.cs" />
+		<Compile Include="Networking\RemotePropHighlightManager.cs" />
+		<Compile Include="Networking\RemotePropGhostManager.cs" />
 	</ItemGroup>
 
 	<ItemGroup>

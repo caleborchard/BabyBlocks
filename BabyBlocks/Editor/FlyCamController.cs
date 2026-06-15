@@ -265,6 +265,7 @@ namespace BabyBlocks
                 player.pm.SwitchModes();
                 player.OnStandUp();
                 LevelEditor.HideGizmo();
+                LevelEditor.ClearRemoteSelectionBroadcast();
 
                 // Cleared only after the unfreeze/mode-switch sequence above so
                 // BBConvoStarterTriggerPatch keeps suppressing cutscene triggers while the
@@ -306,7 +307,11 @@ namespace BabyBlocks
             Cursor.visible   = CursorMode;
             if (LevelEditorManager.Instance != null)
                 PhysicsObjectManager.SetEditorModeActive(CursorMode && FlyCamActive);
-            if (!CursorMode) LevelEditor.HideGizmo();
+            if (!CursorMode)
+            {
+                LevelEditor.HideGizmo();
+                LevelEditor.ClearRemoteSelectionBroadcast();
+            }
         }
 
         static void FreezePlayer(PlayerMovement player, bool frozen)

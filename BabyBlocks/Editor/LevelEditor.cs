@@ -43,6 +43,25 @@ namespace BabyBlocks
         static readonly List<Vector3> _dragStartScales = new();
         static readonly List<Quaternion> _dragStartRotations = new();
 
+        // Throttling for SendPropTransform broadcasts during an active drag, mirroring
+        // the freecam update cadence (Unreliable at high frequency, periodic
+        // ReliableOrdered keyframe so a mid-drag late-joiner still converges).
+        const float NetTransformSendIntervalSeconds = 0.15f;
+        const float NetTransformReliableIntervalSeconds = 1.5f;
+        static float _nextNetTransformSendTime;
+        static float _nextNetTransformReliableTime;
+
+        // Last netId broadcast via SendPropSelected, so selection changes are only sent
+        // once (ulong.MaxValue = "never sent yet", forcing an initial broadcast).
+        static ulong _lastBroadcastSelectedNetId = ulong.MaxValue;
+
+        // Throttling for SendPropGhostUpdate broadcasts while dragging a prop out of the
+        // palette (before it's dropped), mirroring the drag-transform cadence above.
+        const float GhostSendIntervalSeconds = 0.15f;
+        const float GhostReliableIntervalSeconds = 1.5f;
+        static float _nextGhostSendTime;
+        static float _nextGhostReliableTime;
+
         struct CopyEntry
         {
             public string addressableKey;
@@ -177,6 +196,27 @@ namespace BabyBlocks
             selectedObject = null;
         }
 
+        // Called when a peer deletes a networked prop, so our copy is dropped from
+        // selection/drag state before LevelEditorManager destroys it - otherwise we'd be
+        // left holding a reference to a destroyed object.
+        public static void RemoveDeletedObject(LevelEditorObject obj)
+        {
+            if (obj == null) return;
+            _selection.Remove(obj);
+            if (selectedObject == obj)
+                selectedObject = _selection.Count > 0 ? _selection[_selection.Count - 1] : null;
+            if (_selection.Count == 0) HideGizmo();
+
+            int dragIdx = _dragObjects.IndexOf(obj);
+            if (dragIdx >= 0)
+            {
+                _dragObjects.RemoveAt(dragIdx);
+                _dragStartPositions.RemoveAt(dragIdx);
+                _dragStartScales.RemoveAt(dragIdx);
+                _dragStartRotations.RemoveAt(dragIdx);
+            }
+        }
+
         public static void Update()
         {
             LevelEditorManager.Instance?.EnsurePropsContainer();
@@ -234,6 +274,16 @@ namespace BabyBlocks
             // rather than leaving a stale outline rendered at the pre-drag position.
             GizmoRenderer.DrawOutline(IsSurfaceSnapDragging ? null : _selection, main);
 
+            // Broadcast selection changes for the remote highlight feature. Only networked
+            // props (netId != 0) are reported; selecting a non-networked prop or nothing
+            // is reported as netId 0, telling peers to clear our highlight.
+            ulong selectedNetId = selectedObject != null ? selectedObject.netId : 0;
+            if (selectedNetId != _lastBroadcastSelectedNetId)
+            {
+                BabyBlocks.Networking.ModNetworking.SendPropSelected(selectedNetId);
+                _lastBroadcastSelectedNetId = selectedNetId;
+            }
+
             if (Input.GetMouseButton(1)) return;
 
             if (!blockShortcuts && Input.GetKeyDown(KeyCode.Delete) && selectedObject != null)
@@ -258,7 +308,9 @@ namespace BabyBlocks
                 }
                 else if (++_propDragReleaseFrames >= DragReleaseDebounceFrames)
                 {
-                    if (!overUI) TryDropProp();
+                    bool placed = !overUI && TryDropProp();
+                    if (!placed)
+                        BabyBlocks.Networking.ModNetworking.SendPropGhostEnd();
                     DestroyPropGhost();
                     PropPalette.CancelDrag();
                     _propDragReleaseFrames = 0;
@@ -294,6 +346,7 @@ namespace BabyBlocks
                     if (IsSurfaceSnapDragging && Input.GetKeyDown(KeyCode.R))
                         _dragStep = (_dragStep + 1) % DragOrientations.Length;
                     ContinueDrag();
+                    BroadcastDragTransforms();
                 }
                 else
                 {
@@ -310,6 +363,9 @@ namespace BabyBlocks
                             var obj = _dragObjects[i];
                             if (obj == null) continue;
                             LevelEditorHistory.PushTransform(obj, _dragStartPositions[i], _dragStartScales[i], _dragStartRotations[i]);
+                            if (obj.netId != 0)
+                                BabyBlocks.Networking.ModNetworking.SendPropTransform(
+                                    obj.netId, obj.transform.position, obj.transform.rotation, obj.transform.localScale, reliable: true);
                         }
                         if (LevelEditorManager.Instance != null)
                             LevelEditorManager.Instance.SyncLoopBases(_dragObjects);
@@ -367,6 +423,16 @@ namespace BabyBlocks
             _hoveredAxis = handle != null ? handle.axisIndex : -1;
         }
 
+        // Called when the local player exits cursor/editor mode so peers don't keep
+        // showing a highlight around whatever prop was selected when we left, since the
+        // selection-broadcast loop above stops running while the editor is closed.
+        public static void ClearRemoteSelectionBroadcast()
+        {
+            if (_lastBroadcastSelectedNetId == 0) return;
+            BabyBlocks.Networking.ModNetworking.SendPropSelected(0);
+            _lastBroadcastSelectedNetId = 0;
+        }
+
         static bool IsPointerOverUI()
         {
             var mouse = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
@@ -378,14 +444,17 @@ namespace BabyBlocks
             return false;
         }
 
-        static void TryDropProp()
+        // Returns true if the prop was successfully spawned and placed, false on any
+        // early-return path (no raycast hit, no dragged prop, spawn failure) - callers
+        // use this to know whether to send a SendPropGhostEnd cancellation.
+        static bool TryDropProp()
         {
             var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
             bool didHit = Physics.Raycast(ray, out var hit, 2000f, LayerCache.PropTerrainMask);
-            if (!didHit) return;
+            if (!didHit) return false;
 
             var prop = PropPalette.DraggingProp;
-            if (prop == null) return;
+            if (prop == null) return false;
 
             EnsureManager();
             PropLibrary.LoadPropData(prop);
@@ -393,13 +462,15 @@ namespace BabyBlocks
             var rot = ComputeDragRotation(hit.normal) * DragOrientations[_dragStep];
             var spawnPos = ComputeSpawnPosition(prop, hit, rot);
             var obj = LevelEditorManager.Instance.SpawnFromPropInfo(prop, spawnPos);
-            if (obj == null) return;
+            if (obj == null) return false;
             obj.transform.rotation = rot;
             Select(obj);
             LevelEditorHistory.PushSpawn(obj);
 
+            ulong netId = BabyBlocks.Networking.ModNetworking.RegisterNetworkedObject(obj);
             BabyBlocks.Networking.ModNetworking.SendPropPlaced(
-                prop.id, obj.transform.position, obj.transform.rotation, obj.transform.localScale);
+                netId, prop.id, obj.transform.position, obj.transform.rotation, obj.transform.localScale);
+            return true;
         }
 
         // While dragging a prop from the palette, holding shift suppresses surface-rotate
@@ -453,6 +524,8 @@ namespace BabyBlocks
                 // persists across props dragged from the library (gizmo drags still reset it).
                 PropLibrary.LoadPropData(prop);
                 if (prop.HasMesh) { _propGhost = CreateGhostObject(prop); _ghostProp = prop; }
+                _nextGhostSendTime = 0f;
+                _nextGhostReliableTime = 0f;
             }
 
             if (_propGhost == null) return;
@@ -467,6 +540,17 @@ namespace BabyBlocks
                 var rot = ComputeDragRotation(hit.normal) * DragOrientations[_dragStep];
                 _propGhost.SetActive(true);
                 _propGhost.transform.SetPositionAndRotation(ComputeSpawnPosition(_ghostProp, hit, rot), rot);
+
+                float now = Time.unscaledTime;
+                if (now >= _nextGhostSendTime)
+                {
+                    bool reliable = now >= _nextGhostReliableTime;
+                    BabyBlocks.Networking.ModNetworking.SendPropGhostUpdate(
+                        _ghostProp.id, _propGhost.transform.position, _propGhost.transform.rotation,
+                        _propGhost.transform.localScale, reliable);
+                    _nextGhostSendTime = now + GhostSendIntervalSeconds;
+                    if (reliable) _nextGhostReliableTime = now + GhostReliableIntervalSeconds;
+                }
             }
             else
             {
@@ -488,7 +572,9 @@ namespace BabyBlocks
         // rendered by the same camera passes as real props.
         const int GhostLayer = 16;
 
-        static GameObject CreateGhostObject(PropInfo prop)
+        // internal (not static-private) so RemotePropGhostManager can build matching
+        // ghost previews for other players' in-progress placements.
+        internal static GameObject CreateGhostObject(PropInfo prop)
         {
             var root = new GameObject("__PropGhost__");
             root.layer = GhostLayer;
@@ -670,6 +756,29 @@ namespace BabyBlocks
                 float camDist   = Vector3.Distance(cam.transform.position, _dragPivot);
                 _dragGizmoScale = Mathf.Max(camDist * 0.14f, 0.02f);
             }
+        }
+
+        // Throttled per-frame broadcast of dragged networked props' transforms, mirroring
+        // the fly-cam update cadence (mostly Unreliable, periodic ReliableOrdered keyframe).
+        static void BroadcastDragTransforms()
+        {
+            if (_dragObjects.Count == 0) return;
+
+            float now = Time.unscaledTime;
+            if (now < _nextNetTransformSendTime) return;
+
+            bool reliable = now >= _nextNetTransformReliableTime;
+            for (int i = 0; i < _dragObjects.Count; i++)
+            {
+                var obj = _dragObjects[i];
+                if (obj == null || obj.netId == 0) continue;
+                BabyBlocks.Networking.ModNetworking.SendPropTransform(
+                    obj.netId, obj.transform.position, obj.transform.rotation, obj.transform.localScale, reliable);
+            }
+
+            _nextNetTransformSendTime = now + NetTransformSendIntervalSeconds;
+            if (reliable)
+                _nextNetTransformReliableTime = now + NetTransformReliableIntervalSeconds;
         }
 
         static void ContinueDrag()
@@ -1030,7 +1139,10 @@ namespace BabyBlocks
                 var obj = _selection[i];
                 if (obj == null) continue;
                 LevelEditorHistory.PushDelete(obj);
+                ulong netId = obj.netId;
                 LevelEditorManager.Instance.Remove(obj);
+                if (netId != 0)
+                    BabyBlocks.Networking.ModNetworking.SendPropDeleted(netId);
             }
             ClearSelection();
         }

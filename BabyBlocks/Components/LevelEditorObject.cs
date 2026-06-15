@@ -48,5 +48,11 @@ namespace BabyBlocks
         // Per-instance material/surface override applied via MaterialConstructionPanel —
         // an id into MaterialConstructionLibrary.Entries, -1 if none.
         public int materialConstructionId = -1;
+
+        // Non-zero once this object has been synced over the network (placed or
+        // received via ModNetworking). Shared between both clients' copies of the
+        // same logical prop so transform updates apply in-place instead of
+        // respawning a duplicate. 0 = not network-tracked.
+        public ulong netId = 0;
     }
 }

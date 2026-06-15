@@ -86,6 +86,8 @@ namespace BabyBlocks
         static int _combinedOutlineSignature;
         static readonly List<CombineInstance> _combinedOutlineCombines = new();
         static readonly List<(Mesh mesh, Matrix4x4 matrix, int subMeshCount)> _outlineMarks = new();
+        static readonly List<Mesh> _remoteOutlineShells = new();
+        static readonly List<(Mesh mesh, Matrix4x4 matrix, int subMeshCount)> _remoteOutlineMarks = new();
         static GameObject _root, _arrowHandles, _ringHandles;
         static Camera _overlayCam;
         static Vector3 _pivotPos;
@@ -522,6 +524,81 @@ namespace BabyBlocks
 
             mainCam.AddCommandBuffer(CameraEvent.AfterEverything, _outlineBuffer);
             _outlineCameraTarget = mainCam;
+        }
+
+        // True once the stencil clear/mark materials (built by InitMaterials) are available.
+        public static bool StencilMaterialsReady => _stencilClearMat != null && _stencilMarkMat != null;
+
+        // Lazily creates the stencil clear/mark materials without doing the rest of Init()'s
+        // (heavier, GameObject-creating) setup. Safe to call every frame.
+        public static void EnsureStencilMaterials()
+        {
+            if (!StencilMaterialsReady) InitMaterials();
+        }
+
+        // Builds an outline material matching _outlineMat's stencil setup but with a custom
+        // color, for use with DrawRemoteOutline.
+        public static Material CreateOutlineMaterial(Color color)
+        {
+            var uiShader = Shader.Find("UI/Default");
+            if (uiShader == null) return null;
+
+            var mat = new Material(uiShader);
+            mat.SetColor("_Color", color);
+            mat.SetInt("_Stencil",          1);
+            mat.SetInt("_StencilComp",      (int)CompareFunction.NotEqual);
+            mat.SetInt("_StencilOp",        (int)StencilOp.Keep);
+            mat.SetInt("_StencilWriteMask", 255);
+            mat.SetInt("_StencilReadMask",  255);
+            mat.SetInt("_ColorMask",        15);
+            mat.renderQueue = 3000;
+            return mat;
+        }
+
+        // Draws a stencil-based outline around obj using outlineMat instead of the local
+        // selection's hardcoded yellow, into a caller-owned CommandBuffer. Mirrors DrawOutline's
+        // per-mesh "active drag" path (no combined-mesh caching) since the target object may be
+        // moved every frame by a remote peer's drag. Used by RemotePropHighlightManager to show
+        // a peer's current selection in their suit color.
+        public static void DrawRemoteOutline(LevelEditorObject obj, Material outlineMat, CommandBuffer buffer)
+        {
+            if (obj == null || outlineMat == null || buffer == null) return;
+            if (!StencilMaterialsReady) return;
+
+            _remoteOutlineShells.Clear();
+            _remoteOutlineMarks.Clear();
+
+            var mfs = obj.GetComponentsInChildren<MeshFilter>();
+            if (mfs == null) return;
+
+            for (int i = 0; i < mfs.Length; i++)
+            {
+                var mf = mfs[i];
+                if (mf == null || mf.sharedMesh == null) continue;
+                var mr = mf.GetComponent<MeshRenderer>();
+                if (mr == null || !mr.enabled) continue;
+
+                var shell = GetOrBuildOutlineShell(mf.sharedMesh, mf.transform);
+                if (shell.mesh == null) continue;
+
+                _remoteOutlineShells.Add(shell.mesh);
+                _remoteOutlineMarks.Add((mf.sharedMesh, mf.transform.localToWorldMatrix, mf.sharedMesh.subMeshCount));
+            }
+
+            if (_remoteOutlineShells.Count == 0) return;
+
+            buffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.Always);
+            for (int i = 0; i < _remoteOutlineShells.Count; i++)
+                buffer.DrawMesh(_remoteOutlineShells[i], Matrix4x4.identity, _stencilClearMat);
+            for (int i = 0; i < _remoteOutlineMarks.Count; i++)
+            {
+                var mark = _remoteOutlineMarks[i];
+                for (int sub = 0; sub < mark.subMeshCount; sub++)
+                    buffer.DrawMesh(mark.mesh, mark.matrix, _stencilMarkMat, sub);
+            }
+            for (int i = 0; i < _remoteOutlineShells.Count; i++)
+                buffer.DrawMesh(_remoteOutlineShells[i], Matrix4x4.identity, outlineMat);
+            buffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
         }
 
         // Collects stencil-mark entries for the current selection using current transform matrices.
