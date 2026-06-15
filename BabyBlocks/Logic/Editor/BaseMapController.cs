@@ -328,6 +328,13 @@ namespace BabyBlocks
             // editor lives under Instance._propsContainer ("Baby Blocks").
             if (go == LevelEditorManager.PropsContainer) return;
 
+            // Never touch other players' avatars — BabyStepsMultiplayerClient's
+            // RemotePlayer.Initialize spawns each one as a scene-root GameObject named
+            // "NateClone{n}" with no camera/player component of its own, so without this
+            // check it would get swept up by HidePropRenderers below and vanish whenever
+            // Base Map is turned off.
+            if (go.name.StartsWith("NateClone")) return;
+
             // This GameObject is itself part of the camera/player rig — protect the
             // whole subtree, don't hide anything underneath it.
             if (HasOwnCameraComponent(go)) return;

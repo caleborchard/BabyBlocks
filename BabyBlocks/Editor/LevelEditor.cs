@@ -217,6 +217,26 @@ namespace BabyBlocks
             }
         }
 
+        // Called once the post-save-load scene load burst settles (see
+        // FlyCamController.OnUpdate). A native "load a different save" destroys every
+        // LevelEditorObject in the old scene, but doesn't clear _selection/selectedObject
+        // - leaving stale destroyed references behind. With those still in _selection,
+        // Sync() sees selection.Count > 0 but every entry is "null" (Unity's destroyed-object
+        // check), so GetSelectionBoundsCenter returns Vector3.zero (world origin) and
+        // DrawOutline finds no live meshes to outline - the gizmo jumps to the origin and
+        // the selection highlight disappears, both seemingly "broken" until the user
+        // reselects something.
+        internal static void PruneSelection()
+        {
+            for (int i = _selection.Count - 1; i >= 0; i--)
+                if (_selection[i] == null) _selection.RemoveAt(i);
+
+            if (selectedObject == null)
+                selectedObject = _selection.Count > 0 ? _selection[_selection.Count - 1] : null;
+
+            if (_selection.Count == 0) HideGizmo();
+        }
+
         public static void Update()
         {
             LevelEditorManager.Instance?.EnsurePropsContainer();

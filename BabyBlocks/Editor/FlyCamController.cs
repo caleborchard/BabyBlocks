@@ -113,6 +113,7 @@ namespace BabyBlocks
                     BaseMapController.SetEditorPropsSnowDisabled(true);
 
                 LevelEditorManager.Instance?.PruneDestroyedObjects();
+                LevelEditor.PruneSelection();
                 if (GizmoRenderer.IsReady) GizmoRenderer.RefreshAssets();
 
                 // All props from the loaded save are back in the scene now —

@@ -485,7 +485,10 @@ namespace BabyBlocks
                 if (_combinedOutlineShell == null)
                     _combinedOutlineShell = new Mesh { name = "PropOutlineCombinedShell" };
 
-                if (_combinedOutlineSignature != outlineSignature)
+                // vertexCount == 0 also catches a freshly-recreated shell above (the prior
+                // instance was destroyed by Unity's asset cleanup) whose signature happens
+                // to still match - without this it would stay empty and invisible forever.
+                if (_combinedOutlineSignature != outlineSignature || _combinedOutlineShell.vertexCount == 0)
                 {
                     _combinedOutlineSignature = outlineSignature;
                     _combinedOutlineShell.Clear(false);
