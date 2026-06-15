@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Il2Cpp;
@@ -342,7 +342,7 @@ namespace BabyBlocks
                 int totalProps   = allProps.Count;
                 int checkedProps = 0;
                 for (int i = 0; i < totalProps; i++)
-                    if (PropMetadataPanel.HasMetadata(allProps[i].id)) checkedProps++;
+                    if (PropMetadataStore.HasMetadata(allProps[i].id)) checkedProps++;
                 float pct = totalProps > 0 ? checkedProps * 100f / totalProps : 0f;
                 msg += $"  |  {checkedProps}/{totalProps}  ({pct:F1}%)";
             }
@@ -512,8 +512,8 @@ namespace BabyBlocks
             }
 
             // Honour metadata overrides so the ghost matches what will be placed.
-            PropMetadataPanel.ApplyMaterialOverridesToRoot(prop.id, root);
-            PropMetadataPanel.ApplyDisabledRenderersToRoot(prop.id, root);
+            MaterialCatalog.ApplyMaterialOverridesToRoot(prop.id, root);
+            PropInstanceServices.ApplyDisabledRenderersToRoot(prop.id, root);
 
             // The hole prop's "mesh" is just a placeholder cylinder (see
             // LoadNegativeCollisionProp) — hide it and show the same wireframe

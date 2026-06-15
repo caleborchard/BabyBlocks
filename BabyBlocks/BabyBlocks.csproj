@@ -708,6 +708,12 @@
 		<Compile Include="Props\PropExtraInfo.cs" />
 		<Compile Include="Props\PropLibrary.cs" />
 		<Compile Include="Props\PropMetadataPanel.cs" />
+		<Compile Include="Logic\Props\PropMetadataStore.cs" />
+		<Compile Include="Logic\Props\PropInstanceServices.cs" />
+		<Compile Include="Logic\Materials\MaterialVariantTracker.cs" />
+		<Compile Include="Logic\Materials\MaterialCatalog.cs" />
+		<Compile Include="Logic\Editor\BaseMapController.cs" />
+		<Compile Include="Logic\Props\MaterialPathCatalog.cs" />
 		<Compile Include="Props\PrimitiveMeshGen.cs" />
 		<Compile Include="Props\MaterialInspectorPanel.cs" />
 		<Compile Include="Props\MaterialConstructionLibrary.cs" />

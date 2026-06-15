@@ -8,7 +8,7 @@ using MelonLoader.Utils;
 namespace BabyBlocks
 {
     // On-disk cache of MaterialBaker's output (baked mesh + atlas per renderer), so that
-    // baking the same prop with the same material (see PropMetadataPanel.GetMaterialCacheKey)
+    // baking the same prop with the same material (see PropMetadataStore.GetMaterialCacheKey)
     // never has to repeat the GPU capture, even across different saves/sessions. All entries
     // live in a single Deflate-compressed-per-entry file, UserData/BabyBlocks/BakeCache.bin,
     // keyed by (prop id, material key) - mirroring PropLibrary's single-file GpuiCache.

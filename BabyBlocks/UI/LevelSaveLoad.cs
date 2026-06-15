@@ -112,9 +112,9 @@ namespace BabyBlocks
 
                 w.Write(Magic);
                 w.Write(FormatVersion);
-                w.Write(!LevelEditorManager.BaseMapEnabled);
-                w.Write(LevelEditorManager.DayWeatherPlaylist);
-                w.Write(LevelEditorManager.RestoreDayWeatherPlaylist);
+                w.Write(!BaseMapController.BaseMapEnabled);
+                w.Write(BaseMapController.DayWeatherPlaylist);
+                w.Write(BaseMapController.RestoreDayWeatherPlaylist);
 
                 var records = BuildSortedRecords(mgr);
                 w.Write(records.Count);
@@ -187,7 +187,7 @@ namespace BabyBlocks
                     else if (version == 2)
                     {
                         int metaIndex = r.ReadInt32();
-                        propId = PropMetadataPanel.FindIdByIndex(metaIndex);
+                        propId = PropMetadataStore.FindIdByIndex(metaIndex);
                         if (string.IsNullOrEmpty(propId))
                         {
                             MelonLogger.Warning($"[SaveLoad] No prop for index {metaIndex}");
@@ -203,7 +203,7 @@ namespace BabyBlocks
                         chunkIndex = r.ReadByte();
                         propId = metaIndex == SpawnPointMetaIndex
                             ? PropLibrary.SpawnPointPropId
-                            : PropMetadataPanel.FindIdByIndex(metaIndex);
+                            : PropMetadataStore.FindIdByIndex(metaIndex);
                         if (string.IsNullOrEmpty(propId))
                         {
                             MelonLogger.Warning($"[SaveLoad] No prop for index {metaIndex}");
@@ -321,7 +321,7 @@ namespace BabyBlocks
                 // the base-map state until it finishes (see ApplyLoadedBaseMapStateDelayed).
                 if (version >= 7)
                     MelonCoroutines.Start(
-                        LevelEditorManager.ApplyLoadedBaseMapStateDelayed(baseMapOff, dayWeatherPlaylist, restoreDayWeatherPlaylist));
+                        BaseMapController.ApplyLoadedBaseMapStateDelayed(baseMapOff, dayWeatherPlaylist, restoreDayWeatherPlaylist));
 
                 MelonLogger.Msg($"[SaveLoad] Loaded {spawned}/{count} object(s) from {path}");
                 return (true, spawned, null);
@@ -389,7 +389,7 @@ namespace BabyBlocks
                 }
                 else
                 {
-                    metaIndex = PropMetadataPanel.GetMetaIndex(leo.addressableKey);
+                    metaIndex = PropMetadataStore.GetMetaIndex(leo.addressableKey);
                     if (metaIndex <= 0) continue;
                 }
 
@@ -527,7 +527,7 @@ namespace BabyBlocks
                 var parts = MaterialBaker.ReadPartList(br);
 
                 if (index >= 0 && index < leos.Length && leos[index] != null
-                    && !PropMetadataPanel.GetDisableBaking(leos[index].addressableKey))
+                    && !PropMetadataStore.GetDisableBaking(leos[index].addressableKey))
                     MaterialBaker.ImportBakedData(leos[index].gameObject, parts);
             }
         }

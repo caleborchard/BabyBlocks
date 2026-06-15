@@ -26,7 +26,6 @@ namespace BabyBlocks
         const string DisplayNameField = "propMetaDisplayName";
         const string CategoryField    = "propMetaCategory";
         const string OverrideField    = "propMetaOverride";
-        public const string NoOverrideLabel  = "(no override)";
 
         static Rect _windowRect;
         static bool _windowInitialized;
@@ -51,29 +50,6 @@ namespace BabyBlocks
         static string _materialSearch = "";
         static GUIStyle _materialButtonStyle;
         static GUIStyle _redLabelStyle;
-        static readonly List<string> _materialNames  = new();
-        static readonly List<string> _materialLabels = new();
-        static readonly Dictionary<string, Material> _materialByName = new(StringComparer.OrdinalIgnoreCase);
-        // Owned clones of scene-specific material variants captured across all visited areas.
-        // _sceneVariantMats: (baseName, texSig) → clone, for dedup during capture.
-        // _sceneVariantByDisplayName: displayName → clone, for O(1) lookup without touching .name on Il2Cpp objects.
-        // _materialSnapshotByInstance: instanceId → shallow clone/sig taken on first sight for that
-        //   specific material instance. Using instance ids avoids false flip-flops when multiple
-        //   different materials share the same name at the same time.
-        static readonly Dictionary<(string baseName, string texSig), Material> _sceneVariantMats = new();
-        static readonly Dictionary<string, Material> _sceneVariantByDisplayName = new(StringComparer.OrdinalIgnoreCase);
-        static readonly Dictionary<int, (string baseName, Material clone, string sig)> _materialSnapshotByInstance = new();
-        static readonly Dictionary<string, Material> _sceneCurrentByName = new(StringComparer.OrdinalIgnoreCase);
-        // Live references to materials we're watching for texture-state changes.
-        // Populated once by the initial full scan; subsequent checks iterate only this set.
-        static readonly Dictionary<int, Material> _watchedLiveMaterials = new();
-        // Instance IDs of every Material we created (snapshots + variant clones).
-        // The main EnsureMaterialList scan skips these so our clones never shadow the live material.
-        static readonly HashSet<int> _ownedMaterialIds = new();
-        static bool _materialsLoaded;
-        static bool _initialVariantScanDone;
-        static float _lastVariantScanTime = -999f;
-        const float VariantScanInterval = 5f;
 
 static bool _showRendererDropdown;
         static Vector2 _rendererScroll;
@@ -159,26 +135,7 @@ static bool _showRendererDropdown;
         static Material[][] _selectedDefaultMaterials;
         static LevelEditorObject _selectedLEO;
 
-        static readonly List<Material> _microSplatLayerMats = new();
-        static string[] _msControlProps;
-        static Texture2D _msBlankControl;
-        static readonly List<Texture2D> _msActiveControls = new();
-        static bool _msHasPerTexUV;
-
-        static readonly Dictionary<string, PropExtraInfo> _byId = new(StringComparer.Ordinal);
-        // Maps material name → prop ID of the prop whose asset natively contains that material.
-        static readonly Dictionary<string, string> _knownMaterialSources = new(StringComparer.OrdinalIgnoreCase);
-        static bool _materialSourcesLoaded;
-        static bool _materialSourcesLoading;
-        static bool _loaded;
-        static int _nextIndex = 1;
-        static bool _savePathLogged;
         static string _paletteSelectedId;
-
-        static bool _loadedFromJson;
-
-        static List<MaterialConstructionEntry> _materialConstructions = new();
-        static int _nextMaterialConstructionId;
 
         static bool _showExportWindow;
         static Rect _exportWindowRect;
@@ -186,14 +143,6 @@ static bool _showRendererDropdown;
         static bool _exportWindowDragging;
         static Vector2 _exportWindowDragOffset;
         static string _exportStatusMsg = "";
-
-        const byte PmdVersion = 2;
-
-        static string SavePath =>
-            Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "prop_metadata.json");
-
-        static string BinaryExportPath =>
-            Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "prop_metadata.bin");
 
         public static void DrawGUI(LevelEditorObject selectedObject)
         {
@@ -263,20 +212,20 @@ static bool _showRendererDropdown;
             GUI.enabled = !string.IsNullOrEmpty(_propId);
             if (GUILayout.Button("Save"))
             {
-                _loadedFromJson = true;
+                PropMetadataStore._loadedFromJson = true;
                 ApplyCurrent();
                 _dirty = false;
             }
             GUI.enabled = true;
             if (GUILayout.Button("Save All"))
             {
-                _loadedFromJson = true;
+                PropMetadataStore._loadedFromJson = true;
                 if (!string.IsNullOrEmpty(_propId))
                 {
                     ApplyCurrent();
                     _dirty = false;
                 }
-                Save();
+                PropMetadataStore.Save();
             }
             if (GUILayout.Button(_showExportWindow ? "Hide Export" : "Binary Export"))
                 _showExportWindow = !_showExportWindow;
@@ -323,7 +272,7 @@ static bool _showRendererDropdown;
                 _redLabelStyle.normal.textColor = Color.red;
             }
             bool isDuplicateName = !string.IsNullOrEmpty(_displayName)
-                && HasDuplicateDisplayName(_displayName, _propId);
+                && PropMetadataStore.HasDuplicateDisplayName(_displayName, _propId);
             GUILayout.Label("Display name", isDuplicateName ? _redLabelStyle : GUI.skin.label);
             GUI.SetNextControlName(DisplayNameField);
             var newDisplayName = GUILayout.TextField(_displayName ?? string.Empty);
@@ -336,7 +285,7 @@ static bool _showRendererDropdown;
             if (GUI.GetNameOfFocusedControl() == DisplayNameField && !string.IsNullOrEmpty(_displayName) && _displayName.Length >= 2)
             {
                 int suggCount = 0;
-                foreach (var kvp in _byId)
+                foreach (var kvp in PropMetadataStore._byId)
                 {
                     if (kvp.Key == _propId) continue;
                     var dn = kvp.Value.displayName;
@@ -370,7 +319,7 @@ static bool _showRendererDropdown;
             {
                 int suggCount = 0;
                 var seenCats = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var kvp in _byId)
+                foreach (var kvp in PropMetadataStore._byId)
                 {
                     if (kvp.Key == _propId) continue;
                     var cat = kvp.Value.category;
@@ -411,7 +360,7 @@ static bool _showRendererDropdown;
                     {
                         _surfaceType = tag;
                         _showSurfaceTypeDropdown = false;
-                        ApplySurfaceType(_selectedLEO, tag);
+                        PropInstanceServices.ApplySurfaceType(_selectedLEO, tag);
                         MarkDirty();
                     }
                 }
@@ -457,7 +406,7 @@ static bool _showRendererDropdown;
 
             GUILayout.Space(8f);
 
-            EnsureMaterialList();
+            MaterialCatalog.EnsureMaterialList();
 
             int effectiveSlotCount = _multiMaterialEnabled
                 ? Math.Max(_forcedMaterialSlots, _maxMaterialSlots)
@@ -547,7 +496,7 @@ static bool _showRendererDropdown;
                     _overrideMaterialName = string.Empty;
                     _showMaterialDropdown = false;
                     _materialExplicitlyChosen = false;
-                    // Prefer applying by name so we use the live Material object from _materialByName
+                    // Prefer applying by name so we use the live Material object from MaterialCatalog.MaterialByName
                     // rather than _selectedDefaultMaterials, which may be contaminated by a prior override.
                     if (!string.IsNullOrEmpty(_defaultMaterialName))
                         ApplyPreviewMaterial(_defaultMaterialName);
@@ -566,9 +515,9 @@ static bool _showRendererDropdown;
                     int selectedIndex = GetMaterialIndex(_selectedMaterialName);
                     string search = _materialSearch != null ? _materialSearch.Trim() : string.Empty;
                     bool hasSearch = !string.IsNullOrEmpty(search);
-                    for (int i = 0; i < _materialLabels.Count; i++)
+                    for (int i = 0; i < MaterialCatalog.MaterialLabels.Count; i++)
                     {
-                        string label = _materialLabels[i];
+                        string label = MaterialCatalog.MaterialLabels[i];
                         if (hasSearch && label.IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0)
                             continue;
 
@@ -620,18 +569,18 @@ static bool _showRendererDropdown;
                         _slotDropdownScroll = GUILayout.BeginScrollView(_slotDropdownScroll, GUILayout.Height(MaterialListH));
                         string slotSearch = _slotDropdownSearch != null ? _slotDropdownSearch.Trim() : string.Empty;
                         bool hasSlotSearch = !string.IsNullOrEmpty(slotSearch);
-                        for (int i = 0; i < _materialLabels.Count; i++)
+                        for (int i = 0; i < MaterialCatalog.MaterialLabels.Count; i++)
                         {
-                            string label = _materialLabels[i];
+                            string label = MaterialCatalog.MaterialLabels[i];
                             if (hasSlotSearch && label.IndexOf(slotSearch, StringComparison.OrdinalIgnoreCase) < 0)
                                 continue;
-                            bool isCurrent = string.Equals(slotSel, _materialNames[i], StringComparison.OrdinalIgnoreCase)
+                            bool isCurrent = string.Equals(slotSel, MaterialCatalog.MaterialNames[i], StringComparison.OrdinalIgnoreCase)
                                 || (i == 0 && !isOverridden);
                             if (isCurrent) label = "> " + label;
                             EnsureMaterialButtonStyle();
                             if (GUILayout.Button(label, _materialButtonStyle))
                             {
-                                string picked = i == 0 ? string.Empty : _materialNames[i];
+                                string picked = i == 0 ? string.Empty : MaterialCatalog.MaterialNames[i];
                                 while (_perSlotSelected.Count <= s) _perSlotSelected.Add(string.Empty);
                                 _perSlotSelected[s] = string.IsNullOrEmpty(picked) ? slotDef : picked;
                                 if (string.IsNullOrEmpty(picked))
@@ -694,8 +643,8 @@ static bool _showRendererDropdown;
                             _showGrassTypeDropdown = false;
                             if (_selectedLEO != null)
                             {
-                                BushAudioTracker.Unregister(_selectedLEO.transform);
-                                BushAudioTracker.Register(_selectedLEO.transform, _bushRadius, _soundGrassType);
+                                PropInstanceServices.BushAudioTracker.Unregister(_selectedLEO.transform);
+                                PropInstanceServices.BushAudioTracker.Register(_selectedLEO.transform, _bushRadius, _soundGrassType);
                             }
                             ApplyCurrent();
                             _dirty = false;
@@ -718,7 +667,7 @@ static bool _showRendererDropdown;
         static string GetOverrideLabel()
         {
             if (string.IsNullOrEmpty(_selectedMaterialName))
-                return NoOverrideLabel;
+                return PropMetadataStore.NoOverrideLabel;
 
             if (string.IsNullOrEmpty(_overrideMaterialName)
                 && !string.IsNullOrEmpty(_defaultMaterialName)
@@ -730,720 +679,25 @@ static bool _showRendererDropdown;
 
         static void SelectMaterialByIndex(int index)
         {
-            if (index <= 0 || index >= _materialNames.Count)
+            if (index <= 0 || index >= MaterialCatalog.MaterialNames.Count)
             {
                 _selectedMaterialName = "";
                 return;
             }
 
-            _selectedMaterialName = _materialNames[index];
+            _selectedMaterialName = MaterialCatalog.MaterialNames[index];
         }
 
         static int GetMaterialIndex(string name)
         {
             if (string.IsNullOrEmpty(name)) return 0;
-            for (int i = 0; i < _materialNames.Count; i++)
+            for (int i = 0; i < MaterialCatalog.MaterialNames.Count; i++)
             {
-                if (string.Equals(_materialNames[i], name, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(MaterialCatalog.MaterialNames[i], name, StringComparison.OrdinalIgnoreCase))
                     return i;
             }
             return 0;
         }
-
-        static bool ShouldHideMaterial(string name) =>
-            name.IndexOf("Imposter", StringComparison.OrdinalIgnoreCase) >= 0
-            || name.IndexOf("Impostor", StringComparison.OrdinalIgnoreCase) >= 0
-            || name.EndsWith(" (Instance)", StringComparison.Ordinal);
-
-        // Computes a stable display hash for a material based on its texture content.
-        // Uses the same GetTextureSig path as RegisterVariant so both systems produce
-        // identical hashes for identical texture state — preventing duplicate entries.
-        static string ComputeMatHash(Material m)
-        {
-            try
-            {
-                string sig = GetTextureSig(m);
-                if (!string.IsNullOrEmpty(sig))
-                    return PropLibrary.ComputeStableHash(sig);
-                // No textures at all — use shader name for some distinction.
-                string shaderSig = m.shader != null ? m.shader.name : string.Empty;
-                return PropLibrary.ComputeStableHash(shaderSig.Length > 0 ? shaderSig : m.GetInstanceID().ToString());
-            }
-            catch { return PropLibrary.ComputeStableHash(m.GetInstanceID().ToString()); }
-        }
-
-        static bool ShouldSkipSceneVariantCapture(Material m)
-        {
-            if (m == null || string.IsNullOrEmpty(m.name)) return true;
-            if (ShouldHideMaterial(m.name)) return true; // covers " (Instance)" too
-
-            // Skip classes of materials that change instance ID constantly and are not
-            // area-variant materials we care about tracking.
-            if (m.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) return true;
-            if (m.name.StartsWith("Hidden/", StringComparison.OrdinalIgnoreCase)) return true;
-            if (m.name.IndexOf("MegaProxy", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            if (m.name.IndexOf("TVE Material", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            if (m.name.IndexOf("TVE Texture", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            if (m.name.IndexOf("(TVE", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            if (m.name.EndsWith("(Clone)", StringComparison.OrdinalIgnoreCase)) return true;
-            return false;
-        }
-
-static void SortMaterialList()
-        {
-            if (_materialNames.Count <= 2) return;
-            var pairs = new List<(string name, string label)>(_materialNames.Count - 1);
-            for (int i = 1; i < _materialNames.Count; i++)
-                pairs.Add((_materialNames[i], _materialLabels[i]));
-            pairs.Sort((a, b) => string.Compare(a.label, b.label, StringComparison.OrdinalIgnoreCase));
-            for (int i = 0; i < pairs.Count; i++)
-            {
-                _materialNames[i + 1] = pairs[i].name;
-                _materialLabels[i + 1] = pairs[i].label;
-            }
-        }
-
-        // Called on scene load. Immediately scans for material instances that share a name but
-        // have different textures (scene-variant materials), clones each new variant into
-        // _sceneVariantMats, then invalidates the display list so variants are registered on
-        // the next palette open.
-        public static void InvalidateMaterialCache()
-        {
-            _materialsLoaded = false;
-            _lastVariantScanTime = -999f; // force immediate re-scan on next palette open
-            _sceneCurrentByName.Clear();
-        }
-
-        // Builds a signature string from all texture properties on a material so we can detect
-        // when a material's texture state changes between areas (even with non-standard shaders
-        // that don't use _MainTex, which makes mainTexture return null).
-        static string GetTextureSig(Material m)
-        {
-            try
-            {
-                var names = m.GetTexturePropertyNames();
-                if (names == null || names.Length == 0) return string.Empty;
-                var sb = new System.Text.StringBuilder();
-                foreach (var prop in names)
-                {
-                    var tex = m.GetTexture(prop);
-                    if (tex != null) sb.Append(tex.name).Append('\n');
-                }
-                return sb.ToString();
-            }
-            catch { return string.Empty; }
-        }
-
-        // Returns the first non-empty texture name on a material, for use in display names.
-        static string GetFirstTextureName(Material m)
-        {
-            try
-            {
-                var names = m.GetTexturePropertyNames();
-                if (names == null) return string.Empty;
-                foreach (var prop in names)
-                {
-                    var tex = m.GetTexture(prop);
-                    if (tex != null && !string.IsNullOrEmpty(tex.name)) return tex.name;
-                }
-            }
-            catch { }
-            return string.Empty;
-        }
-
-        // On every palette open: for each visible material in memory, compare its current texture
-        // sig against the snapshot taken on first sight. If the sig has changed, we now have two
-        // distinct texture states — register both as variants. Uses only shallow clones (no GPU
-        // readback) so it's cheap even with thousands of materials in memory.
-        static void CaptureSceneVariants()
-        {
-            float now = Time.realtimeSinceStartup;
-            if (now - _lastVariantScanTime < VariantScanInterval) return;
-            _lastVariantScanTime = now;
-
-            try
-            {
-                if (!_initialVariantScanDone)
-                {
-                    // First call: full scan to populate the watched-materials set.
-                    _initialVariantScanDone = true;
-                    var mats = Resources.FindObjectsOfTypeAll<Material>();
-                    if (mats == null) return;
-                    for (int i = 0; i < mats.Length; i++)
-                    {
-                        try
-                        {
-                            var m = mats[i];
-                            if (ShouldSkipSceneVariantCapture(m)) continue;
-                            if (_ownedMaterialIds.Contains(m.GetInstanceID())) continue;
-                            _watchedLiveMaterials[m.GetInstanceID()] = m;
-                            CheckMaterialVariant(m);
-                        }
-                        catch { }
-                    }
-                }
-                else
-                {
-                    // Subsequent calls: only re-check watched materials — no FindObjectsOfTypeAll.
-                    foreach (var kvp in _watchedLiveMaterials)
-                    {
-                        try
-                        {
-                            var m = kvp.Value;
-                            if (m == null) continue;
-                            CheckMaterialVariant(m);
-                        }
-                        catch { }
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                MelonLogger.Warning($"[PropMetadata] CaptureSceneVariants failed: {e.Message}");
-            }
-        }
-
-        static void CheckMaterialVariant(Material m)
-        {
-            int instanceId = m.GetInstanceID();
-            _sceneCurrentByName[m.name] = m;
-            string sig = GetTextureSig(m);
-
-            if (!_materialSnapshotByInstance.TryGetValue(instanceId, out var snap)
-                || !string.Equals(snap.baseName, m.name, StringComparison.Ordinal))
-            {
-                var snapClone = new Material(m);
-                _ownedMaterialIds.Add(snapClone.GetInstanceID());
-                _materialSnapshotByInstance[instanceId] = (m.name, snapClone, sig);
-                return;
-            }
-
-            if (string.Equals(sig, snap.sig, StringComparison.Ordinal)) return;
-
-            RegisterVariant(snap.baseName, snap.clone, snap.sig);
-            RegisterVariant(m.name, m, sig);
-
-            var updatedClone = new Material(m);
-            _ownedMaterialIds.Add(updatedClone.GetInstanceID());
-            _materialSnapshotByInstance[instanceId] = (m.name, updatedClone, sig);
-        }
-
-        static void RegisterVariant(string baseName, Material source, string sig)
-        {
-            var key = (baseName, sig);
-            if (_sceneVariantMats.ContainsKey(key)) return;
-
-            // All variants always get a hash of their texture signature so the display name is
-            // stable and consistent with the seenCount two-pass naming.
-            string displayName = $"{baseName} [{PropLibrary.ComputeStableHash(sig)}]";
-            int n = 2;
-            while (_sceneVariantByDisplayName.ContainsKey(displayName))
-                displayName = $"{baseName} [{PropLibrary.ComputeStableHash(sig + n++)}]";
-
-            var clone = new Material(source) { name = displayName };
-            _ownedMaterialIds.Add(clone.GetInstanceID());
-            _sceneVariantMats[key] = clone;
-            _sceneVariantByDisplayName[displayName] = clone;
-        }
-
-        // Re-registers owned scene-variant clones into the display lists.
-        // Mirrors the AddMicroSplatLayerMaterials pattern.
-        static void AddSceneVariantMaterials()
-        {
-            // Count distinct texture states per base name.
-            var countByBase = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var key in _sceneVariantMats.Keys)
-            {
-                countByBase.TryGetValue(key.baseName, out int c);
-                countByBase[key.baseName] = c + 1;
-            }
-
-            // Iterate by key so we always have the real base name, not a parsed display name.
-            foreach (var kvp in _sceneVariantMats)
-            {
-                string baseName = kvp.Key.baseName;
-                var mat = kvp.Value;
-                if (mat == null) continue;
-                string displayName = mat.name;
-
-                if (_materialByName.ContainsKey(displayName)) continue;
-
-                // Only show in the list if this material has 2+ distinct captured states.
-                if (!countByBase.TryGetValue(baseName, out int stateCount) || stateCount < 2) continue;
-
-                string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
-                string label = string.IsNullOrEmpty(shaderName) ? displayName : $"{displayName}  [{shaderName}]";
-                _materialNames.Add(displayName);
-                _materialLabels.Add(label);
-                _materialByName[displayName] = mat;
-            }
-        }
-
-        static void EnsureMaterialList()
-        {
-            // Run the variant capture before the guard. CaptureSceneVariants is self-rate-limited
-            // and on subsequent calls only iterates the small watched-materials set (not all memory).
-            int variantsBefore = _sceneVariantMats.Count;
-            CaptureSceneVariants();
-            if (_sceneVariantMats.Count != variantsBefore)
-                _materialsLoaded = false; // new variants found — force a list rebuild
-
-            if (_materialsLoaded) return;
-            _materialsLoaded = true;
-            _materialNames.Clear();
-            _materialLabels.Clear();
-            _materialByName.Clear();
-            _materialNames.Add(NoOverrideLabel);
-            _materialLabels.Add(NoOverrideLabel);
-
-            try
-            {
-                var mats = Resources.FindObjectsOfTypeAll<Material>();
-                if (mats != null)
-                {
-                    // Three-pass approach so we know upfront whether a name has multiple distinct
-                    // texture states before assigning display names — and, crucially, so that
-                    // GetTextureSig (GetTexturePropertyNames/GetTexture — slow IL2Cpp interop calls)
-                    // only runs for materials that actually share a name with another loaded
-                    // material. Calling it for all 3000+ scanned materials unconditionally was the
-                    // single biggest contributor to the freeze on first scan (and the Linux
-                    // compositor black-screen it triggers) — most names appear only once, where the
-                    // signature is never even consulted (see hasVars below).
-                    //
-                    // Pass 1: group by name only — cheap, no texture introspection.
-                    var rawGroups = new Dictionary<string, List<Material>>(StringComparer.OrdinalIgnoreCase);
-                    for (int i = 0; i < mats.Length; i++)
-                    {
-                        var m = mats[i];
-                        if (m == null || string.IsNullOrEmpty(m.name)) continue;
-                        if (_ownedMaterialIds.Contains(m.GetInstanceID())) continue;
-                        if (ShouldHideMaterial(m.name)) continue;
-                        if (!rawGroups.TryGetValue(m.name, out var rawGrp))
-                        {
-                            rawGrp = new List<Material>();
-                            rawGroups[m.name] = rawGrp;
-                        }
-                        rawGrp.Add(m);
-                    }
-
-                    // Pass 2: only compute texture signatures (and dedupe by them) for names that
-                    // collide — single-instance names skip GetTextureSig entirely.
-                    var groups = new Dictionary<string, List<(Material mat, string sig)>>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var kvp in rawGroups)
-                    {
-                        var rawGrp = kvp.Value;
-                        var grp = new List<(Material, string)>();
-                        if (rawGrp.Count == 1)
-                        {
-                            grp.Add((rawGrp[0], string.Empty));
-                        }
-                        else
-                        {
-                            foreach (var m in rawGrp)
-                            {
-                                string sig = GetTextureSig(m);
-                                bool already = false;
-                                foreach (var (_, s) in grp) if (string.Equals(s, sig, StringComparison.Ordinal)) { already = true; break; }
-                                if (!already) grp.Add((m, sig));
-                            }
-                        }
-                        groups[kvp.Key] = grp;
-                    }
-                    // Count distinct scene-variant states per base name so that a material with
-                    // known variants is treated as multi-state even when only one is in memory.
-                    var sceneVarCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var key in _sceneVariantMats.Keys)
-                    {
-                        sceneVarCounts.TryGetValue(key.baseName, out int c);
-                        sceneVarCounts[key.baseName] = c + 1;
-                    }
-
-                    // Pass 3: assign display names — plain when only one sig AND no known scene
-                    // variants, hashed for all occurrences when multiple states exist.
-                    foreach (var kvp in groups)
-                    {
-                        var grp      = kvp.Value;
-                        sceneVarCounts.TryGetValue(kvp.Key, out int svCount);
-                        bool hasVars = grp.Count > 1 || svCount >= 2;
-                        foreach (var (m, sig) in grp)
-                        {
-                            string displayName = hasVars ? $"{m.name} [{PropLibrary.ComputeStableHash(sig)}]" : m.name;
-                            if (_materialByName.ContainsKey(displayName)) continue;
-                            string shaderName = m.shader != null ? m.shader.name : string.Empty;
-                            string label = string.IsNullOrEmpty(shaderName) ? displayName : $"{displayName}  [{shaderName}]";
-                            _materialNames.Add(displayName);
-                            _materialLabels.Add(label);
-                            _materialByName[displayName] = m;
-                        }
-                    }
-                }
-
-                AddMicroSplatLayerMaterials();
-                AddSceneVariantMaterials();
-
-                if (_materialNames.Count > 2)
-                {
-                    var pairs = new List<(string name, string label)>(_materialNames.Count - 1);
-                    for (int i = 1; i < _materialNames.Count; i++)
-                        pairs.Add((_materialNames[i], _materialLabels[i]));
-                    pairs.Sort((a, b) => string.Compare(a.label, b.label, StringComparison.OrdinalIgnoreCase));
-                    for (int i = 0; i < pairs.Count; i++)
-                    {
-                        _materialNames[i + 1]  = pairs[i].name;
-                        _materialLabels[i + 1] = pairs[i].label;
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                MelonLogger.Warning($"[PropMetadata] Material scan failed: {e.Message}");
-            }
-
-            // Every rebuild above starts from a clean _materialNames/_materialLabels and only
-            // re-populates from whatever is currently resident in memory (Resources.FindObjectsOfTypeAll)
-            // — so a material from an area that's since streamed out (e.g. "NewMat_Ice" after flying
-            // away) drops off the list entirely. Re-merge the full catalog index every time so
-            // previously-seen, area-specific materials stay listed (resolved lazily via
-            // PropLibrary.TryLoadMaterialByName when actually applied). On the very first call this
-            // is also done inside EnsureMaterialSources/FinishMaterialSourcesScan, but subsequent
-            // rebuilds (after InvalidateMaterialCache) need it re-applied too since
-            // EnsureMaterialSources is one-shot.
-            AddCatalogMaterialsToList();
-
-            EnsureMaterialSources();
-        }
-
-        // Registers a material source and back-fills materialSourcePropId on every saved entry that
-        // shares the same overrideMaterialId but had no source recorded yet. Returns true if any were updated.
-        static bool BackfillMaterialSource(string materialName, string sourcePropId)
-        {
-            if (string.IsNullOrEmpty(materialName) || string.IsNullOrEmpty(sourcePropId)) return false;
-            // MicroSplat layer materials are generated at runtime — they have no asset source prop.
-            if (materialName.StartsWith("[MicroSplat]", StringComparison.Ordinal)) return false;
-            _knownMaterialSources[materialName] = sourcePropId;
-
-            bool anyChanged = false;
-            foreach (var kvp in _byId)
-            {
-                var item = kvp.Value;
-                if (item.excluded) continue;
-                if (!string.Equals(item.overrideMaterialId, materialName, StringComparison.OrdinalIgnoreCase)) continue;
-                if (string.Equals(item.materialSourcePropId, sourcePropId, StringComparison.OrdinalIgnoreCase)) continue;
-                item.materialSourcePropId = sourcePropId;
-                anyChanged = true;
-            }
-            return anyChanged;
-        }
-
-        // For each saved override whose source prop ID is known, load that prop so its asset bundle
-        // (and thus its materials) comes into memory. Runs once after the initial material list is built.
-        //
-        // Synchronous fallback — does the whole scan in one go. Used only if something needs the
-        // sources resolved immediately and the async version (below) hasn't been started/finished.
-        // Guarded against double-running alongside the coroutine via _materialSourcesLoading.
-        static void EnsureMaterialSources()
-        {
-            if (_materialSourcesLoaded || _materialSourcesLoading) return;
-            _materialSourcesLoaded = true;
-            if (!PropLibrary.IsInitialized) return;
-
-            EnsureLoaded();
-
-            var sourceCandidates = CollectSourceCandidates();
-            var anyBackfilled = RunSourcePass(sourceCandidates, out bool anyLoadedA);
-
-            var selfCandidates = CollectSelfDiscoveryCandidates();
-            bool anyLoadedB = RunSelfDiscoveryPass(selfCandidates);
-
-            FinishMaterialSourcesScan(anyLoadedA || anyLoadedB, anyBackfilled);
-        }
-
-        // Async version — spreads the same work across multiple frames (a small handful of prop
-        // loads per frame, yielding in between) so no single frame freezes long enough to trip the
-        // Linux Wayland/X11 compositor's "no frame presented" timeout that blacks the window.
-        // While running, IsLoadingMaterialSources is true and the palette blocks dragging.
-        static IEnumerator EnsureMaterialSourcesCo()
-        {
-            if (_materialSourcesLoaded || _materialSourcesLoading) yield break;
-            _materialSourcesLoading = true;
-            _materialSourcesLoaded  = true;
-
-            // Iterator methods run synchronously up to their first `yield return` the moment
-            // MelonCoroutines.Start calls MoveNext() — without this, CollectSourceCandidates()
-            // and the first blocking prop load would execute immediately on the calling frame,
-            // reproducing the exact freeze/black-screen this coroutine exists to avoid.
-            yield return null;
-
-            const int itemsPerFrame = 1;
-
-            try
-            {
-                if (!PropLibrary.IsInitialized) yield break;
-                EnsureLoaded();
-
-                var sourceCandidates = CollectSourceCandidates();
-                bool anyLoaded = false;
-                bool anyBackfilled = false;
-                int sinceYield = 0;
-                foreach (var item in sourceCandidates)
-                {
-                    if (RunOneSourceItem(item, out bool loaded, out bool backfilled))
-                    {
-                        anyLoaded |= loaded;
-                        anyBackfilled |= backfilled;
-                    }
-                    if (++sinceYield >= itemsPerFrame) { sinceYield = 0; yield return null; }
-                }
-                if (anyBackfilled) Save();
-
-                var selfCandidates = CollectSelfDiscoveryCandidates();
-                sinceYield = 0;
-                foreach (var item in selfCandidates)
-                {
-                    if (RunOneSelfDiscoveryItem(item)) anyLoaded = true;
-                    if (++sinceYield >= itemsPerFrame) { sinceYield = 0; yield return null; }
-                }
-
-                FinishMaterialSourcesScan(anyLoaded, false);
-            }
-            finally
-            {
-                _materialSourcesLoading = false;
-            }
-        }
-
-        // Kicks off the spread-out async scan (idempotent). Falls back to nothing if already done
-        // or already in progress.
-        public static void StartMaterialSourcesScanAsync()
-        {
-            if (_materialSourcesLoaded || _materialSourcesLoading) return;
-            MelonCoroutines.Start(EnsureMaterialSourcesCo());
-        }
-
-        // True while the async source scan is spreading its loads across frames. The palette uses
-        // this to block dragging — placing a prop before its override material is in memory would
-        // apply the override once (at placement time) and never retry.
-        public static bool IsLoadingMaterialSources => _materialSourcesLoading;
-
-        // Called synchronously the moment the editor first activates, before any GUI frame can
-        // run — without this, PropLibrary.IsInitialized is already true (set in Awake) but
-        // _materialSourcesLoading is still false until ActivateEditorScanCo's later
-        // InvalidateMaterialSources call, so the palette briefly flashes the full prop list
-        // (with not-yet-fixed-up materials) before settling into "Loading materials…".
-        internal static void MarkMaterialSourcesPending()
-        {
-            if (_materialSourcesLoaded || _materialSourcesLoading) return;
-            _materialSourcesLoading = true;
-        }
-
-        static List<PropExtraInfo> CollectSourceCandidates()
-        {
-            var list = new List<PropExtraInfo>();
-            foreach (var kvp in _byId)
-            {
-                var item = kvp.Value;
-                if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
-                if (_materialByName.ContainsKey(item.overrideMaterialId)) continue; // already in memory
-                if (string.IsNullOrEmpty(item.materialSourcePropId)) continue;      // no source tracked yet
-                list.Add(item);
-            }
-            return list;
-        }
-
-        static List<PropExtraInfo> CollectSelfDiscoveryCandidates()
-        {
-            var list = new List<PropExtraInfo>();
-            foreach (var kvp in _byId)
-            {
-                var item = kvp.Value;
-                if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
-                if (_materialByName.ContainsKey(item.overrideMaterialId)) continue;
-                if (!string.IsNullOrEmpty(item.materialSourcePropId)) continue;
-                if (item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
-                list.Add(item);
-            }
-            return list;
-        }
-
-        static bool RunSourcePass(List<PropExtraInfo> candidates, out bool anyLoaded)
-        {
-            bool anyBackfilled = false;
-            anyLoaded = false;
-            foreach (var item in candidates)
-            {
-                if (RunOneSourceItem(item, out bool loaded, out bool backfilled))
-                {
-                    anyLoaded |= loaded;
-                    anyBackfilled |= backfilled;
-                }
-            }
-            if (anyBackfilled) Save();
-            return anyBackfilled;
-        }
-
-        static bool RunOneSourceItem(PropExtraInfo item, out bool anyLoaded, out bool anyBackfilled)
-        {
-            anyLoaded = false;
-            anyBackfilled = false;
-            if (_materialByName.ContainsKey(item.overrideMaterialId)) return false; // filled by an earlier item
-
-            var sourceInfo = PropLibrary.FindById(item.materialSourcePropId);
-            if (sourceInfo == null) return false;
-
-            try
-            {
-                PropLibrary.LoadPropData(sourceInfo);
-                anyLoaded = true;
-                // Scan parts directly — GPUI materials don't reliably appear in
-                // Resources.FindObjectsOfTypeAll after loading, but parts hold the real refs.
-                AddPartsToMaterialList(sourceInfo);
-
-                // Validate: if the material still isn't in the list after loading the recorded
-                // source prop, the source was recorded incorrectly (e.g. from a contaminated
-                // renderer). Clear it so we don't keep trying the wrong prop.
-                if (!_materialByName.ContainsKey(item.overrideMaterialId))
-                {
-                    item.materialSourcePropId = string.Empty;
-                    anyBackfilled = true; // trigger Save() to persist the correction
-                    return true;
-                }
-
-                // Propagate this source to all other entries that share the same override material.
-                if (BackfillMaterialSource(item.overrideMaterialId, item.materialSourcePropId))
-                    anyBackfilled = true;
-            }
-            catch { }
-            return true;
-        }
-
-        static bool RunSelfDiscoveryPass(List<PropExtraInfo> candidates)
-        {
-            bool anyLoaded = false;
-            foreach (var item in candidates)
-                if (RunOneSelfDiscoveryItem(item)) anyLoaded = true;
-            return anyLoaded;
-        }
-
-        static bool RunOneSelfDiscoveryItem(PropExtraInfo item)
-        {
-            if (_materialByName.ContainsKey(item.overrideMaterialId)) return false;
-
-            var selfInfo = PropLibrary.FindById(item.id);
-            if (selfInfo == null) return false;
-
-            try
-            {
-                PropLibrary.LoadPropData(selfInfo);
-                AddPartsToMaterialList(selfInfo); // sets materialSourcePropId + calls Save() if found
-                return true;
-            }
-            catch { return false; }
-        }
-
-        // Shared tail: side-effect material harvest + catalog index, run once after either the
-        // synchronous or async scan finishes.
-        static void FinishMaterialSourcesScan(bool anyLoaded, bool alreadySaved)
-        {
-            // NOTE: Bulk pre-loading of all saved override materials via TryLoadMaterialByName was
-            // removed here. Each WaitForCompletion() call can trigger game asset-management
-            // callbacks (streaming, bundle eviction) that intermittently destroyed physics
-            // colliders on previously placed props. Materials are now lazy-loaded on first use
-            // in ApplyPreviewMaterial, ApplySlotMaterial, and ApplyMaterialOverridesToRoot.
-            if (anyLoaded)
-            {
-                // Update the lookup map with any materials that came into memory as a side-effect
-                // of loading source props. The display list is not touched here — it is owned by
-                // the in-memory seenCount scan and the catalog.
-                try
-                {
-                    var allMats = Resources.FindObjectsOfTypeAll<Material>();
-                    if (allMats != null)
-                        for (int i = 0; i < allMats.Length; i++)
-                        {
-                            var m = allMats[i];
-                            if (m == null || string.IsNullOrEmpty(m.name)) continue;
-                            if (ShouldHideMaterial(m.name)) continue;
-                            if (!_materialByName.ContainsKey(m.name))
-                                _materialByName[m.name] = m;
-                        }
-                }
-                catch { }
-            }
-
-            AddCatalogMaterialsToList();
-        }
-
-        // Adds every material name from the full catalog index to the display list that isn't
-        // already present, so the search list is complete regardless of which asset bundles are
-        // currently loaded. Actual Material objects for these are lazy-loaded on first use (see
-        // ApplyPreviewMaterial / ApplySlotMaterial / ResolveMaterial's PropLibrary.TryLoadMaterialByName
-        // fallback). IndexAllCatalogMaterials itself is a one-time, idempotent scan (sentinel in
-        // cache) — this merge is cheap and safe to re-run on every EnsureMaterialList rebuild.
-        static void AddCatalogMaterialsToList()
-        {
-            PropLibrary.IndexAllCatalogMaterials();
-            var alreadyListed = new HashSet<string>(_materialNames, StringComparer.OrdinalIgnoreCase);
-            bool anyCatalogAdded = false;
-            foreach (var kvp in PropLibrary.MaterialCatalogPaths)
-            {
-                string name = kvp.Key;
-                if (name == "__IDX__") continue;
-                if (ShouldHideMaterial(name)) continue;
-                if (!alreadyListed.Add(name)) continue;
-                _materialNames.Add(name);
-                _materialLabels.Add(name);
-                anyCatalogAdded = true;
-            }
-
-            if (anyCatalogAdded) SortMaterialList();
-        }
-
-        // Returns the first material name found in the prop's parts that is NOT the override.
-        // Used to recover the true native material when the live renderer is contaminated.
-        static string FindNativeFromParts(PropInfo info, string overrideMaterialName)
-        {
-            if (info == null) return string.Empty;
-            if (!info.isLoaded) PropLibrary.LoadPropData(info);
-            if (info.parts == null) return string.Empty;
-            foreach (var part in info.parts)
-            {
-                if (part?.materials == null) continue;
-                foreach (var m in part.materials)
-                {
-                    if (m == null || string.IsNullOrEmpty(m.name)) continue;
-                    if (!string.Equals(m.name, overrideMaterialName, StringComparison.OrdinalIgnoreCase))
-                        return m.name;
-                }
-            }
-            return string.Empty;
-        }
-
-        // Scans PropInfo.parts for materials and adds them to the list.
-        // Used for GPUI props (no live renderers) where AddRendererMaterialsToList yields nothing.
-        // Parts come from the loaded asset — always native materials, no contamination risk.
-        static void AddPartsToMaterialList(PropInfo info)
-        {
-            if (info?.parts == null) return;
-            foreach (var part in info.parts)
-            {
-                if (part?.materials == null) continue;
-                foreach (var mat in part.materials)
-                {
-                    if (mat == null || string.IsNullOrEmpty(mat.name)) continue;
-                    if (ShouldHideMaterial(mat.name)) continue;
-                    if (!string.IsNullOrEmpty(info.id))
-                    {
-                        if (BackfillMaterialSource(mat.name, info.id))
-                            Save();
-                    }
-                    // Only register in the lookup map — the display list is owned by the
-                    // in-memory seenCount scan and the catalog, not by prop-metadata loading.
-                    if (!_materialByName.ContainsKey(mat.name))
-                        _materialByName[mat.name] = mat;
-                }
-            }
-        }
-
 
         static void AddRendererMaterialsToList()
         {
@@ -1458,7 +712,7 @@ static void SortMaterialList()
                 {
                     var mat = mats[m];
                     if (mat == null || string.IsNullOrEmpty(mat.name)) continue;
-                    if (ShouldHideMaterial(mat.name)) continue;
+                    if (MaterialVariantTracker.ShouldHideMaterial(mat.name)) continue;
                     // Track which prop this material came from and propagate to all saved entries
                     // that use it as an override but had no source recorded yet.
                     // Never record a source from a contaminated renderer: if the renderer material
@@ -1473,242 +727,14 @@ static void SortMaterialList()
 
                     if (!string.IsNullOrEmpty(_propId) && !isUntrustedOverride)
                     {
-                        if (BackfillMaterialSource(mat.name, _propId))
-                            Save();
+                        if (MaterialCatalog.BackfillMaterialSource(mat.name, _propId))
+                            PropMetadataStore.Save();
                     }
                     // Lookup only — display list is owned by seenCount + catalog + scene variants.
-                    if (!_materialByName.ContainsKey(mat.name))
-                        _materialByName[mat.name] = mat;
+                    if (!MaterialCatalog.MaterialByName.ContainsKey(mat.name))
+                        MaterialCatalog.MaterialByName[mat.name] = mat;
                 }
             }
-        }
-
-        const float MicroSplatUVScaleMultiplier = 8f; // terrain layers tile at world scale; multiply to fit props
-
-        // Finds a live MicroSplatTerrain material instance and its recognized control-map
-        // property names. Used both to build the layer materials initially and to refresh
-        // their texture-array references after a teleport replaces the loaded terrain chunks.
-        static Material FindMicroSplatBaseMaterial(out string[] controlProps)
-        {
-            controlProps = null;
-            var allMats = Resources.FindObjectsOfTypeAll<Material>();
-
-            // Prefer a material with _CustomControl0 — it has reliably overridable UV-sampled blend textures.
-            // Skip our own cached "[MicroSplat] Layer N" materials — refreshing from one of those would
-            // just copy stale/destroyed texture references back onto themselves (and onto each other).
-            Material baseMat = null;
-            for (int i = 0; i < allMats.Length && baseMat == null; i++)
-            {
-                var m = allMats[i];
-                if (m == null || m.shader == null) continue;
-                if (m.name.StartsWith("[MicroSplat] Layer ", StringComparison.Ordinal)) continue;
-                if (!m.shader.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) continue;
-                if (m.HasProperty("_CustomControl0")) baseMat = m;
-            }
-            for (int i = 0; i < allMats.Length && baseMat == null; i++)
-            {
-                var m = allMats[i];
-                if (m == null || m.shader == null) continue;
-                if (m.name.StartsWith("[MicroSplat] Layer ", StringComparison.Ordinal)) continue;
-                if (m.shader.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) baseMat = m;
-            }
-            if (baseMat == null) return null;
-
-            // All slots must be blanked per clone; leaving higher slots with original terrain data bleeds through.
-            bool useCustom = baseMat.HasProperty("_CustomControl0");
-            var controlPropList = new List<string>();
-            for (int ci = 0; ci <= 7; ci++)
-            {
-                string pn = useCustom ? $"_CustomControl{ci}" : $"_Control{ci}";
-                if (baseMat.HasProperty(pn)) controlPropList.Add(pn);
-            }
-            if (controlPropList.Count == 0) return null;
-
-            controlProps = controlPropList.ToArray();
-            return baseMat;
-        }
-
-        static void AddMicroSplatLayerMaterials()
-        {
-            if (_microSplatLayerMats.Count > 0)
-            {
-                bool anyDestroyed = false;
-                foreach (var mat in _microSplatLayerMats)
-                    if (mat == null) { anyDestroyed = true; break; }
-
-                if (!anyDestroyed)
-                {
-                    // Already built — just re-register in case _materialByName was cleared by EnsureMaterialList.
-                    foreach (var mat in _microSplatLayerMats)
-                    {
-                        if (_materialByName.ContainsKey(mat.name)) continue;
-                        _materialNames.Add(mat.name);
-                        _materialLabels.Add(mat.name);
-                        _materialByName[mat.name] = mat;
-                    }
-                    return;
-                }
-
-                // One or more cached layer materials were destroyed (e.g. Addressables released
-                // their backing assets during a far-teleport chunk drain). Drop their stale
-                // "[MicroSplat] Layer N" entries — by index, since destroyed Materials can't
-                // report their own name — and rebuild below so the search list and any
-                // categorized-material entries referencing them resolve again.
-                for (int layer = 0; layer < _microSplatLayerMats.Count; layer++)
-                {
-                    string staleName = $"[MicroSplat] Layer {layer}";
-                    int idx = _materialNames.IndexOf(staleName);
-                    if (idx >= 0)
-                    {
-                        _materialNames.RemoveAt(idx);
-                        _materialLabels.RemoveAt(idx);
-                    }
-                    _materialByName.Remove(staleName);
-                }
-                _microSplatLayerMats.Clear();
-                _msActiveControls.Clear();
-                _msBlankControl = null;
-                _msControlProps = null;
-            }
-            try
-            {
-                var baseMat = FindMicroSplatBaseMaterial(out var controlProps);
-                if (baseMat == null)
-                {
-                    MelonLogger.Warning("[PropMetadata] MicroSplat material has no recognized control map properties.");
-                    return;
-                }
-
-                int layerCount = 0;
-                var arrays = Resources.FindObjectsOfTypeAll<Texture2DArray>();
-                for (int a = 0; a < arrays.Length; a++)
-                {
-                    var arr = arrays[a];
-                    if (arr != null && string.Equals(arr.name, "MicroSplatConfig_diff_tarray",
-                            StringComparison.Ordinal))
-                    { layerCount = arr.depth; break; }
-                }
-                if (layerCount == 0) layerCount = controlProps.Length * 4;
-
-                _msHasPerTexUV = baseMat.HasProperty("_PerTexUVScaleRotation0");
-
-                BBLog.Msg(
-                    $"[PropMetadata] MicroSplat base: '{baseMat.name}' shader: '{baseMat.shader.name}' " +
-                    $"controlSlots: {controlProps.Length} layers: {layerCount} hasPerTexUV: {_msHasPerTexUV}");
-
-                if (_msHasPerTexUV)
-                {
-                    var v0 = baseMat.GetVector("_PerTexUVScaleRotation0");
-                    BBLog.Msg($"[PropMetadata] _PerTexUVScaleRotation0 = ({v0.x:F4},{v0.y:F4},{v0.z:F4},{v0.w:F4})");
-                }
-
-                _msControlProps = controlProps;
-
-                _msBlankControl = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-                _msBlankControl.SetPixel(0, 0, Color.clear);
-                _msBlankControl.Apply();
-                _msBlankControl.name = "MicroSplat_BlankControl";
-
-                for (int layer = 0; layer < layerCount; layer++)
-                {
-                    try
-                    {
-                        int mapIdx = layer / 4;
-                        int channel = layer % 4;
-                        if (mapIdx >= controlProps.Length) break;
-
-                        var activeControl = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-                        activeControl.SetPixel(0, 0, new Color(
-                            channel == 0 ? 1f : 0f,
-                            channel == 1 ? 1f : 0f,
-                            channel == 2 ? 1f : 0f,
-                            channel == 3 ? 1f : 0f));
-                        activeControl.Apply();
-                        activeControl.name = $"MicroSplat_SingleLayer_{layer}";
-                        _msActiveControls.Add(activeControl);
-
-                        var mat = new Material(baseMat) { name = $"[MicroSplat] Layer {layer}" };
-
-                        for (int c = 0; c < controlProps.Length; c++)
-                            mat.SetTexture(controlProps[c], _msBlankControl);
-                        mat.SetTexture(controlProps[mapIdx], activeControl);
-
-                        if (_msHasPerTexUV)
-                        {
-                            string uvProp = $"_PerTexUVScaleRotation{layer}";
-                            var v = baseMat.GetVector(uvProp);
-                            mat.SetVector(uvProp, new Vector4(
-                                v.x * MicroSplatUVScaleMultiplier, v.y * MicroSplatUVScaleMultiplier, v.z, v.w));
-                        }
-
-                        _microSplatLayerMats.Add(mat);
-                        _materialNames.Add(mat.name);
-                        _materialLabels.Add(mat.name);
-                        _materialByName[mat.name] = mat;
-                    }
-                    catch { }
-                }
-
-                if (_microSplatLayerMats.Count > 0)
-                    BBLog.Msg($"[PropMetadata] Built {_microSplatLayerMats.Count} MicroSplat layer materials.");
-                else
-                    MelonLogger.Warning("[PropMetadata] MicroSplat base material found but no layer materials could be created.");
-            }
-            catch (Exception e)
-            {
-                MelonLogger.Warning($"[PropMetadata] MicroSplat layer material creation failed: {e.Message}");
-            }
-        }
-
-        // Re-points the cached MicroSplat layer materials at a currently-loaded terrain's
-        // texture arrays. FarTeleportCo's parallel chunk drain can drop the global terrain
-        // texture arrays' refcount to zero and force Addressables to release/reload them as
-        // new instances, leaving these cached materials referencing the old, now-destroyed
-        // arrays. CopyPropertiesFromMaterial updates the existing Material objects in place
-        // (rather than replacing them), so already-placed props referencing them are fixed too.
-        public static void RefreshMicroSplatLayerMaterials()
-        {
-            if (_microSplatLayerMats.Count == 0 || _msControlProps == null)
-            {
-                BBLog.Msg($"[PropMetadata] RefreshMicroSplatLayerMaterials: skipped " +
-                    $"(_microSplatLayerMats.Count={_microSplatLayerMats.Count}, " +
-                    $"_msControlProps={(_msControlProps == null ? "null" : "set")})");
-                return;
-            }
-
-            var baseMat = FindMicroSplatBaseMaterial(out _);
-            if (baseMat == null)
-            {
-                BBLog.Msg("[PropMetadata] RefreshMicroSplatLayerMaterials: no MicroSplat base material found.");
-                return;
-            }
-
-            for (int layer = 0; layer < _microSplatLayerMats.Count; layer++)
-            {
-                var mat = _microSplatLayerMats[layer];
-                if (mat == null) continue;
-
-                var name = mat.name;
-                mat.CopyPropertiesFromMaterial(baseMat);
-                mat.name = name;
-
-                int mapIdx = layer / 4;
-                if (mapIdx >= _msControlProps.Length) continue;
-
-                for (int c = 0; c < _msControlProps.Length; c++)
-                    mat.SetTexture(_msControlProps[c], _msBlankControl);
-                mat.SetTexture(_msControlProps[mapIdx], _msActiveControls[layer]);
-
-                if (_msHasPerTexUV)
-                {
-                    string uvProp = $"_PerTexUVScaleRotation{layer}";
-                    var v = baseMat.GetVector(uvProp);
-                    mat.SetVector(uvProp, new Vector4(
-                        v.x * MicroSplatUVScaleMultiplier, v.y * MicroSplatUVScaleMultiplier, v.z, v.w));
-                }
-            }
-
-            BBLog.Msg($"[PropMetadata] Refreshed {_microSplatLayerMats.Count} MicroSplat layer materials.");
         }
 
         static void ApplyCurrent()
@@ -1727,7 +753,7 @@ static void SortMaterialList()
                     perSlotToSave.Add(_slotHasExplicitOverride.Contains(s) ? sel : string.Empty);
                 }
                 int slotCountToSave = _multiMaterialEnabled ? _forcedMaterialSlots : 0;
-                var multiInfo = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
+                var multiInfo = PropMetadataStore.Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
                     string.Empty, _defaultMaterialName, string.Empty, _surfaceType, _disabledRendererPaths,
                     _colliderIgnoredSubmeshes, perSlotToSave, slotCountToSave, _isBush, _bushRadius, _soundGrassType,
                     _keepOriginalHierarchy);
@@ -1738,8 +764,8 @@ static void SortMaterialList()
             }
 
             string overrideToSave = GetOverrideToSave();
-            _knownMaterialSources.TryGetValue(overrideToSave ?? string.Empty, out string srcPropId);
-            var info = Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
+            MaterialCatalog.KnownMaterialSources.TryGetValue(overrideToSave ?? string.Empty, out string srcPropId);
+            var info = PropMetadataStore.Apply(_propId, _displayName, _category, _excluded, _useRenderMeshCollider,
                 overrideToSave, _defaultMaterialName, srcPropId, _surfaceType, _disabledRendererPaths,
                 _colliderIgnoredSubmeshes, null, 0, _isBush, _bushRadius, _soundGrassType,
                 _keepOriginalHierarchy);
@@ -1753,7 +779,7 @@ static void SortMaterialList()
         {
             if (string.IsNullOrEmpty(_selectedMaterialName)) return string.Empty;
 
-            if (string.Equals(_selectedMaterialName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_selectedMaterialName, PropMetadataStore.NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
                 return string.Empty;
 
             // Only treat selected == default as "no override" when:
@@ -1820,7 +846,7 @@ static void SortMaterialList()
             _useRenderMeshCollider = propLibInfo == null || !propLibInfo.HasColliderParts;
 
             List<string> savedSlots = null;
-            if (TryGet(id, out var info) && info != null)
+            if (PropMetadataStore.TryGet(id, out var info) && info != null)
             {
                 _displayName = info.displayName ?? string.Empty;
                 _category = info.category ?? string.Empty;
@@ -1871,7 +897,7 @@ static void SortMaterialList()
 
             BuildRendererEntries(selectedObject);
             ApplyRendererVisibility();
-            EnsureMaterialList();
+            MaterialCatalog.EnsureMaterialList();
             AddRendererMaterialsToList();
 
             // GPUI props have no live renderers — scan their loaded parts for native materials.
@@ -1879,7 +905,7 @@ static void SortMaterialList()
             if (propLibInfo != null && propLibInfo.IsGpui)
             {
                 if (!propLibInfo.isLoaded) PropLibrary.LoadPropData(propLibInfo);
-                if (propLibInfo.isLoaded) AddPartsToMaterialList(propLibInfo);
+                if (propLibInfo.isLoaded) MaterialCatalog.AddPartsToMaterialList(propLibInfo);
             }
 
             // If any saved override material (single-slot or per-slot) is still not in the list,
@@ -1887,13 +913,13 @@ static void SortMaterialList()
             // so a material may have entered memory after EnsureMaterialSources ran at startup.
             // Also try the catalog path for any per-slot override still absent after the scan.
             bool needsFreshScan = (!string.IsNullOrEmpty(_overrideMaterialName)
-                                   && !_materialByName.ContainsKey(_overrideMaterialName));
+                                   && !MaterialCatalog.MaterialByName.ContainsKey(_overrideMaterialName));
             if (!needsFreshScan)
             {
                 foreach (var s in _slotHasExplicitOverride)
                 {
                     string slotMat = s < _perSlotSelected.Count ? _perSlotSelected[s] : string.Empty;
-                    if (!string.IsNullOrEmpty(slotMat) && !_materialByName.ContainsKey(slotMat))
+                    if (!string.IsNullOrEmpty(slotMat) && !MaterialCatalog.MaterialByName.ContainsKey(slotMat))
                     { needsFreshScan = true; break; }
                 }
             }
@@ -1909,9 +935,9 @@ static void SortMaterialList()
                     {
                         var m = allMats[i];
                         if (m == null || string.IsNullOrEmpty(m.name)) continue;
-                        if (ShouldHideMaterial(m.name)) continue;
-                        if (!_materialByName.ContainsKey(m.name))
-                            _materialByName[m.name] = m;
+                        if (MaterialVariantTracker.ShouldHideMaterial(m.name)) continue;
+                        if (!MaterialCatalog.MaterialByName.ContainsKey(m.name))
+                            MaterialCatalog.MaterialByName[m.name] = m;
                     }
                 }
                 catch { }
@@ -1920,27 +946,27 @@ static void SortMaterialList()
                 // catalog. This handles saved names with "(Instance)" suffixes where the scan
                 // added the material under the clean name but the saved name still has no entry.
                 // Scene-variant clones are runtime-only and won't be in the catalog — skip them.
-                bool isVariantKey = _sceneVariantByDisplayName.ContainsKey(_overrideMaterialName);
-                if (!string.IsNullOrEmpty(_overrideMaterialName) && !_materialByName.ContainsKey(_overrideMaterialName)
+                bool isVariantKey = MaterialVariantTracker.SceneVariantByDisplayName.ContainsKey(_overrideMaterialName);
+                if (!string.IsNullOrEmpty(_overrideMaterialName) && !MaterialCatalog.MaterialByName.ContainsKey(_overrideMaterialName)
                     && !_overrideMaterialName.StartsWith("[MicroSplat]", StringComparison.Ordinal)
                     && !isVariantKey)
                 {
                     try
                     {
-                        var mat = PropLibrary.TryLoadMaterialByName(_overrideMaterialName, info.materialSourcePropId);
+                        var mat = MaterialPathCatalog.TryLoadMaterialByName(_overrideMaterialName, info.materialSourcePropId);
                         if (mat != null)
                         {
-                            if (!_materialByName.ContainsKey(mat.name))
+                            if (!MaterialCatalog.MaterialByName.ContainsKey(mat.name))
                             {
                                 string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
                                 string label = string.IsNullOrEmpty(shaderName) ? mat.name : $"{mat.name}  [{shaderName}]";
-                                _materialNames.Add(mat.name);
-                                _materialLabels.Add(label);
-                                _materialByName[mat.name] = mat;
+                                MaterialCatalog.MaterialNames.Add(mat.name);
+                                MaterialCatalog.MaterialLabels.Add(label);
+                                MaterialCatalog.MaterialByName[mat.name] = mat;
                             }
                             if (!string.Equals(mat.name, _overrideMaterialName, StringComparison.OrdinalIgnoreCase)
-                                && !_materialByName.ContainsKey(_overrideMaterialName))
-                                _materialByName[_overrideMaterialName] = mat;
+                                && !MaterialCatalog.MaterialByName.ContainsKey(_overrideMaterialName))
+                                MaterialCatalog.MaterialByName[_overrideMaterialName] = mat;
                         }
                     }
                     catch { }
@@ -1954,26 +980,26 @@ static void SortMaterialList()
                 foreach (var s in _slotHasExplicitOverride)
                 {
                     string slotMat = s < _perSlotSelected.Count ? _perSlotSelected[s] : string.Empty;
-                    if (string.IsNullOrEmpty(slotMat) || _materialByName.ContainsKey(slotMat)) continue;
+                    if (string.IsNullOrEmpty(slotMat) || MaterialCatalog.MaterialByName.ContainsKey(slotMat)) continue;
                     if (slotMat.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
                     // Scene-variant clones are runtime-only; skip catalog lookup for them.
-                    if (_sceneVariantByDisplayName.ContainsKey(slotMat)) continue;
+                    if (MaterialVariantTracker.SceneVariantByDisplayName.ContainsKey(slotMat)) continue;
                     try
                     {
-                        var mat = PropLibrary.TryLoadMaterialByName(slotMat, info.materialSourcePropId);
+                        var mat = MaterialPathCatalog.TryLoadMaterialByName(slotMat, info.materialSourcePropId);
                         if (mat == null) continue;
-                        if (!_materialByName.ContainsKey(mat.name))
+                        if (!MaterialCatalog.MaterialByName.ContainsKey(mat.name))
                         {
                             string shaderName = mat.shader != null ? mat.shader.name : string.Empty;
                             string label = string.IsNullOrEmpty(shaderName) ? mat.name : $"{mat.name}  [{shaderName}]";
-                            _materialNames.Add(mat.name);
-                            _materialLabels.Add(label);
-                            _materialByName[mat.name] = mat;
+                            MaterialCatalog.MaterialNames.Add(mat.name);
+                            MaterialCatalog.MaterialLabels.Add(label);
+                            MaterialCatalog.MaterialByName[mat.name] = mat;
                         }
                         // Alias so lookups using the saved "(Instance)"-suffixed name also resolve.
                         if (!string.Equals(mat.name, slotMat, StringComparison.OrdinalIgnoreCase)
-                            && !_materialByName.ContainsKey(slotMat))
-                            _materialByName[slotMat] = mat;
+                            && !MaterialCatalog.MaterialByName.ContainsKey(slotMat))
+                            MaterialCatalog.MaterialByName[slotMat] = mat;
                     }
                     catch { }
                 }
@@ -1981,7 +1007,7 @@ static void SortMaterialList()
 
             // If a native material name was persisted, use it to un-contaminate _defaultMaterialName.
             // CacheDefaultMaterials reads the live renderer, which may already have the override applied.
-            if (TryGet(_propId, out var metaInfo) && metaInfo != null)
+            if (PropMetadataStore.TryGet(_propId, out var metaInfo) && metaInfo != null)
             {
                 // Only trust nativeMaterialName when it differs from the override. If they match, the
                 // value was stored when the renderer was contaminated (override already applied) and
@@ -2014,7 +1040,7 @@ static void SortMaterialList()
                         && string.Equals(_defaultMaterialName, metaInfo.overrideMaterialId,
                                          StringComparison.OrdinalIgnoreCase))
                     {
-                        string recovered = FindNativeFromParts(propLibInfo, metaInfo.overrideMaterialId);
+                        string recovered = MaterialCatalog.FindNativeFromParts(propLibInfo, metaInfo.overrideMaterialId);
                         if (!string.IsNullOrEmpty(recovered))
                             _defaultMaterialName = recovered;
                     }
@@ -2029,22 +1055,22 @@ static void SortMaterialList()
                     }
 
                     if (string.IsNullOrEmpty(metaInfo.materialSourcePropId)
-                        && _knownMaterialSources.TryGetValue(metaInfo.overrideMaterialId, out string knownSrc)
+                        && MaterialCatalog.KnownMaterialSources.TryGetValue(metaInfo.overrideMaterialId, out string knownSrc)
                         && !string.IsNullOrEmpty(knownSrc))
                     {
-                        if (BackfillMaterialSource(metaInfo.overrideMaterialId, knownSrc))
+                        if (MaterialCatalog.BackfillMaterialSource(metaInfo.overrideMaterialId, knownSrc))
                             migrationDirty = true;
                     }
                 }
 
-                if (migrationDirty) Save();
+                if (migrationDirty) PropMetadataStore.Save();
             }
 
             if (_multiMaterialEnabled || _maxMaterialSlots > 1)
                 ApplyAllSlotMaterials();
             else
                 ApplyPreviewMaterial(_selectedMaterialName);
-            ApplySurfaceType(selectedObject, _surfaceType);
+            PropInstanceServices.ApplySurfaceType(selectedObject, _surfaceType);
         }
 
         static void CacheDefaultMaterials(LevelEditorObject obj)
@@ -2187,124 +1213,21 @@ static void SortMaterialList()
             var existingSphere = root.GetComponent<SphereCollider>();
             if (existingSphere != null) UnityEngine.Object.DestroyImmediate(existingSphere);
 
-            BushAudioTracker.Unregister(root.transform);
+            PropInstanceServices.BushAudioTracker.Unregister(root.transform);
             // Restore / set trigger state on all physics colliders (BushCollider sphere excluded,
             // since it hasn't been added yet and its isTrigger is set explicitly below).
-            SetBushPassthrough(root, enable);
+            PropInstanceServices.SetBushPassthrough(root, enable);
 
             if (!enable) { _bushRadius = 0f; return; }
 
-            _bushRadius = ComputeBushRadius(leo);
-            BushAudioTracker.Register(root.transform, _bushRadius, _soundGrassType);
+            _bushRadius = PropInstanceServices.ComputeBushRadius(leo);
+            PropInstanceServices.BushAudioTracker.Register(root.transform, _bushRadius, _soundGrassType);
             var sphere = root.AddComponent<SphereCollider>();
             sphere.radius = _bushRadius;
             sphere.isTrigger = true;
             var bush = root.AddComponent<Il2Cpp.BushCollider>();
             // Set rad immediately; BushCollider.Start() mirrors this but may not have run yet.
             bush.rad = sphere.radius * root.transform.localScale.x;
-        }
-
-        static void SetBushPassthrough(GameObject root, bool passthrough)
-        {
-            foreach (var col in root.GetComponentsInChildren<Collider>(true))
-            {
-                if (col == null) continue;
-                // Leave the BushCollider's own SphereCollider alone (already a trigger, handled separately).
-                if (col.gameObject.GetComponent<Il2Cpp.BushCollider>() != null) continue;
-                // Non-convex MeshColliders cannot be triggers in Unity — force convex so isTrigger sticks.
-                // The convex hull is sufficient for editor click-selection.
-                if (passthrough)
-                {
-                    var mc = col.TryCast<MeshCollider>();
-                    if (mc != null && !mc.convex) mc.convex = true;
-                }
-                col.isTrigger = passthrough;
-            }
-        }
-
-        static float ComputeBushRadius(LevelEditorObject leo)
-        {
-            var bounds = new Bounds();
-            bool first = true;
-            foreach (var r in leo.GetComponentsInChildren<Renderer>(true))
-            {
-                if (r == null) continue;
-                if (first) { bounds = r.bounds; first = false; }
-                else bounds.Encapsulate(r.bounds);
-            }
-            if (first) return 1f;
-            // BushCollider.Start() multiplies sphere.radius * localScale.x, so store in local space
-            float worldRadius = Mathf.Max(bounds.extents.x, bounds.extents.z);
-            float scale = Mathf.Max(0.001f, leo.transform.lossyScale.x);
-            return worldRadius / scale;
-        }
-
-        public static void ApplyBushColliderToRoot(string propId, GameObject root)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(propId) || root == null) return;
-            if (!_byId.TryGetValue(propId, out var info) || !info.isBush) return;
-
-            var existingBush = root.GetComponent<Il2Cpp.BushCollider>();
-            if (existingBush != null) UnityEngine.Object.DestroyImmediate(existingBush);
-            var existingSphere = root.GetComponent<SphereCollider>();
-            if (existingSphere != null) UnityEngine.Object.DestroyImmediate(existingSphere);
-
-            SetBushPassthrough(root, true);
-
-            float radius = info.bushRadius > 0f ? info.bushRadius : 1f;
-            int grassType = info.soundGrassType > 0 ? info.soundGrassType : 1;
-            BushAudioTracker.Register(root.transform, radius, grassType);
-            var sphere = root.AddComponent<SphereCollider>();
-            sphere.radius = radius;
-            sphere.isTrigger = true;
-            var bush = root.AddComponent<Il2Cpp.BushCollider>();
-            bush.rad = sphere.radius * root.transform.localScale.x;
-        }
-
-        public static bool GetIsBush(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return false;
-            return _byId.TryGetValue(id, out var info) && info.isBush;
-        }
-
-        public static bool GetKeepOriginalHierarchy(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return false;
-            return _byId.TryGetValue(id, out var info) && info.keepOriginalHierarchy;
-        }
-
-        // Tracks editor bush spheres so the GetGrassAt Harmony patch can return a grass type
-        // for positions inside them, enabling BodyCollisions rustle and PlayerMovement plant sounds.
-        internal static class BushAudioTracker
-        {
-            static readonly List<(Transform t, float localRad, int grassType)> _bushes = new();
-
-            public static void Register(Transform t, float localRad, int grassType = 1)
-            {
-                if (t != null) _bushes.Add((t, localRad, grassType));
-            }
-
-            public static void Unregister(Transform t)
-            {
-                for (int i = _bushes.Count - 1; i >= 0; i--)
-                    if (_bushes[i].t == t) { _bushes.RemoveAt(i); return; }
-            }
-
-            // Returns the GrassType int of the first bush sphere containing pos, or 0 (none) if outside all.
-            public static int GetGrassTypeAtPos(Vector3 pos)
-            {
-                for (int i = _bushes.Count - 1; i >= 0; i--)
-                {
-                    var (t, localRad, grassType) = _bushes[i];
-                    if (t == null) { _bushes.RemoveAt(i); continue; }
-                    float worldRad = localRad * Mathf.Max(0.001f, t.lossyScale.x);
-                    if ((pos - t.position).sqrMagnitude < worldRad * worldRad) return grassType;
-                }
-                return 0;
-            }
         }
 
         static void ApplyColliderToSelected(bool enable)
@@ -2387,7 +1310,7 @@ static void SortMaterialList()
             if (_selectedRenderers == null || _selectedRenderers.Length == 0) return;
 
             if (string.IsNullOrEmpty(materialName)
-                || string.Equals(materialName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(materialName, PropMetadataStore.NoOverrideLabel, StringComparison.OrdinalIgnoreCase)
                 || (!string.IsNullOrEmpty(_defaultMaterialName)
                     && string.Equals(materialName, _defaultMaterialName, StringComparison.OrdinalIgnoreCase)))
             {
@@ -2395,15 +1318,15 @@ static void SortMaterialList()
                 return;
             }
 
-            if (!_materialByName.TryGetValue(materialName, out var mat) || mat == null)
+            if (!MaterialCatalog.MaterialByName.TryGetValue(materialName, out var mat) || mat == null)
             {
-                mat = PropLibrary.TryLoadMaterialByName(materialName, GetKnownMaterialSource(materialName));
+                mat = MaterialPathCatalog.TryLoadMaterialByName(materialName, MaterialCatalog.GetKnownMaterialSource(materialName));
                 if (mat != null)
                 {
-                    if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
+                    if (!MaterialCatalog.MaterialByName.ContainsKey(mat.name)) MaterialCatalog.MaterialByName[mat.name] = mat;
                     if (!string.Equals(mat.name, materialName, StringComparison.OrdinalIgnoreCase)
-                        && !_materialByName.ContainsKey(materialName))
-                        _materialByName[materialName] = mat;
+                        && !MaterialCatalog.MaterialByName.ContainsKey(materialName))
+                        MaterialCatalog.MaterialByName[materialName] = mat;
                 }
             }
             if (mat == null) { RestoreDefaultMaterials(); return; }
@@ -2440,7 +1363,7 @@ static void SortMaterialList()
         {
             if (_selectedRenderers == null) return;
             bool restore = string.IsNullOrEmpty(materialName)
-                || string.Equals(materialName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(materialName, PropMetadataStore.NoOverrideLabel, StringComparison.OrdinalIgnoreCase)
                 || (slot < _perSlotDefault.Count && string.Equals(materialName, _perSlotDefault[slot], StringComparison.OrdinalIgnoreCase));
 
             for (int i = 0; i < _selectedRenderers.Length; i++)
@@ -2466,15 +1389,15 @@ static void SortMaterialList()
                 }
                 else
                 {
-                    if (!_materialByName.TryGetValue(materialName, out var mat) || mat == null)
+                    if (!MaterialCatalog.MaterialByName.TryGetValue(materialName, out var mat) || mat == null)
                     {
-                        mat = PropLibrary.TryLoadMaterialByName(materialName, GetKnownMaterialSource(materialName));
+                        mat = MaterialPathCatalog.TryLoadMaterialByName(materialName, MaterialCatalog.GetKnownMaterialSource(materialName));
                         if (mat != null)
                         {
-                            if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
+                            if (!MaterialCatalog.MaterialByName.ContainsKey(mat.name)) MaterialCatalog.MaterialByName[mat.name] = mat;
                             if (!string.Equals(mat.name, materialName, StringComparison.OrdinalIgnoreCase)
-                                && !_materialByName.ContainsKey(materialName))
-                                _materialByName[materialName] = mat;
+                                && !MaterialCatalog.MaterialByName.ContainsKey(materialName))
+                                MaterialCatalog.MaterialByName[materialName] = mat;
                         }
                     }
                     if (mat == null) continue;
@@ -2562,1467 +1485,6 @@ static void SortMaterialList()
             }
         }
 
-        static void EnsureLoaded()
-        {
-            if (_loaded) return;
-            Load();
-        }
-
-        // ── Material constructions (persisted alongside prop metadata) ─────────────
-
-        public static List<MaterialConstructionEntry> MaterialConstructions
-        {
-            get { EnsureLoaded(); return _materialConstructions; }
-        }
-
-        public static MaterialConstructionEntry CreateMaterialConstruction()
-        {
-            EnsureLoaded();
-            var entry = new MaterialConstructionEntry
-            {
-                id = _nextMaterialConstructionId++,
-                name = "New Material " + (_materialConstructions.Count + 1)
-            };
-            _materialConstructions.Add(entry);
-            _loadedFromJson = true;
-            Save();
-            return entry;
-        }
-
-        public static void DeleteMaterialConstruction(MaterialConstructionEntry entry)
-        {
-            EnsureLoaded();
-            if (entry == null) return;
-            _materialConstructions.Remove(entry);
-            _loadedFromJson = true;
-            Save();
-        }
-
-        public static MaterialConstructionEntry FindMaterialConstructionById(int id)
-        {
-            EnsureLoaded();
-            if (id < 0) return null;
-            foreach (var e in _materialConstructions)
-                if (e.id == id) return e;
-            return null;
-        }
-
-        public static void MarkMaterialConstructionsDirty() => _loadedFromJson = true;
-
-        public static void SaveMaterialConstructions()
-        {
-            EnsureLoaded();
-            _loadedFromJson = true;
-            Save();
-        }
-
-        static bool TryGetInfoById(string id, out PropExtraInfo info)
-        {
-            info = null;
-            if (string.IsNullOrEmpty(id)) return false;
-            if (_byId.TryGetValue(id, out info)) return true;
-
-            string canonical = PropLibrary.ResolveCanonicalId(id);
-            return !string.IsNullOrEmpty(canonical) && _byId.TryGetValue(canonical, out info);
-        }
-
-        static bool MergeItem(PropExtraInfo target, PropExtraInfo source)
-        {
-            if (target == null || source == null || ReferenceEquals(target, source)) return false;
-
-            bool changed = false;
-
-            if (target.index <= 0 && source.index > 0) { target.index = source.index; changed = true; }
-            if (string.IsNullOrEmpty(target.displayName) && !string.IsNullOrEmpty(source.displayName)) { target.displayName = source.displayName; changed = true; }
-            if (string.IsNullOrEmpty(target.category) && !string.IsNullOrEmpty(source.category)) { target.category = source.category; changed = true; }
-            if (string.IsNullOrEmpty(target.colliderIgnoredSubmeshes) && !string.IsNullOrEmpty(source.colliderIgnoredSubmeshes)) { target.colliderIgnoredSubmeshes = source.colliderIgnoredSubmeshes; changed = true; }
-            if (string.IsNullOrEmpty(target.overrideMaterialId) && !string.IsNullOrEmpty(source.overrideMaterialId)) { target.overrideMaterialId = source.overrideMaterialId; changed = true; }
-            if (string.IsNullOrEmpty(target.nativeMaterialName) && !string.IsNullOrEmpty(source.nativeMaterialName)) { target.nativeMaterialName = source.nativeMaterialName; changed = true; }
-            if (string.IsNullOrEmpty(target.materialSourcePropId) && !string.IsNullOrEmpty(source.materialSourcePropId)) { target.materialSourcePropId = source.materialSourcePropId; changed = true; }
-            if (string.IsNullOrEmpty(target.surfaceType) && !string.IsNullOrEmpty(source.surfaceType)) { target.surfaceType = source.surfaceType; changed = true; }
-            if (!target.useRenderMeshCollider && source.useRenderMeshCollider) { target.useRenderMeshCollider = true; changed = true; }
-            if (!target.disableBaking && source.disableBaking) { target.disableBaking = true; changed = true; }
-            if (target.forcedMaterialSlots <= 1 && source.forcedMaterialSlots > 1) { target.forcedMaterialSlots = source.forcedMaterialSlots; changed = true; }
-
-            if ((target.disabledRenderers == null || target.disabledRenderers.Count == 0)
-                && source.disabledRenderers != null && source.disabledRenderers.Count > 0)
-            {
-                target.disabledRenderers = new List<string>(source.disabledRenderers);
-                changed = true;
-            }
-
-            if (!HasNonEmptySlot(target.perSlotMaterialOverrides) && HasNonEmptySlot(source.perSlotMaterialOverrides))
-            {
-                target.perSlotMaterialOverrides = new List<string>(source.perSlotMaterialOverrides);
-                changed = true;
-            }
-
-            if (!target.excluded && source.excluded)
-            {
-                target.excluded = true;
-                changed = true;
-            }
-
-            if (!target.isBush && source.isBush) { target.isBush = true; changed = true; }
-            if (target.bushRadius <= 0f && source.bushRadius > 0f) { target.bushRadius = source.bushRadius; changed = true; }
-
-            return changed;
-        }
-
-        public static void MigratePropIdsToCanonical()
-        {
-            EnsureLoaded();
-            if (_byId.Count == 0) return;
-
-            bool changed = false;
-            var remaps = new List<(string fromId, string toId, PropExtraInfo item)>();
-            foreach (var kvp in _byId)
-            {
-                string canonical = PropLibrary.ResolveCanonicalId(kvp.Key);
-                if (string.IsNullOrEmpty(canonical) || string.Equals(canonical, kvp.Key, StringComparison.Ordinal))
-                    continue;
-                remaps.Add((kvp.Key, canonical, kvp.Value));
-            }
-
-            for (int i = 0; i < remaps.Count; i++)
-            {
-                var remap = remaps[i];
-                if (!_byId.TryGetValue(remap.fromId, out var source))
-                    continue;
-
-                _byId.Remove(remap.fromId);
-                changed = true;
-
-                source.id = remap.toId;
-                if (_byId.TryGetValue(remap.toId, out var existing))
-                {
-                    if (MergeItem(existing, source)) changed = true;
-                }
-                else
-                {
-                    _byId[remap.toId] = source;
-                }
-            }
-
-            foreach (var item in _byId.Values)
-            {
-                if (item == null || string.IsNullOrEmpty(item.materialSourcePropId)) continue;
-                string canonicalSource = PropLibrary.ResolveCanonicalId(item.materialSourcePropId);
-                if (string.IsNullOrEmpty(canonicalSource)
-                    || string.Equals(canonicalSource, item.materialSourcePropId, StringComparison.Ordinal))
-                    continue;
-
-                item.materialSourcePropId = canonicalSource;
-                changed = true;
-            }
-
-            if (changed) Save();
-        }
-
-        public static bool GetUseRenderMeshCollider(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return false;
-            if (!_byId.TryGetValue(id, out var info))
-            {
-                var propInfo = PropLibrary.FindById(id);
-                return propInfo == null || !propInfo.HasColliderParts;
-            }
-            return info.useRenderMeshCollider;
-        }
-
-        public static HashSet<int> GetColliderIgnoredSubmeshes(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return null;
-            if (!_byId.TryGetValue(id, out var info)) return null;
-            return ParseIntSet(info.colliderIgnoredSubmeshes);
-        }
-
-        public static string GetSurfaceType(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return string.Empty;
-            if (!_byId.TryGetValue(id, out var info)) return string.Empty;
-            return info.surfaceType ?? string.Empty;
-        }
-
-        public static string GetOverrideMaterialId(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return string.Empty;
-            if (!TryGetInfoById(id, out var info)) return string.Empty;
-            return info.overrideMaterialId ?? string.Empty;
-        }
-
-        // A prop-level (not per-instance) setting: when true, MaterialBaker.Bake skips this
-        // prop entirely and it keeps its plain/native materials when given physics, instead
-        // of a baked mesh+atlas. Persisted alongside the other per-prop overrides (see
-        // GetOverrideMaterialId/GetMaterialCacheKey) - i.e. it applies to every placed
-        // instance of this prop, not saved per-instance in the level (.bbb) file.
-        public static bool GetDisableBaking(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return false;
-            if (!TryGetInfoById(id, out var info)) return false;
-            return info.disableBaking;
-        }
-
-        public static void SetDisableBaking(string id, bool value)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return;
-
-            string key = PropLibrary.ResolveCanonicalId(id) ?? id;
-            if (!_byId.TryGetValue(key, out var info))
-            {
-                if (!value) return;
-                info = new PropExtraInfo { id = key, index = _nextIndex++ };
-                _byId[key] = info;
-            }
-
-            if (info.disableBaking == value) return;
-            info.disableBaking = value;
-            Save();
-        }
-
-        // Stable string identifying the material configuration currently applied to prop
-        // `id` (per-slot overrides, single override, or the native default) - used as part
-        // of the on-disk bake-cache key (see MaterialBakeCache) so different materials
-        // applied to the same prop get separate cached bakes.
-        public static string GetMaterialCacheKey(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id) || !TryGetInfoById(id, out var info))
-                return "default";
-
-            if (HasNonEmptySlot(info.perSlotMaterialOverrides))
-            {
-                var sb = new StringBuilder();
-                for (int i = 0; i < info.perSlotMaterialOverrides.Count; i++)
-                {
-                    if (i > 0) sb.Append('+');
-                    string slot = info.perSlotMaterialOverrides[i];
-                    sb.Append(string.IsNullOrEmpty(slot) ? "_" : slot);
-                }
-                return sb.ToString();
-            }
-
-            if (!string.IsNullOrEmpty(info.overrideMaterialId)
-                && !string.Equals(info.overrideMaterialId, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
-                return info.overrideMaterialId;
-
-            return "default";
-        }
-
-        public static void ApplySurfaceType(LevelEditorObject leo, string surfaceTag)
-        {
-            if (leo == null) return;
-            try
-            {
-                string tag = string.IsNullOrEmpty(surfaceTag) ? "Untagged" : surfaceTag;
-                SetTagSafe(leo.gameObject, tag);
-                foreach (var col in leo.GetComponentsInChildren<Collider>(true))
-                {
-                    if (col != null) SetTagSafe(col.gameObject, tag);
-                }
-            }
-            catch (Exception e)
-            {
-                MelonLogger.Warning($"[PropMetadata] ApplySurfaceType failed: {e.Message}");
-            }
-        }
-
-        public static void ApplySurfaceTypeToRoot(GameObject root, string surfaceTag)
-        {
-            if (root == null) return;
-            try
-            {
-                string tag = string.IsNullOrEmpty(surfaceTag) ? "Untagged" : surfaceTag;
-                SetTagSafe(root, tag);
-                foreach (var col in root.GetComponentsInChildren<Collider>(true))
-                {
-                    if (col != null) SetTagSafe(col.gameObject, tag);
-                }
-            }
-            catch (Exception e)
-            {
-                MelonLogger.Warning($"[PropMetadata] ApplySurfaceTypeToRoot failed: {e.Message}");
-            }
-        }
-
-        static void SetTagSafe(GameObject go, string tag)
-        {
-            try { go.tag = tag; } catch { }
-        }
-
-        public static void ApplyDisabledRenderersToRoot(string propId, GameObject root)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(propId) || root == null) return;
-            if (!_byId.TryGetValue(propId, out var info)) return;
-            if (info.disabledRenderers == null || info.disabledRenderers.Count == 0) return;
-
-            foreach (var path in info.disabledRenderers)
-            {
-                if (string.IsNullOrEmpty(path)) continue;
-                // Path format: "RootName/Child" — strip the leading root-name segment.
-                int slashIdx = path.IndexOf('/');
-                string subPath = slashIdx >= 0 ? path.Substring(slashIdx + 1) : path;
-                if (string.IsNullOrEmpty(subPath)) continue;
-                var t = root.transform.Find(subPath);
-                if (t == null) continue;
-                var r = t.GetComponent<Renderer>();
-                if (r != null) r.enabled = false;
-            }
-
-            LevelEditorManager.NotifyVisualStateChanged(root);
-        }
-
-        public static void ApplyMaterialOverridesToRoot(string propId, GameObject root)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(propId) || root == null) return;
-            if (!_byId.TryGetValue(propId, out var info)) return;
-
-            // Ensure the full material list is built even when the debug UI has never been shown
-            // (non-debug mode, first launch). This populates _materialByName with hashed variants
-            // and source-prop materials so ResolveMaterial can find any saved override.
-            EnsureMaterialList();
-            AddMicroSplatLayerMaterials();
-
-            // Per-slot overrides
-            var overrides = info.perSlotMaterialOverrides;
-            if (overrides != null && overrides.Count > 0)
-            {
-                var renderers = root.GetComponentsInChildren<Renderer>(true);
-                if (renderers == null || renderers.Length == 0) return;
-
-                for (int s = 0; s < overrides.Count; s++)
-                {
-                    string matName = overrides[s];
-                    if (string.IsNullOrEmpty(matName)
-                        || string.Equals(matName, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    var mat = ResolveMaterial(matName, info.materialSourcePropId);
-                    if (mat == null) continue;
-
-                    for (int i = 0; i < renderers.Length; i++)
-                    {
-                        var r = renderers[i];
-                        if (r == null) continue;
-                        var mats = r.sharedMaterials;
-                        if (mats == null) mats = new Material[0];
-                        if (s >= mats.Length)
-                        {
-                            var expanded = new Material[s + 1];
-                            for (int m = 0; m < mats.Length; m++) expanded[m] = mats[m];
-                            mats = expanded;
-                        }
-                        mats[s] = mat;
-                        r.sharedMaterials = mats;
-                    }
-                }
-                return;
-            }
-
-            // Single-slot override (overrideMaterialId)
-            // This is the common case for props with one material slot: the override is stored
-            // in overrideMaterialId, not perSlotMaterialOverrides. ApplyPreviewMaterial applies
-            // the same material to every slot of every renderer, so we mirror that here.
-            string singleOverride = info.overrideMaterialId;
-            if (string.IsNullOrEmpty(singleOverride)
-                || string.Equals(singleOverride, NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
-                return;
-
-            {
-                var singleMat = ResolveMaterial(singleOverride, info.materialSourcePropId);
-                if (singleMat == null) return;
-
-                var renderers = root.GetComponentsInChildren<Renderer>(true);
-                if (renderers == null || renderers.Length == 0) return;
-
-                for (int i = 0; i < renderers.Length; i++)
-                {
-                    var r = renderers[i];
-                    if (r == null) continue;
-                    int count = 1;
-                    var existing = r.sharedMaterials;
-                    if (existing != null && existing.Length > 0) count = existing.Length;
-                    var mats = new Material[count];
-                    for (int m = 0; m < count; m++) mats[m] = singleMat;
-                    r.sharedMaterials = mats;
-                }
-            }
-        }
-
-        // Re-resolves and re-assigns every placed prop's material overrides (both the catalog-level
-        // overrides handled by ApplyMaterialOverridesToRoot, and per-instance MaterialConstruction
-        // overrides) against the current _materialByName cache. Call this after the cache has been
-        // rebuilt (InvalidateMaterialCache + EnsureMaterialList) following a far-teleport or area
-        // change — FarTeleportCo's chunk drain can destroy the Material instances that placed props'
-        // renderers were pointing at, leaving them pink/missing until re-pointed at fresh instances.
-        // Does not push undo history — this is a silent repair pass, not a user edit.
-        public static void ReapplyAllMaterialOverrides()
-        {
-            var mgr = LevelEditorManager.Instance;
-            if (mgr == null) return;
-
-            foreach (var leo in mgr.Objects)
-            {
-                if (leo == null) continue;
-                var root = leo.gameObject;
-                if (root == null) continue;
-
-                ApplyMaterialOverridesToRoot(leo.addressableKey, root);
-
-                if (leo.materialConstructionId < 0) continue;
-                var entry = FindMaterialConstructionById(leo.materialConstructionId);
-                if (entry == null || string.IsNullOrEmpty(entry.materialName)) continue;
-
-                var mat = ResolveMaterial(entry.materialName, leo.addressableKey);
-                if (mat == null) continue;
-
-                var renderers = root.GetComponentsInChildren<Renderer>(true);
-                for (int i = 0; i < renderers.Length; i++)
-                {
-                    var r = renderers[i];
-                    if (r == null) continue;
-                    var existing = r.sharedMaterials;
-                    int count = existing != null && existing.Length > 0 ? existing.Length : 1;
-                    var mats = new Material[count];
-                    for (int m = 0; m < count; m++) mats[m] = mat;
-                    r.sharedMaterials = mats;
-                }
-            }
-        }
-
-        // Looks up a material by name in the in-memory cache, falling back to a catalog load.
-        // Caches the result so subsequent spawns of the same prop don't re-hit the catalog.
-        static string GetKnownMaterialSource(string materialName)
-        {
-            if (string.IsNullOrEmpty(materialName)) return string.Empty;
-            return _knownMaterialSources.TryGetValue(materialName, out var sourcePropId) ? sourcePropId : string.Empty;
-        }
-
-        static Material ResolveMaterial(string matName, string sourcePropId = null)
-        {
-            if (string.IsNullOrEmpty(matName)) return null;
-            if (_sceneCurrentByName.TryGetValue(matName, out var liveMat) && liveMat != null)
-            {
-                _materialByName[matName] = liveMat;
-                return liveMat;
-            }
-            if (_materialByName.TryGetValue(matName, out var mat) && mat != null) return mat;
-
-            // Scene-variant clones are looked up by display name — no .name access on Il2Cpp objects.
-            if (_sceneVariantByDisplayName.TryGetValue(matName, out var clone) && clone != null)
-            {
-                _materialByName[matName] = clone;
-                return clone;
-            }
-            if (_sceneVariantByDisplayName.ContainsKey(matName))
-            {
-                // Captured but clone is gone — fall back to base name without a catalog scan.
-                // Variant display names always end in " [hash]" (see RegisterVariant) — strip that,
-                // not any "(...)" suffix, since native names can legitimately contain parens.
-                int bracket = matName.LastIndexOf(" [", StringComparison.Ordinal);
-                string baseName = (bracket > 0 && matName.EndsWith("]", StringComparison.Ordinal))
-                    ? matName.Substring(0, bracket)
-                    : matName;
-                if (_materialByName.TryGetValue(baseName, out mat) && mat != null) return mat;
-                mat = PropLibrary.TryLoadMaterialByName(baseName, sourcePropId);
-                if (mat != null && !_materialByName.ContainsKey(baseName)) _materialByName[baseName] = mat;
-                return mat;
-            }
-
-            // If the name looks like a variant display name ("Base [hash]" — see RegisterVariant,
-            // which always uses square brackets) but isn't in _sceneVariantByDisplayName, skip the
-            // catalog scan and fall back to the base name. Native material names can legitimately
-            // contain parenthesized suffixes (e.g. "Spruce_Norway_BarkMat (TVE Material)"), so we
-            // must only strip the square-bracket variant pattern, not any "(...)" suffix.
-            int lastBracket = matName.LastIndexOf(" [", StringComparison.Ordinal);
-            if (lastBracket > 0 && matName.EndsWith("]", StringComparison.Ordinal))
-            {
-                string baseName = matName.Substring(0, lastBracket);
-                if (_materialByName.TryGetValue(baseName, out mat) && mat != null) return mat;
-                mat = PropLibrary.TryLoadMaterialByName(baseName, sourcePropId);
-                if (mat != null)
-                {
-                    if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
-                    if (!_materialByName.ContainsKey(baseName)) _materialByName[baseName] = mat;
-                }
-                return mat;
-            }
-
-            mat = PropLibrary.TryLoadMaterialByName(matName, sourcePropId);
-            if (mat == null) return null;
-
-            if (!_materialByName.ContainsKey(mat.name)) _materialByName[mat.name] = mat;
-            if (!string.Equals(mat.name, matName, StringComparison.OrdinalIgnoreCase)
-                && !_materialByName.ContainsKey(matName))
-                _materialByName[matName] = mat;
-            return mat;
-        }
-
-        // Returns a material from the in-memory cache by exact name, or null if not found.
-        // Used by MaterialInspectorPanel so it benefits from the already-built material list.
-        public static Material TryGetMaterialByName(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return null;
-            if (_materialByName.TryGetValue(name, out var mat) && mat != null) return mat;
-            if (_sceneVariantByDisplayName.TryGetValue(name, out mat) && mat != null) return mat;
-            return null;
-        }
-
-        // ── Shared accessors for MaterialConstructionPanel ──────────────────────
-        // Display names, in the same order/sort as the per-prop override dropdown
-        // (index 0 is always NoOverrideLabel).
-        public static List<string> MaterialNames  => _materialNames;
-        public static List<string> MaterialLabels => _materialLabels;
-
-        // Builds (or refreshes) the in-memory material list/cache used by both
-        // material-name lookups and dropdowns.
-        public static void EnsureMaterialListLoaded() => EnsureMaterialList();
-
-        // Resolves a material by display name, falling back to a catalog/asset load
-        // (unlike TryGetMaterialByName, which only checks the in-memory cache).
-        public static Material ResolveMaterialByName(string name) => ResolveMaterial(name);
-
-        public static bool HasMetadata(string id)
-        {
-            EnsureLoaded();
-            return !string.IsNullOrEmpty(id) && _byId.ContainsKey(id);
-        }
-
-        public static bool IsExcluded(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return false;
-            return _byId.TryGetValue(id, out var info) && info.excluded;
-        }
-
-        // Returns true if the prop has been indexed but is only partially filled:
-        // it has at least one but not all of displayName, category, surfaceType.
-        public static bool IsPartiallyFilled(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return false;
-            if (!_byId.TryGetValue(id, out var info)) return false;
-            if (info.excluded || info.index <= 0) return false;
-            int count = 0;
-            if (!string.IsNullOrEmpty(info.displayName)) count++;
-            if (!string.IsNullOrEmpty(info.category)) count++;
-            if (!string.IsNullOrEmpty(info.surfaceType)) count++;
-            return count > 0 && count < 3;
-        }
-
-        static bool HasDuplicateDisplayName(string name, string excludeId)
-        {
-            foreach (var kvp in _byId)
-            {
-                if (string.Equals(kvp.Key, excludeId, StringComparison.Ordinal)) continue;
-                if (string.Equals(kvp.Value.displayName, name, StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
-            return false;
-        }
-
-        // Called after ScanGpuiProps, when the editor is opened, so EnsureMaterialSources can find
-        // GPUI prop entries. Forces the full material list + source scan to run right now (via
-        // EnsureMaterialList) instead of waiting for it to happen lazily on first prop drag — moves
-        // the one-time scan cost to editor-open time, where a freeze is less disruptive than mid-drag.
-        public static void InvalidateMaterialSources()
-        {
-            _materialSourcesLoaded = false;
-
-            // Build the in-memory material list now (cheap — FindObjectsOfTypeAll is ~0ms). Suppress
-            // the synchronous EnsureMaterialSources that EnsureMaterialList would otherwise trigger
-            // on its first-ever call — we want the spread-out async version instead, which is kicked
-            // off below. (_materialSourcesLoading also blocks dragging in the palette meanwhile.)
-            _materialSourcesLoading = true;
-            EnsureMaterialList();
-            _materialSourcesLoading = false;
-
-            StartMaterialSourcesScanAsync();
-        }
-
-        static bool TryGet(string id, out PropExtraInfo info)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id))
-            {
-                info = null;
-                return false;
-            }
-            return _byId.TryGetValue(id, out info);
-        }
-
-        static bool HasNonEmptySlot(List<string> list)
-        {
-            if (list == null) return false;
-            for (int i = 0; i < list.Count; i++)
-                if (!string.IsNullOrEmpty(list[i])) return true;
-            return false;
-        }
-
-        static PropExtraInfo Apply(string id, string displayName, string category,
-            bool excluded, bool useRenderMeshCollider, string overrideMaterialName,
-            string nativeMaterialName, string materialSourcePropId, string surfaceType,
-            HashSet<string> disabledRenderers, string colliderIgnoredSubmeshes,
-            List<string> perSlotOverrides = null, int forcedMaterialSlots = 0,
-            bool isBush = false, float bushRadius = 0f, int soundGrassType = 1,
-            bool keepOriginalHierarchy = false)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return null;
-
-            bool any = !string.IsNullOrEmpty(displayName)
-                    || !string.IsNullOrEmpty(category)
-                    || excluded
-                    || useRenderMeshCollider
-                    || !string.IsNullOrEmpty(overrideMaterialName)
-                    || !string.IsNullOrEmpty(surfaceType)
-                    || (disabledRenderers != null && disabledRenderers.Count > 0)
-                    || !string.IsNullOrEmpty(colliderIgnoredSubmeshes)
-                    || HasNonEmptySlot(perSlotOverrides)
-                    || forcedMaterialSlots > 1
-                    || isBush
-                    || keepOriginalHierarchy;
-
-            if (!_byId.TryGetValue(id, out var info))
-            {
-                if (!any) return null;
-                info = new PropExtraInfo { id = id };
-                _byId[id] = info;
-            }
-
-            if (excluded)
-            {
-                info.displayName        = string.Empty;
-                info.category           = string.Empty;
-                info.excluded           = true;
-                info.useRenderMeshCollider = false;
-                info.colliderIgnoredSubmeshes = string.Empty;
-                info.overrideMaterialId       = string.Empty;
-                info.surfaceType              = string.Empty;
-                info.disabledRenderers        = new List<string>();
-                info.perSlotMaterialOverrides = null;
-                info.forcedMaterialSlots      = 0;
-                info.isBush                   = false;
-                info.bushRadius               = 0f;
-                info.soundGrassType           = 1;
-                info.keepOriginalHierarchy    = false;
-                info.disableBaking            = false;
-                info.index                    = 0;
-            }
-            else
-            {
-                if (info.index <= 0) info.index = _nextIndex++;
-                info.displayName        = displayName ?? string.Empty;
-                info.category           = category ?? string.Empty;
-                info.excluded           = false;
-                info.useRenderMeshCollider = useRenderMeshCollider;
-                info.colliderIgnoredSubmeshes = colliderIgnoredSubmeshes ?? string.Empty;
-                info.overrideMaterialId = overrideMaterialName ?? string.Empty;
-                // Store the true original and source only once — when a non-empty override is first applied.
-                // Clear both when the override is removed so they don't linger.
-                if (!string.IsNullOrEmpty(overrideMaterialName))
-                {
-                    // Only store nativeMaterialName when it differs from the override; if they match
-                    // the renderer was contaminated and the value would be useless for un-contamination.
-                    if (string.IsNullOrEmpty(info.nativeMaterialName) && !string.IsNullOrEmpty(nativeMaterialName)
-                        && !string.Equals(nativeMaterialName, overrideMaterialName, StringComparison.OrdinalIgnoreCase))
-                        info.nativeMaterialName = nativeMaterialName;
-                    if (string.IsNullOrEmpty(info.materialSourcePropId) && !string.IsNullOrEmpty(materialSourcePropId))
-                        info.materialSourcePropId = materialSourcePropId;
-                }
-                else
-                {
-                    info.nativeMaterialName    = string.Empty;
-                    info.materialSourcePropId  = string.Empty;
-                }
-                info.surfaceType        = surfaceType ?? string.Empty;
-                info.disabledRenderers  = new List<string>();
-                if (disabledRenderers != null)
-                    foreach (var path in disabledRenderers) info.disabledRenderers.Add(path);
-                info.perSlotMaterialOverrides = HasNonEmptySlot(perSlotOverrides) ? perSlotOverrides : null;
-                info.forcedMaterialSlots = forcedMaterialSlots;
-                info.isBush = isBush;
-                info.bushRadius = bushRadius;
-                info.soundGrassType = soundGrassType;
-                info.keepOriginalHierarchy = keepOriginalHierarchy;
-            }
-
-            Save();
-            return info;
-        }
-
-        static void Load()
-        {
-            _loaded = true;
-            _byId.Clear();
-            _nextIndex = 1;
-            _materialConstructions = new List<MaterialConstructionEntry>();
-            _nextMaterialConstructionId = 0;
-
-            try
-            {
-                if (Core.DebugMode)
-                {
-                    // Debug: try UserData JSON first (allows live editing)
-                    if (File.Exists(SavePath))
-                    {
-                        var json = File.ReadAllText(SavePath);
-                        if (!string.IsNullOrEmpty(json))
-                        {
-                            LoadFromJson(json);
-                            return;
-                        }
-                    }
-                    // Debug: fall back to UserData binary (useful for testing the export without rebuilding)
-                    if (File.Exists(BinaryExportPath))
-                    {
-                        using var fs = File.OpenRead(BinaryExportPath);
-                        LoadFromBinaryStream(fs);
-                        BBLog.Msg("[PropMetadata] Loaded from UserData binary.");
-                        return;
-                    }
-                }
-                // Non-debug (or no UserData file found): use embedded binary
-                LoadFromEmbedded();
-            }
-            catch (Exception e)
-            {
-                MelonLogger.Warning($"[PropMetadata] Load failed: {e.Message}");
-            }
-        }
-
-        static void LoadFromJson(string json)
-        {
-            _loadedFromJson = true;
-            var data = Deserialize(json);
-            if (data == null || data.items == null) return;
-
-            _nextIndex = Math.Max(1, data.nextIndex);
-            int maxIndex = _nextIndex - 1;
-            foreach (var item in data.items)
-            {
-                if (item == null || string.IsNullOrEmpty(item.id)) continue;
-                if (!item.excluded && item.index <= 0) item.index = _nextIndex++;
-                if (item.index > maxIndex) maxIndex = item.index;
-                _byId[item.id] = item;
-            }
-            _nextIndex = Math.Max(_nextIndex, maxIndex + 1);
-
-            _materialConstructions = data.materialConstructions ?? new List<MaterialConstructionEntry>();
-            _nextMaterialConstructionId = Math.Max(0, data.nextMaterialConstructionId);
-            ReconcileMaterialConstructionIds();
-
-            // One-time cleanup: MicroSplat materials are runtime-generated so they can't have
-            // a real source prop. Clear any that were incorrectly recorded.
-            bool anyFixed = false;
-            foreach (var item in _byId.Values)
-            {
-                if (string.IsNullOrEmpty(item.materialSourcePropId)) continue;
-                if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
-                if (!item.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal)) continue;
-                item.materialSourcePropId = string.Empty;
-                anyFixed = true;
-            }
-            if (anyFixed) Save();
-        }
-
-        static void Save()
-        {
-            if (!_loadedFromJson) return;
-            try
-            {
-                var dir = Path.GetDirectoryName(SavePath);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-
-                var data = new PropExtraInfoSave
-                {
-                    nextIndex = _nextIndex,
-                    items = new List<PropExtraInfo>(_byId.Values),
-                    nextMaterialConstructionId = _nextMaterialConstructionId,
-                    materialConstructions = _materialConstructions
-                };
-
-                string json = Serialize(data);
-                File.WriteAllText(SavePath, json);
-
-                if (!_savePathLogged)
-                {
-                    _savePathLogged = true;
-                    BBLog.Msg($"[PropMetadata] Saved to {SavePath}");
-                }
-            }
-            catch (Exception e)
-            {
-                MelonLogger.Warning($"[PropMetadata] Save failed: {e.Message}");
-            }
-        }
-
-        // ── Binary PMD format ─────────────────────────────────────────────────────
-
-        static void SaveBinary(string path)
-        {
-            EnsureLoaded();
-            var dir = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            using var fs = File.Open(path, FileMode.Create, FileAccess.Write);
-            using var w = new BinaryWriter(fs, System.Text.Encoding.UTF8, leaveOpen: false);
-            WriteBinary(w);
-        }
-
-        static void WriteBinary(BinaryWriter w)
-        {
-            // Header: magic "PMD" + version
-            w.Write((byte)0x50); w.Write((byte)0x4D); w.Write((byte)0x44);
-            w.Write(PmdVersion);
-
-            var items = new List<PropExtraInfo>();
-            foreach (var v in _byId.Values)
-                if (v != null && !string.IsNullOrEmpty(v.id))
-                    items.Add(v);
-
-            w.Write(_nextIndex);
-            w.Write(items.Count);
-
-            foreach (var item in items)
-            {
-                w.Write(item.id);
-                w.Write(item.index);
-
-                bool hasDisplayName     = !item.excluded && !string.IsNullOrEmpty(item.displayName);
-                bool hasCategory        = !item.excluded && !string.IsNullOrEmpty(item.category);
-                bool hasColliderIgnored = !item.excluded && !string.IsNullOrEmpty(item.colliderIgnoredSubmeshes);
-                bool hasOverrideMat     = !item.excluded && !string.IsNullOrEmpty(item.overrideMaterialId);
-
-                byte flags1 = 0;
-                if (item.excluded)                                flags1 |= 0x01;
-                if (!item.excluded && item.useRenderMeshCollider) flags1 |= 0x02;
-                if (!item.excluded && item.isBush)                flags1 |= 0x04;
-                if (!item.excluded && item.keepOriginalHierarchy) flags1 |= 0x08;
-                if (hasDisplayName)                               flags1 |= 0x10;
-                if (hasCategory)                                  flags1 |= 0x20;
-                if (hasColliderIgnored)                           flags1 |= 0x40;
-                if (hasOverrideMat)                               flags1 |= 0x80;
-                w.Write(flags1);
-
-                if (item.excluded) continue;
-
-                bool hasNativeMat   = !string.IsNullOrEmpty(item.nativeMaterialName);
-                bool hasMatSource   = !string.IsNullOrEmpty(item.materialSourcePropId);
-                bool hasSurface     = !string.IsNullOrEmpty(item.surfaceType);
-                bool hasDisabled    = item.disabledRenderers != null && item.disabledRenderers.Count > 0;
-                bool hasPerSlot     = HasNonEmptySlot(item.perSlotMaterialOverrides);
-                bool hasForcedSlots = item.forcedMaterialSlots > 1;
-
-                byte flags2 = 0;
-                if (hasNativeMat)       flags2 |= 0x01;
-                if (hasMatSource)       flags2 |= 0x02;
-                if (hasSurface)         flags2 |= 0x04;
-                if (hasDisabled)        flags2 |= 0x08;
-                if (hasPerSlot)         flags2 |= 0x10;
-                if (hasForcedSlots)     flags2 |= 0x20;
-                if (item.disableBaking) flags2 |= 0x40;
-                w.Write(flags2);
-
-                if (hasDisplayName)     w.Write(item.displayName);
-                if (hasCategory)        w.Write(item.category);
-                if (hasColliderIgnored) w.Write(item.colliderIgnoredSubmeshes);
-                if (hasOverrideMat)     w.Write(item.overrideMaterialId);
-                if (hasNativeMat)       w.Write(item.nativeMaterialName);
-                if (hasMatSource)       w.Write(item.materialSourcePropId);
-                if (hasSurface)         w.Write(item.surfaceType);
-                if (hasDisabled)
-                {
-                    var dr = item.disabledRenderers;
-                    int cnt = Math.Min(dr.Count, 255);
-                    w.Write((byte)cnt);
-                    for (int i = 0; i < cnt; i++) w.Write(dr[i] ?? "");
-                }
-                if (hasPerSlot)
-                {
-                    var ps = item.perSlotMaterialOverrides;
-                    int cnt = Math.Min(ps.Count, 255);
-                    w.Write((byte)cnt);
-                    for (int i = 0; i < cnt; i++) w.Write(ps[i] ?? "");
-                }
-                if (hasForcedSlots) w.Write(item.forcedMaterialSlots);
-                if (item.isBush)
-                {
-                    w.Write(item.bushRadius);
-                    w.Write(item.soundGrassType);
-                }
-            }
-
-            w.Write(_nextMaterialConstructionId);
-            w.Write(_materialConstructions.Count);
-            foreach (var mc in _materialConstructions)
-            {
-                w.Write(mc.id);
-                w.Write(mc.name ?? "");
-                w.Write(mc.materialName ?? "");
-                w.Write(mc.surfaceType ?? "");
-            }
-        }
-
-        static void LoadFromBinaryStream(Stream stream)
-        {
-            using var r = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
-
-            byte b0 = r.ReadByte(), b1 = r.ReadByte(), b2 = r.ReadByte();
-            if (b0 != 0x50 || b1 != 0x4D || b2 != 0x44)
-                throw new InvalidDataException("Not a PMD file");
-            byte version = r.ReadByte();
-            if (version < 1 || version > PmdVersion)
-                throw new InvalidDataException($"Unsupported PMD version {version}");
-
-            _nextIndex = r.ReadInt32();
-            int count = r.ReadInt32();
-
-            for (int i = 0; i < count; i++)
-            {
-                string id = r.ReadString();
-                int index = r.ReadInt32();
-                byte flags1 = r.ReadByte();
-
-                bool excluded = (flags1 & 0x01) != 0;
-
-                if (string.IsNullOrEmpty(id))
-                {
-                    // Skip flags2 + payload for non-excluded entries to keep stream in sync
-                    if (!excluded) r.ReadByte();
-                    continue;
-                }
-
-                var item = new PropExtraInfo { id = id, index = index, excluded = excluded };
-
-                if (!excluded)
-                {
-                    item.useRenderMeshCollider = (flags1 & 0x02) != 0;
-                    item.isBush                = (flags1 & 0x04) != 0;
-                    item.keepOriginalHierarchy = (flags1 & 0x08) != 0;
-                    bool hasDisplayName     = (flags1 & 0x10) != 0;
-                    bool hasCategory        = (flags1 & 0x20) != 0;
-                    bool hasColliderIgnored = (flags1 & 0x40) != 0;
-                    bool hasOverrideMat     = (flags1 & 0x80) != 0;
-
-                    byte flags2 = r.ReadByte();
-                    bool hasNativeMat   = (flags2 & 0x01) != 0;
-                    bool hasMatSource   = (flags2 & 0x02) != 0;
-                    bool hasSurface     = (flags2 & 0x04) != 0;
-                    bool hasDisabled    = (flags2 & 0x08) != 0;
-                    bool hasPerSlot     = (flags2 & 0x10) != 0;
-                    bool hasForcedSlots = (flags2 & 0x20) != 0;
-                    item.disableBaking  = (flags2 & 0x40) != 0;
-
-                    if (hasDisplayName)     item.displayName              = r.ReadString();
-                    if (hasCategory)        item.category                 = r.ReadString();
-                    if (hasColliderIgnored) item.colliderIgnoredSubmeshes = r.ReadString();
-                    if (hasOverrideMat)     item.overrideMaterialId       = r.ReadString();
-                    if (hasNativeMat)       item.nativeMaterialName       = r.ReadString();
-                    if (hasMatSource)       item.materialSourcePropId     = r.ReadString();
-                    if (hasSurface)         item.surfaceType              = r.ReadString();
-                    if (hasDisabled)
-                    {
-                        int cnt = r.ReadByte();
-                        item.disabledRenderers = new List<string>(cnt);
-                        for (int j = 0; j < cnt; j++) item.disabledRenderers.Add(r.ReadString());
-                    }
-                    if (hasPerSlot)
-                    {
-                        int cnt = r.ReadByte();
-                        item.perSlotMaterialOverrides = new List<string>(cnt);
-                        for (int j = 0; j < cnt; j++) item.perSlotMaterialOverrides.Add(r.ReadString());
-                    }
-                    if (hasForcedSlots) item.forcedMaterialSlots = r.ReadInt32();
-                    if (item.isBush)
-                    {
-                        item.bushRadius     = r.ReadSingle();
-                        item.soundGrassType = r.ReadInt32();
-                    }
-                }
-
-                _byId[id] = item;
-            }
-
-            _materialConstructions = new List<MaterialConstructionEntry>();
-            _nextMaterialConstructionId = 0;
-            if (version >= 2)
-            {
-                _nextMaterialConstructionId = r.ReadInt32();
-                int mcCount = r.ReadInt32();
-                for (int i = 0; i < mcCount; i++)
-                {
-                    _materialConstructions.Add(new MaterialConstructionEntry
-                    {
-                        id = r.ReadInt32(),
-                        name = r.ReadString(),
-                        materialName = r.ReadString(),
-                        surfaceType = r.ReadString()
-                    });
-                }
-            }
-            ReconcileMaterialConstructionIds();
-        }
-
-        static void ReconcileMaterialConstructionIds()
-        {
-            int maxId = -1;
-            foreach (var e in _materialConstructions)
-                if (e != null && e.id > maxId) maxId = e.id;
-            _nextMaterialConstructionId = Math.Max(_nextMaterialConstructionId, maxId + 1);
-        }
-
-        static void LoadFromEmbedded()
-        {
-            var asm = System.Reflection.Assembly.GetExecutingAssembly();
-            using var stream = asm.GetManifestResourceStream("BabyBlocks.Props.prop_metadata.bin");
-            if (stream == null)
-            {
-                MelonLogger.Warning("[PropMetadata] Embedded prop_metadata.bin not found.");
-                return;
-            }
-            LoadFromBinaryStream(stream);
-            BBLog.Msg("[PropMetadata] Loaded from embedded binary.");
-        }
-
-        // ─────────────────────────────────────────────────────────────────────────
-
-        static string Serialize(PropExtraInfoSave data) => SerializeManual(data);
-
-        static PropExtraInfoSave Deserialize(string json)
-        {
-            try
-            {
-                var options = new JsonSerializerOptions
-                {
-                    IncludeFields = true
-                };
-                return JsonSerializer.Deserialize<PropExtraInfoSave>(json, options);
-            }
-            catch
-            {
-                return DeserializeManual(json);
-            }
-        }
-
-        static string SerializeManual(PropExtraInfoSave data)
-        {
-            var sb = new System.Text.StringBuilder(1024);
-            sb.Append("{\n  \"nextIndex\": ").Append(data.nextIndex).Append(",\n  \"items\": [\n");
-            for (int i = 0; i < data.items.Count; i++)
-            {
-                var item = data.items[i];
-                if (item == null) continue;
-                sb.Append("    {\n");
-                if (item.excluded)
-                {
-                    AppendJsonField(sb, "id", item.id, 6).Append(",\n");
-                    sb.Append("      \"excluded\": true\n");
-                }
-                else
-                {
-                    AppendJsonField(sb, "id", item.id, 6).Append(",\n");
-                    AppendJsonField(sb, "displayName", item.displayName, 6).Append(",\n");
-                    AppendJsonField(sb, "category", item.category, 6).Append(",\n");
-                    sb.Append("      \"excluded\": false,\n");
-                    sb.Append("      \"useRenderMeshCollider\": ").Append(item.useRenderMeshCollider ? "true" : "false").Append(",\n");
-                    AppendJsonField(sb, "colliderIgnoredSubmeshes", item.colliderIgnoredSubmeshes, 6).Append(",\n");
-                    AppendJsonField(sb, "overrideMaterialId", item.overrideMaterialId, 6).Append(",\n");
-                    AppendJsonField(sb, "nativeMaterialName", item.nativeMaterialName, 6).Append(",\n");
-                    AppendJsonField(sb, "materialSourcePropId", item.materialSourcePropId, 6).Append(",\n");
-                    AppendJsonField(sb, "surfaceType", item.surfaceType, 6).Append(",\n");
-                    AppendJsonArray(sb, "disabledRenderers", item.disabledRenderers, 6).Append(",\n");
-                    if (HasNonEmptySlot(item.perSlotMaterialOverrides))
-                        AppendJsonArray(sb, "perSlotMaterialOverrides", item.perSlotMaterialOverrides, 6).Append(",\n");
-                    if (item.forcedMaterialSlots > 1)
-                        sb.Append("      \"forcedMaterialSlots\": ").Append(item.forcedMaterialSlots).Append(",\n");
-                    if (item.isBush)
-                    {
-                        sb.Append("      \"isBush\": true,\n");
-                        sb.Append("      \"bushRadius\": ").Append(item.bushRadius.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)).Append(",\n");
-                        sb.Append("      \"soundGrassType\": ").Append(item.soundGrassType).Append(",\n");
-                    }
-                    if (item.keepOriginalHierarchy)
-                        sb.Append("      \"keepOriginalHierarchy\": true,\n");
-                    if (item.disableBaking)
-                        sb.Append("      \"disableBaking\": true,\n");
-                    sb.Append("      \"index\": ").Append(item.index).Append("\n");
-                }
-                sb.Append("    }");
-                if (i < data.items.Count - 1) sb.Append(",");
-                sb.Append("\n");
-            }
-            sb.Append("  ],\n");
-            sb.Append("  \"nextMaterialConstructionId\": ").Append(data.nextMaterialConstructionId).Append(",\n");
-            sb.Append("  \"materialConstructions\": [\n");
-            for (int i = 0; i < data.materialConstructions.Count; i++)
-            {
-                var mc = data.materialConstructions[i];
-                if (mc == null) continue;
-                sb.Append("    {\n");
-                sb.Append("      \"id\": ").Append(mc.id).Append(",\n");
-                AppendJsonField(sb, "name", mc.name, 6).Append(",\n");
-                AppendJsonField(sb, "materialName", mc.materialName, 6).Append(",\n");
-                AppendJsonField(sb, "surfaceType", mc.surfaceType, 6).Append("\n");
-                sb.Append("    }");
-                if (i < data.materialConstructions.Count - 1) sb.Append(",");
-                sb.Append("\n");
-            }
-            sb.Append("  ]\n}");
-            return sb.ToString();
-        }
-
-        static System.Text.StringBuilder AppendJsonField(System.Text.StringBuilder sb, string key, string value, int indent)
-        {
-            sb.Append(' ', indent).Append('"').Append(key).Append("\": ");
-            AppendJsonString(sb, value ?? string.Empty);
-            return sb;
-        }
-
-        static System.Text.StringBuilder AppendJsonArray(System.Text.StringBuilder sb, string key, List<string> values, int indent)
-        {
-            sb.Append(' ', indent).Append('"').Append(key).Append("\": [");
-            if (values != null)
-            {
-                for (int i = 0; i < values.Count; i++)
-                {
-                    if (i > 0) sb.Append(", ");
-                    AppendJsonString(sb, values[i] ?? string.Empty);
-                }
-            }
-            sb.Append(']');
-            return sb;
-        }
-
-        static void AppendJsonString(System.Text.StringBuilder sb, string value)
-        {
-            sb.Append('"');
-            for (int i = 0; i < value.Length; i++)
-            {
-                char c = value[i];
-                switch (c)
-                {
-                    case '"': sb.Append("\\\""); break;
-                    case '\\': sb.Append("\\\\"); break;
-                    case '\n': sb.Append("\\n"); break;
-                    case '\r': sb.Append("\\r"); break;
-                    case '\t': sb.Append("\\t"); break;
-                    default:
-                        if (c < ' ')
-                            sb.Append("\\u").Append(((int)c).ToString("x4"));
-                        else
-                            sb.Append(c);
-                        break;
-                }
-            }
-            sb.Append('"');
-        }
-
-        static PropExtraInfoSave DeserializeManual(string json)
-        {
-            var data = new PropExtraInfoSave { items = new List<PropExtraInfo>() };
-            if (string.IsNullOrEmpty(json)) return data;
-
-            data.nextIndex = ExtractInt(json, "nextIndex", 1);
-
-            int itemsIdx = json.IndexOf("\"items\"", StringComparison.OrdinalIgnoreCase);
-            if (itemsIdx < 0) return data;
-            int arrStart = json.IndexOf('[', itemsIdx);
-            if (arrStart < 0) return data;
-            int arrEnd = FindMatching(json, arrStart, '[', ']');
-            if (arrEnd < 0) return data;
-
-            int i = arrStart + 1;
-            while (i < arrEnd)
-            {
-                SkipWhitespace(json, ref i);
-                if (i >= arrEnd) break;
-                if (json[i] == ',') { i++; continue; }
-                if (json[i] != '{') { i++; continue; }
-                int objEnd = FindMatching(json, i, '{', '}');
-                if (objEnd < 0) break;
-                string obj = json.Substring(i, objEnd - i + 1);
-                var item = new PropExtraInfo
-                {
-                    id = ExtractString(obj, "id"),
-                    displayName = ExtractString(obj, "displayName"),
-                    category = ExtractString(obj, "category"),
-                    excluded = ExtractBool(obj, "excluded"),
-                    useRenderMeshCollider = ExtractBool(obj, "useRenderMeshCollider"),
-                    colliderIgnoredSubmeshes = ExtractString(obj, "colliderIgnoredSubmeshes"),
-                    overrideMaterialId = ExtractString(obj, "overrideMaterialId"),
-                    nativeMaterialName = ExtractString(obj, "nativeMaterialName"),
-                    materialSourcePropId = ExtractString(obj, "materialSourcePropId"),
-                    surfaceType = ExtractString(obj, "surfaceType"),
-                    index = ExtractInt(obj, "index", 0),
-                    disabledRenderers = ExtractStringArray(obj, "disabledRenderers"),
-                    perSlotMaterialOverrides = ExtractStringArray(obj, "perSlotMaterialOverrides"),
-                    forcedMaterialSlots = ExtractInt(obj, "forcedMaterialSlots", 0),
-                    isBush = ExtractBool(obj, "isBush"),
-                    bushRadius = ExtractFloat(obj, "bushRadius", 0f),
-                    soundGrassType = ExtractInt(obj, "soundGrassType", 1),
-                    keepOriginalHierarchy = ExtractBool(obj, "keepOriginalHierarchy"),
-                    disableBaking = ExtractBool(obj, "disableBaking")
-                };
-                if (!string.IsNullOrEmpty(item.id))
-                    data.items.Add(item);
-                i = objEnd + 1;
-            }
-
-            data.nextMaterialConstructionId = ExtractInt(json, "nextMaterialConstructionId", 0);
-
-            int mcIdx = json.IndexOf("\"materialConstructions\"", StringComparison.OrdinalIgnoreCase);
-            if (mcIdx >= 0)
-            {
-                int mcArrStart = json.IndexOf('[', mcIdx);
-                if (mcArrStart >= 0)
-                {
-                    int mcArrEnd = FindMatching(json, mcArrStart, '[', ']');
-                    if (mcArrEnd >= 0)
-                    {
-                        int j = mcArrStart + 1;
-                        while (j < mcArrEnd)
-                        {
-                            SkipWhitespace(json, ref j);
-                            if (j >= mcArrEnd) break;
-                            if (json[j] == ',') { j++; continue; }
-                            if (json[j] != '{') { j++; continue; }
-                            int mcObjEnd = FindMatching(json, j, '{', '}');
-                            if (mcObjEnd < 0) break;
-                            string mcObj = json.Substring(j, mcObjEnd - j + 1);
-                            data.materialConstructions.Add(new MaterialConstructionEntry
-                            {
-                                id = ExtractInt(mcObj, "id", -1),
-                                name = ExtractString(mcObj, "name"),
-                                materialName = ExtractString(mcObj, "materialName"),
-                                surfaceType = ExtractString(mcObj, "surfaceType")
-                            });
-                            j = mcObjEnd + 1;
-                        }
-                    }
-                }
-            }
-
-            return data;
-        }
-
-        static int FindMatching(string text, int start, char open, char close)
-        {
-            int depth = 0;
-            bool inString = false;
-            for (int i = start; i < text.Length; i++)
-            {
-                char c = text[i];
-                if (c == '"' && (i == 0 || text[i - 1] != '\\')) inString = !inString;
-                if (inString) continue;
-                if (c == open) depth++;
-                else if (c == close)
-                {
-                    depth--;
-                    if (depth == 0) return i;
-                }
-            }
-            return -1;
-        }
-
-        static HashSet<int> ParseIntSet(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text)) return null;
-            var set = new HashSet<int>();
-            var parts = text.Split(new[] { ',', ';', ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            for (int i = 0; i < parts.Length; i++)
-            {
-                if (int.TryParse(parts[i], out int value) && value >= 0)
-                    set.Add(value);
-            }
-            return set.Count > 0 ? set : null;
-        }
-
-        static void SkipWhitespace(string text, ref int index)
-        {
-            while (index < text.Length && char.IsWhiteSpace(text[index])) index++;
-        }
-
-        static int ExtractInt(string json, string key, int fallback)
-        {
-            if (!TryFindKey(json, key, out int valueStart)) return fallback;
-            int i = valueStart;
-            SkipWhitespace(json, ref i);
-            int sign = 1;
-            if (i < json.Length && json[i] == '-') { sign = -1; i++; }
-            int value = 0;
-            bool found = false;
-            while (i < json.Length && char.IsDigit(json[i]))
-            {
-                value = value * 10 + (json[i] - '0');
-                i++;
-                found = true;
-            }
-            return found ? value * sign : fallback;
-        }
-
-        static bool ExtractBool(string json, string key)
-        {
-            if (!TryFindKey(json, key, out int valueStart)) return false;
-            int i = valueStart;
-            SkipWhitespace(json, ref i);
-            if (json.IndexOf("true", i, StringComparison.OrdinalIgnoreCase) == i) return true;
-            return false;
-        }
-
-        static float ExtractFloat(string json, string key, float fallback)
-        {
-            if (!TryFindKey(json, key, out int valueStart)) return fallback;
-            int i = valueStart;
-            SkipWhitespace(json, ref i);
-            int start = i;
-            if (i < json.Length && (json[i] == '-' || json[i] == '+')) i++;
-            while (i < json.Length && (char.IsDigit(json[i]) || json[i] == '.')) i++;
-            if (i == start) return fallback;
-            string raw = json.Substring(start, i - start);
-            return float.TryParse(raw, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : fallback;
-        }
-
-        static string ExtractString(string json, string key)
-        {
-            if (!TryFindKey(json, key, out int valueStart)) return string.Empty;
-            int i = valueStart;
-            SkipWhitespace(json, ref i);
-            if (i >= json.Length || json[i] != '"') return string.Empty;
-            i++;
-            var sb = new System.Text.StringBuilder();
-            while (i < json.Length)
-            {
-                char c = json[i++];
-                if (c == '"') break;
-                if (c == '\\' && i < json.Length)
-                {
-                    char esc = json[i++];
-                    switch (esc)
-                    {
-                        case '"': sb.Append('"'); break;
-                        case '\\': sb.Append('\\'); break;
-                        case '/': sb.Append('/'); break;
-                        case 'b': sb.Append('\b'); break;
-                        case 'f': sb.Append('\f'); break;
-                        case 'n': sb.Append('\n'); break;
-                        case 'r': sb.Append('\r'); break;
-                        case 't': sb.Append('\t'); break;
-                        case 'u':
-                            if (i + 3 < json.Length)
-                            {
-                                string hex = json.Substring(i, 4);
-                                if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out int code))
-                                    sb.Append((char)code);
-                                i += 4;
-                            }
-                            break;
-                        default: sb.Append(esc); break;
-                    }
-                }
-                else
-                {
-                    sb.Append(c);
-                }
-            }
-            return sb.ToString();
-        }
-
-        static bool TryFindKey(string json, string key, out int valueStart)
-        {
-            valueStart = -1;
-            int idx = json.IndexOf('"' + key + '"', StringComparison.OrdinalIgnoreCase);
-            if (idx < 0) return false;
-            int colon = json.IndexOf(':', idx);
-            if (colon < 0) return false;
-            valueStart = colon + 1;
-            return true;
-        }
-
-        static List<string> ExtractStringArray(string json, string key)
-        {
-            var result = new List<string>();
-            if (!TryFindKey(json, key, out int valueStart)) return result;
-            int i = valueStart;
-            SkipWhitespace(json, ref i);
-            if (i >= json.Length || json[i] != '[') return result;
-
-            int end = FindMatching(json, i, '[', ']');
-            if (end < 0) return result;
-            int pos = i + 1;
-            while (pos < end)
-            {
-                SkipWhitespace(json, ref pos);
-                if (pos >= end) break;
-                if (json[pos] == ',') { pos++; continue; }
-                if (json[pos] != '"') { pos++; continue; }
-
-                int start = pos;
-                string val = ExtractString(json.Substring(start, end - start), string.Empty);
-                if (!string.IsNullOrEmpty(val)) result.Add(val);
-
-                int nextQuote = json.IndexOf('"', pos + 1);
-                if (nextQuote < 0 || nextQuote >= end) break;
-                pos = nextQuote + 1;
-            }
-            return result;
-        }
-
-        public static int GetMetaIndex(string id)
-        {
-            EnsureLoaded();
-            return TryGetInfoById(id, out var info) ? info.index : 0;
-        }
-
-        public static string FindIdByIndex(int index)
-        {
-            EnsureLoaded();
-            if (index <= 0) return null;
-            foreach (var kvp in _byId)
-                if (kvp.Value.index == index) return kvp.Key;
-            return null;
-        }
-
-        public static string GetDisplayName(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return null;
-            return TryGetInfoById(id, out var info) && !string.IsNullOrEmpty(info.displayName)
-                ? info.displayName : null;
-        }
-
-        public static string GetCategory(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return "";
-            return TryGetInfoById(id, out var info) ? (info.category ?? "") : "";
-        }
-
-        public static bool HasCategory(string id)
-        {
-            EnsureLoaded();
-            if (string.IsNullOrEmpty(id)) return false;
-            return TryGetInfoById(id, out var info) && !string.IsNullOrEmpty(info.category);
-        }
-
-        public static List<string> GetAllCategories()
-        {
-            EnsureLoaded();
-            var cats = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var kvp in _byId)
-                if (!string.IsNullOrEmpty(kvp.Value.category))
-                    cats.Add(kvp.Value.category);
-            return new List<string>(cats);
-        }
-
         static void DrawExportWindow()
         {
             if (!_exportWindowInitialized)
@@ -4043,8 +1505,8 @@ static void SortMaterialList()
             {
                 try
                 {
-                    SaveBinary(BinaryExportPath);
-                    _exportStatusMsg = BinaryExportPath;
+                    PropMetadataStore.SaveBinary(PropMetadataStore.BinaryExportPath);
+                    _exportStatusMsg = PropMetadataStore.BinaryExportPath;
                 }
                 catch (Exception ex)
                 {

@@ -82,7 +82,7 @@ namespace BabyBlocks
             bool firstBakeProp = true;
             foreach (var id in bakingPropIds)
             {
-                bool val = PropMetadataPanel.GetDisableBaking(id);
+                bool val = PropMetadataStore.GetDisableBaking(id);
                 if (firstBakeProp) { sharedDisableBaking = val; firstBakeProp = false; }
                 else if (sharedDisableBaking != val) sharedDisableBaking = null;
             }
@@ -155,7 +155,7 @@ namespace BabyBlocks
                 {
                     foreach (var id in bakingPropIds)
                     {
-                        PropMetadataPanel.SetDisableBaking(id, newDisableBaking);
+                        PropMetadataStore.SetDisableBaking(id, newDisableBaking);
                         LevelEditorManager.Instance?.RefreshBakingForProp(id);
                     }
                 }

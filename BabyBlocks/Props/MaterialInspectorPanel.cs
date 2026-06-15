@@ -89,7 +89,7 @@ namespace BabyBlocks
             if (string.IsNullOrEmpty(name)) return;
 
             // Try PropMetadataPanel's cache first (includes scene variants).
-            _inspected = PropMetadataPanel.TryGetMaterialByName(name);
+            _inspected = MaterialCatalog.TryGetMaterialByName(name);
             if (_inspected != null) return;
 
             // Fall back to a linear scan of all loaded materials.

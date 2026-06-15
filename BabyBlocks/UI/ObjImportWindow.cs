@@ -126,7 +126,7 @@ namespace BabyBlocks
                     leo.transform.localScale = Vector3.one * 0.5f;
                     leo.loopBaseScale = leo.transform.localScale;
                     RegisterChunkColliders(leo.gameObject);
-                    PropMetadataPanel.ApplySurfaceType(leo, "Rock");
+                    PropInstanceServices.ApplySurfaceType(leo, "Rock");
                 }
                 _status = $"Spawned '{name}'.";
             }
@@ -174,7 +174,7 @@ namespace BabyBlocks
                         leo.transform.localScale = Vector3.one * 0.5f;
                         leo.loopBaseScale = leo.transform.localScale;
                         RegisterChunkColliders(leo.gameObject);
-                        PropMetadataPanel.ApplySurfaceType(leo, "Rock");
+                        PropInstanceServices.ApplySurfaceType(leo, "Rock");
                         imported++;
                     }
                 }

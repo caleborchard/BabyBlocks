@@ -21,13 +21,13 @@ namespace BabyBlocks
     // callers don't need to know it lives alongside the prop metadata.
     static class MaterialConstructionLibrary
     {
-        public static List<MaterialConstructionEntry> Entries => PropMetadataPanel.MaterialConstructions;
+        public static List<MaterialConstructionEntry> Entries => PropMetadataStore.MaterialConstructions;
 
-        public static void Save() => PropMetadataPanel.SaveMaterialConstructions();
-        public static void MarkDirty() => PropMetadataPanel.MarkMaterialConstructionsDirty();
+        public static void Save() => PropMetadataStore.SaveMaterialConstructions();
+        public static void MarkDirty() => PropMetadataStore.MarkMaterialConstructionsDirty();
 
-        public static MaterialConstructionEntry CreateNew() => PropMetadataPanel.CreateMaterialConstruction();
-        public static void Delete(MaterialConstructionEntry entry) => PropMetadataPanel.DeleteMaterialConstruction(entry);
-        public static MaterialConstructionEntry FindById(int id) => PropMetadataPanel.FindMaterialConstructionById(id);
+        public static MaterialConstructionEntry CreateNew() => PropMetadataStore.CreateMaterialConstruction();
+        public static void Delete(MaterialConstructionEntry entry) => PropMetadataStore.DeleteMaterialConstruction(entry);
+        public static MaterialConstructionEntry FindById(int id) => PropMetadataStore.FindMaterialConstructionById(id);
     }
 }

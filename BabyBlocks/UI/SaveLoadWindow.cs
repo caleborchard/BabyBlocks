@@ -189,8 +189,8 @@ namespace BabyBlocks
         {
             EnsureInit();
 
-            int playlistCount = LevelEditorManager.DayWeatherPlaylistCount;
-            if (LevelEditorManager.BaseMapEnabled) _weatherDropdownOpen = false;
+            int playlistCount = BaseMapController.DayWeatherPlaylistCount;
+            if (BaseMapController.BaseMapEnabled) _weatherDropdownOpen = false;
             float dropdownExtra = (_weatherDropdownOpen && playlistCount > 0) ? playlistCount * DropdownItemH : 0f;
             float winH = BaseWinH + dropdownExtra;
 
@@ -261,18 +261,18 @@ namespace BabyBlocks
             contentY += 24f;
 
             bool newBaseMap = GUI.Toggle(new Rect(contentX, contentY, innerW, 20f),
-                LevelEditorManager.BaseMapEnabled, "Base map");
-            if (newBaseMap != LevelEditorManager.BaseMapEnabled)
-                LevelEditorManager.SetBaseMapEnabled(newBaseMap);
+                BaseMapController.BaseMapEnabled, "Base map");
+            if (newBaseMap != BaseMapController.BaseMapEnabled)
+                BaseMapController.SetBaseMapEnabled(newBaseMap);
 
             contentY += 24f;
 
             // Day Weather Playlist dropdown — only usable while the base map is
             // hidden. SetBaseMapEnabled captures/restores Menu.curChapter around it.
-            bool weatherEnabled = !LevelEditorManager.BaseMapEnabled && playlistCount > 0;
+            bool weatherEnabled = !BaseMapController.BaseMapEnabled && playlistCount > 0;
             GUI.enabled = weatherEnabled;
             string playlistLabel = playlistCount > 0
-                ? $"Weather playlist: {LevelEditorManager.DayWeatherPlaylist}"
+                ? $"Weather playlist: {BaseMapController.DayWeatherPlaylist}"
                 : "Weather playlist: n/a";
             if (GUI.Button(new Rect(contentX, contentY, innerW, 20f),
                 playlistLabel + (_weatherDropdownOpen ? " ▲" : " ▼")))
@@ -285,10 +285,10 @@ namespace BabyBlocks
             {
                 for (int i = 0; i < playlistCount; i++)
                 {
-                    string lbl = (i == LevelEditorManager.DayWeatherPlaylist ? "> " : "") + $"Playlist {i}";
+                    string lbl = (i == BaseMapController.DayWeatherPlaylist ? "> " : "") + $"Playlist {i}";
                     if (GUI.Button(new Rect(contentX, contentY, innerW, DropdownItemH), lbl))
                     {
-                        LevelEditorManager.SetDayWeatherPlaylist(i);
+                        BaseMapController.SetDayWeatherPlaylist(i);
                         _weatherDropdownOpen = false;
                     }
                     contentY += DropdownItemH;

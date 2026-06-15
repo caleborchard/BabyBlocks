@@ -32,7 +32,7 @@ namespace BabyBlocks
 
         // `propId` (the prop's addressable key) is optional - when given, an on-disk cache
         // (see MaterialBakeCache) is checked first for a previously-baked mesh+atlas for
-        // this prop+material combination (see PropMetadataPanel.GetMaterialCacheKey), and
+        // this prop+material combination (see PropMetadataStore.GetMaterialCacheKey), and
         // any renderers freshly baked by this call are written back to that cache for
         // future loads/bakes to reuse. Renderers covered by the cache are imported via
         // ImportBakedData before the GPU loop below, so its "already baked" guard
@@ -41,14 +41,14 @@ namespace BabyBlocks
         {
             // Per-prop opt-out (PhysicsWindow toggle): leave the prop's plain/native
             // materials in place and skip the GPU capture/atlas entirely.
-            if (!string.IsNullOrEmpty(propId) && PropMetadataPanel.GetDisableBaking(propId))
+            if (!string.IsNullOrEmpty(propId) && PropMetadataStore.GetDisableBaking(propId))
                 return;
 
             string materialKey = null;
             List<BakedPartData> diskCache = null;
             if (!string.IsNullOrEmpty(propId))
             {
-                materialKey = PropMetadataPanel.GetMaterialCacheKey(propId);
+                materialKey = PropMetadataStore.GetMaterialCacheKey(propId);
                 diskCache = MaterialBakeCache.TryLoad(propId, materialKey);
                 if (diskCache != null) ImportBakedData(root, diskCache);
             }
@@ -84,7 +84,7 @@ namespace BabyBlocks
                     // root's (nonexistent) propId.
                     var memberLeo = mr.GetComponentInParent<LevelEditorObject>();
                     string memberPropId = memberLeo != null ? memberLeo.addressableKey : propId;
-                    if (!string.IsNullOrEmpty(memberPropId) && PropMetadataPanel.GetDisableBaking(memberPropId))
+                    if (!string.IsNullOrEmpty(memberPropId) && PropMetadataStore.GetDisableBaking(memberPropId))
                         continue;
 
                     var mf = mr.GetComponent<MeshFilter>();

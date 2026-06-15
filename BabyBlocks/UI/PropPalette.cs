@@ -143,7 +143,7 @@ namespace BabyBlocks
             // Block dragging while the material-source scan is spreading its loads across frames —
             // placing a prop before its override material is in memory would apply the override
             // once (at placement time) and never retry, leaving it permanently wrong.
-            if (PropMetadataPanel.IsLoadingMaterialSources)
+            if (MaterialCatalog.IsLoadingMaterialSources)
             {
                 PanelRect = new Rect(10f, 10f, PanelW, 40f);
                 GUI.color = new Color(0f, 0f, 0f, 0.65f);
@@ -183,13 +183,13 @@ namespace BabyBlocks
                 {
                     var  prop       = props[propIdx];
                     bool invalid    = prop.isLoaded && !prop.HasMesh;
-                    bool isExcluded = PropMetadataPanel.IsExcluded(prop.id);
+                    bool isExcluded = PropMetadataStore.IsExcluded(prop.id);
                     bool hovered    = itemRect.Contains(e.mousePosition) && !IsDragging && !invalid && !isExcluded;
 
                     // In non-debug mode use the metadata display name; debug mode uses raw name.
                     string label = Core.DebugMode
                         ? prop.displayName
-                        : (PropMetadataPanel.GetDisplayName(prop.id) ?? prop.displayName);
+                        : (PropMetadataStore.GetDisplayName(prop.id) ?? prop.displayName);
 
                     if (invalid)
                     {
@@ -236,13 +236,13 @@ namespace BabyBlocks
                             GUI.Label(itemRect, "✕", _excludedXStyle);
                         }
 
-                        if (PropMetadataPanel.IsPartiallyFilled(prop.id))
+                        if (PropMetadataStore.IsPartiallyFilled(prop.id))
                         {
                             GUI.color = new Color(1f, 0.85f, 0f, 0.85f);
                             GUI.Label(itemRect, "!", _warningStyle);
                         }
 
-                        if (PropMetadataPanel.HasMetadata(prop.id))
+                        if (PropMetadataStore.HasMetadata(prop.id))
                         {
                             GUI.color = new Color(0.4f, 1f, 0.4f, 0.95f);
                             GUI.Label(new Rect(itemRect.xMax - 16f, itemRect.y + 3f, 16f, 16f), "✓");
@@ -300,7 +300,7 @@ namespace BabyBlocks
                     bool allChecked = true;
                     for (int i = pageStart; i < pageEnd; i++)
                     {
-                        if (!PropMetadataPanel.HasMetadata(props[i].id)) { allChecked = false; break; }
+                        if (!PropMetadataStore.HasMetadata(props[i].id)) { allChecked = false; break; }
                     }
                     if (allChecked)
                     {
@@ -332,7 +332,7 @@ namespace BabyBlocks
         static void DrawCategoryPanel(Event e, Rect mainPanelRect)
         {
             if (_cachedCategories == null)
-                _cachedCategories = PropMetadataPanel.GetAllCategories();
+                _cachedCategories = PropMetadataStore.GetAllCategories();
 
             var cats = _cachedCategories;
             // +1 for the "(All)" entry at the top, +1 for "Materials" at the bottom.

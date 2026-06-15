@@ -117,7 +117,7 @@ namespace BabyBlocks
 
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
-            PropMetadataPanel.InvalidateMaterialCache();
+            MaterialVariantTracker.InvalidateMaterialCache();
             PendingMicroSplatRefreshTime = Time.realtimeSinceStartup;
         }
 
@@ -137,7 +137,7 @@ namespace BabyBlocks
             // BestRegionLoader.fullyLoaded forever, leaving Menu.me.teleporting stuck
             // true and the player permanently SetActive(false)/invisible) and of
             // player.gameObject's active state during the ragdoll handoff.
-            if (!LevelEditorManager.BaseMapEnabled && !FlyCamController.FarTeleportActive)
+            if (!BaseMapController.BaseMapEnabled && !FlyCamController.FarTeleportActive)
             {
                 // FarTeleportCo just finished (this frame's the first one back with
                 // FarTeleportActive == false). brl.off is still false at this point
@@ -159,7 +159,7 @@ namespace BabyBlocks
                 {
                     if (_postTeleportRescanFramesRemaining > 0)
                     {
-                        LevelEditorManager.RescanLoadedChunksForBaseMapOff();
+                        BaseMapController.RescanLoadedChunksForBaseMapOff();
                         _postTeleportRescanFramesRemaining--;
                         if (_postTeleportRescanFramesRemaining == 0)
                         {
@@ -167,11 +167,11 @@ namespace BabyBlocks
                         }
                     }
 
-                    if (!brl.off && !LevelEditorManager.DeferBrlOff && _postTeleportRescanFramesRemaining == 0)
+                    if (!brl.off && !BaseMapController.DeferBrlOff && _postTeleportRescanFramesRemaining == 0)
                         brl.off = true;
 
                     // Suppress BRL child renderers (proxies).
-                    var cache = LevelEditorManager._brlRendererCache;
+                    var cache = BaseMapController._brlRendererCache;
                     bool needsRefresh = false;
                     foreach (var r in cache)
                     {
@@ -179,19 +179,19 @@ namespace BabyBlocks
                         if (r.enabled)
                         {
                             // TEMP DIAGNOSTIC
-                            if (LevelEditorManager.IsUnderPlayer(r.transform))
+                            if (BaseMapController.IsUnderPlayer(r.transform))
                                 BBLog.Msg($"[BaseMapDiag] Core.OnUpdate disabling PLAYER renderer '{r.name}' from _brlRendererCache");
                             r.enabled = false;
                         }
                     }
                     if (needsRefresh)
-                        LevelEditorManager._brlRendererCache =
+                        BaseMapController._brlRendererCache =
                             brl.GetComponentsInChildren<Renderer>(true);
                 }
 
                 // Re-assert hidden lights/colliders that game logic (day-night cycle,
                 // quest/cutscene state) may have re-enabled since the last toggle.
-                LevelEditorManager.SuppressHiddenWhileBaseMapOff();
+                BaseMapController.SuppressHiddenWhileBaseMapOff();
             }
             else if (FlyCamController.FarTeleportActive)
             {
@@ -260,7 +260,7 @@ namespace BabyBlocks
     {
         static void Postfix(CinemachineBrain __instance)
         {
-            if (LevelEditorManager.BaseMapEnabled) return;
+            if (BaseMapController.BaseMapEnabled) return;
             __instance.ManualUpdate();
         }
     }
@@ -303,7 +303,7 @@ namespace BabyBlocks
     {
         static bool Prefix(Vector3 pos, ref GrassType __result)
         {
-            int gt = PropMetadataPanel.BushAudioTracker.GetGrassTypeAtPos(pos);
+            int gt = PropInstanceServices.BushAudioTracker.GetGrassTypeAtPos(pos);
             if (gt != 0)
             {
                 __result = (GrassType)gt;

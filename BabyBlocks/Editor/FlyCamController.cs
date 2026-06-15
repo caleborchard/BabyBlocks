@@ -22,7 +22,7 @@ namespace BabyBlocks
         static float _cutsceneSuppressUntil = -1f;
 
         public static bool SuppressCutsceneTriggers =>
-            FlyCamActive || !LevelEditorManager.BaseMapEnabled || Time.unscaledTime < _cutsceneSuppressUntil;
+            FlyCamActive || !BaseMapController.BaseMapEnabled || Time.unscaledTime < _cutsceneSuppressUntil;
 
         // PlayCutscene calls swallowed while suppressed — OnTriggerEnter is one-shot, so
         // dropping the call silently means the cutscene would never get another chance to
@@ -94,7 +94,7 @@ namespace BabyBlocks
                 && Time.realtimeSinceStartup - Core.PendingMicroSplatRefreshTime >= Core.MicroSplatRefreshSettleDelay)
             {
                 Core.PendingMicroSplatRefreshTime = -1f;
-                PropMetadataPanel.RefreshMicroSplatLayerMaterials();
+                MaterialCatalog.RefreshMicroSplatLayerMaterials();
 
                 // The general material cache (_materialByName) may have been rebuilt mid-stream by
                 // an earlier OnSceneWasLoaded -> InvalidateMaterialCache, before the destination
@@ -103,15 +103,15 @@ namespace BabyBlocks
                 // at the freshly resolved instances — the chunk drain during a far-teleport can
                 // destroy the Material instances those overrides were previously pointing at,
                 // which otherwise leaves the prop rendering pink/missing.
-                PropMetadataPanel.InvalidateMaterialCache();
-                PropMetadataPanel.EnsureMaterialListLoaded();
-                PropMetadataPanel.ReapplyAllMaterialOverrides();
+                MaterialVariantTracker.InvalidateMaterialCache();
+                MaterialCatalog.EnsureMaterialListLoaded();
+                MaterialCatalog.ReapplyAllMaterialOverrides();
 
                 // ReapplyAllMaterialOverrides just repointed override renderers at
                 // freshly-resolved shared materials, which were never snow-suppressed —
                 // re-derive the suppression for whatever materials are on the renderers now.
-                if (!LevelEditorManager.BaseMapEnabled)
-                    LevelEditorManager.SetEditorPropsSnowDisabled(true);
+                if (!BaseMapController.BaseMapEnabled)
+                    BaseMapController.SetEditorPropsSnowDisabled(true);
 
                 LevelEditorManager.Instance?.PruneDestroyedObjects();
                 if (GizmoRenderer.IsReady) GizmoRenderer.RefreshAssets();
@@ -247,7 +247,7 @@ namespace BabyBlocks
                 FreezePlayer(player, true);
                 LevelEditor.EnsureManager();
 
-                if (!_editorScanDone) PropMetadataPanel.MarkMaterialSourcesPending();
+                if (!_editorScanDone) MaterialCatalog.MarkMaterialSourcesPending();
                 MelonCoroutines.Start(ActivateEditorScanCo());
 
                 var noise = player.flyCam.GetComponentInChildren<CinemachineBasicMultiChannelPerlin>();
@@ -299,7 +299,7 @@ namespace BabyBlocks
 
             if (!_editorScanDone)
             {
-                PropMetadataPanel.InvalidateMaterialSources();
+                MaterialCatalog.InvalidateMaterialSources();
                 _editorScanDone = true;
             }
         }
@@ -449,7 +449,7 @@ namespace BabyBlocks
         static IEnumerator FarTeleportCo(PlayerMovement player, Vector3 target, float facingY)
         {
             // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] FarTeleportCo start target={target} BaseMapEnabled={LevelEditorManager.BaseMapEnabled} brl.off={BestRegionLoader.me.off}");
+            BBLog.Msg($"[BaseMapDiag] FarTeleportCo start target={target} BaseMapEnabled={BaseMapController.BaseMapEnabled} brl.off={BestRegionLoader.me.off}");
 
             // Pause autosave; stamp target so any stray save writes a consistent position.
             SaveGod.me.stopSaving = true;
@@ -530,7 +530,7 @@ namespace BabyBlocks
             br.off = false;
 
             // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] FarTeleportCo chunks drained, brl.off=false, about to FreezePlayer/SwitchModes {LevelEditorManager.PlayerRendererSummary()}");
+            BBLog.Msg($"[BaseMapDiag] FarTeleportCo chunks drained, brl.off=false, about to FreezePlayer/SwitchModes {BaseMapController.PlayerRendererSummary()}");
 
             // Set up player so TeleportCo's ragdoll sequence has the right puppet state.
             FreezePlayer(player, false);
@@ -589,7 +589,7 @@ namespace BabyBlocks
             // handoff below — the screen is fully black (SkipGame blackScreenAlpha=1) so the
             // ocean briefly reappearing is not visible — then hide it again afterward.
             GameObject crestWater = null;
-            if (!LevelEditorManager.BaseMapEnabled)
+            if (!BaseMapController.BaseMapEnabled)
             {
                 // GameObject.Find can't locate an inactive GameObject (even via a path
                 // through an active parent), so it always returned null here once
@@ -620,20 +620,20 @@ namespace BabyBlocks
             Menu.me.Teleport(target);
 
             // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] FarTeleportCo called Menu.me.Teleport, teleporting={Menu.me.teleporting} fullyLoaded={BestRegionLoader.fullyLoaded} brl.off={br.off} {LevelEditorManager.PlayerRendererSummary()}");
+            BBLog.Msg($"[BaseMapDiag] FarTeleportCo called Menu.me.Teleport, teleporting={Menu.me.teleporting} fullyLoaded={BestRegionLoader.fullyLoaded} brl.off={br.off} {BaseMapController.PlayerRendererSummary()}");
             int waitFrames = 0;
             while (Menu.me.teleporting)
             {
                 yield return null;
                 waitFrames++;
                 if (waitFrames % 30 == 0)
-                    BBLog.Msg($"[BaseMapDiag] FarTeleportCo still waiting on teleporting, frame={waitFrames} fullyLoaded={BestRegionLoader.fullyLoaded} brl.off={br.off} FarTeleportActive={_farTeleportActive} BaseMapEnabled={LevelEditorManager.BaseMapEnabled} {LevelEditorManager.PlayerRendererSummary()}");
+                    BBLog.Msg($"[BaseMapDiag] FarTeleportCo still waiting on teleporting, frame={waitFrames} fullyLoaded={BestRegionLoader.fullyLoaded} brl.off={br.off} FarTeleportActive={_farTeleportActive} BaseMapEnabled={BaseMapController.BaseMapEnabled} {BaseMapController.PlayerRendererSummary()}");
             }
 
             // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] FarTeleportCo teleporting finished after {waitFrames} frames {LevelEditorManager.PlayerRendererSummary()}");
+            BBLog.Msg($"[BaseMapDiag] FarTeleportCo teleporting finished after {waitFrames} frames {BaseMapController.PlayerRendererSummary()}");
 
-            if (crestWater != null && !LevelEditorManager.BaseMapEnabled)
+            if (crestWater != null && !BaseMapController.BaseMapEnabled)
             {
                 crestWater.SetActive(false);
                 BBLog.Msg("[BaseMapDiag] FarTeleportCo: re-disabled CrestWaterRenderer after Menu.me.Teleport");
@@ -644,7 +644,7 @@ namespace BabyBlocks
             // terrain texture arrays' refcount to zero, causing Addressables to release and
             // later recreate them as new instances - leaving the cached materials pointing at
             // destroyed textures (visually "weird" with no logged errors).
-            PropMetadataPanel.RefreshMicroSplatLayerMaterials();
+            MaterialCatalog.RefreshMicroSplatLayerMaterials();
 
             // Do the same for the general material cache and every placed prop's overrides right
             // away — the single destination chunk is already fully loaded at this point (we waited
@@ -652,15 +652,15 @@ namespace BabyBlocks
             // waiting out the full settle delay below and showing pink for a second. The
             // settle-delay pass (OnUpdate) still runs afterwards as a safety net for any material
             // that hadn't settled yet.
-            PropMetadataPanel.InvalidateMaterialCache();
-            PropMetadataPanel.EnsureMaterialListLoaded();
-            PropMetadataPanel.ReapplyAllMaterialOverrides();
+            MaterialVariantTracker.InvalidateMaterialCache();
+            MaterialCatalog.EnsureMaterialListLoaded();
+            MaterialCatalog.ReapplyAllMaterialOverrides();
 
             // ReapplyAllMaterialOverrides just repointed override renderers at
             // freshly-resolved shared materials, which were never snow-suppressed —
             // re-derive the suppression for whatever materials are on the renderers now.
-            if (!LevelEditorManager.BaseMapEnabled)
-                LevelEditorManager.SetEditorPropsSnowDisabled(true);
+            if (!BaseMapController.BaseMapEnabled)
+                BaseMapController.SetEditorPropsSnowDisabled(true);
 
             // Snap the fly cam to the player's new body position so that BestRegionLoader
             // streams terrain around the correct area. Without this, the fly cam stays at
@@ -686,7 +686,7 @@ namespace BabyBlocks
             _farTeleportActive = false;
 
             // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] FarTeleportCo end, brl.off={br.off} {LevelEditorManager.PlayerRendererSummary()}");
+            BBLog.Msg($"[BaseMapDiag] FarTeleportCo end, brl.off={br.off} {BaseMapController.PlayerRendererSummary()}");
         }
     }
 }

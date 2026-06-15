@@ -291,20 +291,20 @@ namespace BabyBlocks
 
             GUILayout.Space(8f);
             GUILayout.Label("Material");
-            string matLabel = string.IsNullOrEmpty(entry.materialName) ? PropMetadataPanel.NoOverrideLabel : entry.materialName;
+            string matLabel = string.IsNullOrEmpty(entry.materialName) ? PropMetadataStore.NoOverrideLabel : entry.materialName;
             if (GUILayout.Button(matLabel, GUILayout.Height(22f)))
                 _showMaterialDropdown = !_showMaterialDropdown;
 
             if (_showMaterialDropdown)
             {
-                PropMetadataPanel.EnsureMaterialListLoaded();
+                MaterialCatalog.EnsureMaterialListLoaded();
                 GUILayout.Label("Search");
                 GUI.SetNextControlName(SearchField);
                 _materialSearch = GUILayout.TextField(_materialSearch ?? "");
 
                 _materialScroll = GUILayout.BeginScrollView(_materialScroll, GUILayout.Height(140f));
-                var names  = PropMetadataPanel.MaterialNames;
-                var labels = PropMetadataPanel.MaterialLabels;
+                var names  = MaterialCatalog.MaterialNames;
+                var labels = MaterialCatalog.MaterialLabels;
                 string search = (_materialSearch ?? "").Trim();
                 bool hasSearch = !string.IsNullOrEmpty(search);
 
@@ -457,8 +457,8 @@ namespace BabyBlocks
                 Material mat = null;
                 if (!string.IsNullOrEmpty(materialName))
                 {
-                    PropMetadataPanel.EnsureMaterialListLoaded();
-                    mat = PropMetadataPanel.ResolveMaterialByName(materialName);
+                    MaterialCatalog.EnsureMaterialListLoaded();
+                    mat = MaterialCatalog.ResolveMaterialByName(materialName);
                 }
                 _previewRenderer.sharedMaterial = mat != null ? mat : _defaultPreviewMaterial;
             }
@@ -513,8 +513,8 @@ namespace BabyBlocks
 
             if (!string.IsNullOrEmpty(entry.materialName))
             {
-                PropMetadataPanel.EnsureMaterialListLoaded();
-                var mat = PropMetadataPanel.ResolveMaterialByName(entry.materialName);
+                MaterialCatalog.EnsureMaterialListLoaded();
+                var mat = MaterialCatalog.ResolveMaterialByName(entry.materialName);
                 if (mat != null)
                 {
                     for (int i = 0; i < renderers.Length; i++)
@@ -530,7 +530,7 @@ namespace BabyBlocks
                 }
             }
 
-            PropMetadataPanel.ApplySurfaceType(leo, entry.surfaceType);
+            PropInstanceServices.ApplySurfaceType(leo, entry.surfaceType);
             leo.materialConstructionId = entry.id;
 
             LevelEditorHistory.PushMaterial(leo, renderers, matsBefore, tagObjs, tagsBefore, idBefore);
