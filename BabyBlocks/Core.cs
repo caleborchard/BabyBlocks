@@ -121,9 +121,23 @@ namespace BabyBlocks
             PendingMicroSplatRefreshTime = Time.realtimeSinceStartup;
         }
 
+        // ModNetworking.Update touches types from BabyStepsNetworking.dll, which BabyBlocks
+        // references directly but which may not be present if no other mod has installed it.
+        // Resolving those types fails the first time this is JIT'd/called in that case;
+        // catch it once and stop calling in so the rest of the editor keeps working.
+        static bool _networkingDisabled;
+
         public override void OnUpdate()
         {
-            ModNetworking.Update();
+            if (!_networkingDisabled)
+            {
+                try { ModNetworking.Update(); }
+                catch (Exception ex)
+                {
+                    _networkingDisabled = true;
+                    MelonLogger.Warning($"[BabyBlocks] Networking unavailable, disabling: {ex.Message}");
+                }
+            }
 
             FlyCamController.OnUpdate();
 
