@@ -17,41 +17,17 @@ namespace BabyBlocks
         internal const string NegativeCollisionPropId = "special://negative-hole";
         internal const string SpawnPointPropId = "special://spawn-point";
 
-        static readonly List<PropInfo> _all = new();
+        internal static readonly List<PropInfo> _all = new();
         static readonly List<PropInfo> _filtered = new();
-        static readonly Dictionary<string, PropInfo> _byId = new(StringComparer.Ordinal);
-        static readonly Dictionary<string, string> _idAliases = new(StringComparer.Ordinal);
+        internal static readonly Dictionary<string, PropInfo> _byId = new(StringComparer.Ordinal);
+        internal static readonly Dictionary<string, string> _idAliases = new(StringComparer.Ordinal);
 
-        static readonly string[] PrimitiveNames = { "Cube", "Sphere", "Capsule", "Cylinder", "Plane", "Quad", "Torus", "Cone", "Helix", "Egg" };
+        internal static readonly string[] PrimitiveNames = { "Cube", "Sphere", "Capsule", "Cylinder", "Plane", "Quad", "Torus", "Cone", "Helix", "Egg" };
         static Type _bestRegionType;
-        static readonly HashSet<string> _gpuiScannedNames = new(StringComparer.OrdinalIgnoreCase);
-        static Dictionary<string, string> _gpuiPlayerPaths; // prefabName → full catalog path
 
         static readonly Dictionary<string, int>   _refCounts    = new(StringComparer.Ordinal); // propId → live instance count
         static readonly Dictionary<string, float> _zeroRefTime  = new(StringComparer.Ordinal); // propId → Time.realtimeSinceStartup when count hit 0
         const float UnloadDelay = 30f; // seconds after last instance removed before mesh data is freed
-
-        static readonly string[] ExcludedAssetPrefixes =
-        {
-            "Assets/Audio/",
-            "Assets/BBitsy/",
-            "Assets/CC_Assets/",
-            "Assets/Character/",
-            "Assets/Decals/",
-            "Assets/ExternalPlugins/",
-            "Assets/FX/",
-            "Assets/Lod/",
-            "Assets/Prefabs/Debug/",
-            "Assets/Scripts/",
-            "Assets/SlicedTerrain/",
-            "Assets/TitleAreaAssets/",
-            "Assets/_Props/Beacons/",
-            "Assets/_Props/Bonfires/",
-            "Assets/_Props/FX/",
-            "Assets/_Props/Grasses/",
-            "Assets/_Props/Rocks_TerrainMat/",
-            "Assets/_Props/_PlayerProps/",
-        };
 
         public static IReadOnlyList<PropInfo> AllProps => _all;
         public static IReadOnlyList<PropInfo> FilteredProps => _filtered;
@@ -59,7 +35,7 @@ namespace BabyBlocks
         static string GpuiCachePath =>
             Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "GpuiCache.txt");
 
-        static bool TryLoadGpuiCache(string catalogPath,
+        internal static bool TryLoadGpuiCache(string catalogPath,
             out List<(string baseName, string id, string visualPath, string prefabName)> entries)
         {
             entries = null;
@@ -93,7 +69,7 @@ namespace BabyBlocks
             catch { return false; }
         }
 
-        static bool TryParseGpuiIndex(string id, out int index)
+        internal static bool TryParseGpuiIndex(string id, out int index)
         {
             index = -1;
             if (string.IsNullOrEmpty(id)) return false;
@@ -103,7 +79,7 @@ namespace BabyBlocks
             return int.TryParse(id.Substring(Prefix.Length), out index) && index >= 0;
         }
 
-        static string BuildStableGpuiId(string baseName, string prefabName, string visualPath)
+        internal static string BuildStableGpuiId(string baseName, string prefabName, string visualPath)
         {
             string key = string.IsNullOrWhiteSpace(prefabName) ? baseName : prefabName;
             if (string.IsNullOrWhiteSpace(key))
@@ -167,7 +143,7 @@ namespace BabyBlocks
             _byId.Clear();
             _idAliases.Clear();
             _filtered.Clear();
-            _gpuiScannedNames.Clear();
+            GpuiPropScanner.GpuiScannedNames.Clear();
 
             foreach (var name in PrimitiveNames)
             {
@@ -194,7 +170,7 @@ namespace BabyBlocks
 
             int primitiveCount = _all.Count;
 
-            try { EnumerateFromCatalog(); }
+            try { CatalogEnumerator.EnumerateFromCatalog(); }
             catch { }
 
             // Keep primitives pinned at the top; sort everything else by name.
@@ -327,7 +303,7 @@ namespace BabyBlocks
             if (!info.isLoaded && !info.HasMesh && info._addressableAsset == null) return;
             BBLog.Msg($"[PropLibrary] Unloading \"{info.displayName}\" — no live instances.");
 
-            LevelEditorManager.ReleasePhysicsMeshes(info);
+            PhysicsObjectManager.ReleasePhysicsMeshes(info);
 
             if (info._addressableAsset != null)
             {
@@ -341,392 +317,7 @@ namespace BabyBlocks
             info.isInvalid = false;
         }
 
-        public static void ScanGpuiProps()
-        {
-            if (!IsInitialized) return;
-
-            string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
-            int insertAt = PrimitiveNames.Length;
-            int added    = 0;
-            int nextGpuiIndex = 0;
-
-            if (TryLoadGpuiCache(catalogPath, out var cached) && cached != null)
-            {
-                foreach (var (baseName, id, visualPath, prefabName) in cached)
-                {
-                    if (TryParseGpuiIndex(id, out int legacyIndex))
-                        nextGpuiIndex = Math.Max(nextGpuiIndex, legacyIndex + 1);
-
-                    string stableId = BuildStableGpuiId(baseName, prefabName, visualPath);
-                    if (!string.Equals(id, stableId, StringComparison.Ordinal))
-                        _idAliases[id] = stableId;
-
-                    if (_byId.ContainsKey(stableId)) continue;
-
-                    var info = new PropInfo(stableId, baseName)
-                    {
-                        gpuiIndex      = nextGpuiIndex++,
-                        visualPath     = visualPath,
-                        gpuiPrefabName = prefabName,
-                        isLoaded       = false,
-                        isInvalid      = false,
-                    };
-                    _all.Insert(insertAt++, info);
-                    _byId[stableId] = info;
-                    _gpuiScannedNames.Add(baseName);
-                    added++;
-                }
-                BBLog.Msg($"[PropLibrary] GPUI cache loaded: {cached.Count} props.");
-            }
-
-            var loaded = TryGetLoadedProps();
-            BBLog.Msg($"[PropLibrary] ScanGpuiProps: loadedProps count={loaded?.Length ?? -1}");
-
-            if (loaded == null || loaded.Length == 0)
-            {
-                PropMetadataStore.MigratePropIdsToCanonical();
-                if (added > 0) BuildFiltered();
-                return;
-            }
-
-            var visualLookup  = BuildGpuiVisualLookup();
-            int gpuiIdx       = nextGpuiIndex;
-
-            for (int i = 0; i < loaded.Length; i++)
-            {
-                var prefabGO = loaded[i];
-                if (prefabGO == null) continue;
-
-                bool hasRenderer = prefabGO.GetComponentInChildren<MeshRenderer>() != null
-                                || prefabGO.GetComponentInChildren<SkinnedMeshRenderer>() != null;
-                if (hasRenderer) continue;
-
-                bool hasCollider = prefabGO.GetComponentInChildren<MeshCollider>() != null;
-                if (!hasCollider) continue;
-
-                string baseName = NormalizePropName(prefabGO.name);
-
-                visualLookup.TryGetValue(baseName, out string visualPath);
-                visualPath   ??= "";
-                string prefabName = prefabGO.name;
-
-                int    gi     = gpuiIdx++;
-                string gpuiId = BuildStableGpuiId(baseName, prefabName, visualPath);
-                if (_byId.ContainsKey(gpuiId)) continue;
-
-                string legacyId = $"gpui://{gi}";
-                if (!string.Equals(legacyId, gpuiId, StringComparison.Ordinal))
-                    _idAliases[legacyId] = gpuiId;
-
-                var info = new PropInfo(gpuiId, baseName)
-                {
-                    gpuiIndex      = gi,
-                    visualPath     = visualPath,
-                    gpuiPrefabName = prefabName,
-                    isLoaded       = false,
-                    isInvalid      = false,
-                };
-
-                _gpuiScannedNames.Add(baseName);
-                _all.Insert(insertAt++, info);
-                _byId[gpuiId] = info;
-                added++;
-            }
-
-            // Regeneration must not depend solely on currently loaded GPUI props. Backfill
-            // from catalog player-prefab entries so off-screen props keep stable IDs.
-            var playerPaths = GetGpuiPlayerPaths();
-            int backfilledFromCatalog = 0;
-            foreach (var kvp in playerPaths)
-            {
-                string prefabName = kvp.Key;
-                if (string.IsNullOrEmpty(prefabName)) continue;
-
-                string baseName = NormalizePropName(prefabName);
-                if (string.IsNullOrEmpty(baseName)) continue;
-
-                visualLookup.TryGetValue(baseName, out string visualPath);
-                visualPath ??= "";
-
-                int    gi     = gpuiIdx++;
-                string gpuiId = BuildStableGpuiId(baseName, prefabName, visualPath);
-                if (_byId.ContainsKey(gpuiId)) continue;
-
-                string legacyId = $"gpui://{gi}";
-                if (!string.Equals(legacyId, gpuiId, StringComparison.Ordinal))
-                    _idAliases[legacyId] = gpuiId;
-
-                var info = new PropInfo(gpuiId, baseName)
-                {
-                    gpuiIndex      = gi,
-                    visualPath     = visualPath,
-                    gpuiPrefabName = prefabName,
-                    isLoaded       = false,
-                    isInvalid      = false,
-                };
-
-                _gpuiScannedNames.Add(baseName);
-                _all.Insert(insertAt++, info);
-                _byId[gpuiId] = info;
-                added++;
-                backfilledFromCatalog++;
-            }
-
-            var cacheEntries = new List<(string baseName, string id, string visualPath, string prefabName)>();
-            foreach (var info in _all)
-            {
-                if (!info.IsGpui) continue;
-                cacheEntries.Add((info.displayName, info.id, info.visualPath ?? "", info.gpuiPrefabName ?? ""));
-            }
-
-            SaveGpuiCache(catalogPath, cacheEntries);
-            PropMetadataStore.MigratePropIdsToCanonical();
-            if (added > 0) BuildFiltered();
-            BBLog.Msg($"[PropLibrary] GPUI catalog backfill added: {backfilledFromCatalog} props.");
-            BBLog.Msg($"[PropLibrary] GPUI scan complete: {added} props added.");
-        }
-
-        static Dictionary<string, string> BuildGpuiVisualLookup()
-        {
-            var    lookup      = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
-            if (!File.Exists(catalogPath)) return lookup;
-
-            try
-            {
-                string json = File.ReadAllText(catalogPath);
-                AddVisualPathsToLookup(json, lookup);
-
-                int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
-                if (kdIdx >= 0)
-                {
-                    int valStart = json.IndexOf('"', kdIdx + 17) + 1;
-                    int valEnd   = json.IndexOf('"', valStart);
-                    if (valStart > 0 && valEnd > valStart)
-                    {
-                        byte[] bytes   = Convert.FromBase64String(json.Substring(valStart, valEnd - valStart));
-                        string decoded = Encoding.UTF8.GetString(bytes);
-                        AddVisualPathsToLookup(decoded, lookup);
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                MelonLogger.Warning($"[PropLibrary] GPUI visual lookup build failed: {e.Message}");
-            }
-
-            return lookup;
-        }
-
-        static void AddVisualPathsToLookup(string text, Dictionary<string, string> lookup)
-        {
-            int i = 0;
-            while (i < text.Length)
-            {
-                int start = text.IndexOf("Assets/_Props/", i, StringComparison.Ordinal);
-                if (start < 0) break;
-                int end = start;
-                while (end < text.Length)
-                {
-                    char c = text[end];
-                    if (c == '"' || c == '\0' || c < ' ') break;
-                    end++;
-                }
-                i = end + 1;
-                string path = text.Substring(start, end - start);
-                if (!path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)) continue;
-
-                string name = Path.GetFileNameWithoutExtension(path);
-                if (name.EndsWith("_player", StringComparison.OrdinalIgnoreCase)) continue;
-                if (IsLowerLodVariant(path)) continue;
-
-                if (!lookup.ContainsKey(name))
-                    lookup[name] = path;
-            }
-        }
-
-        static void ExtractPartsFromColliders(GameObject root, PropInfo info)
-        {
-            var arr   = root.GetComponentsInChildren<MeshCollider>(true);
-            var rootT = root.transform;
-            foreach (var mc in arr)
-            {
-                if (mc == null || mc.sharedMesh == null) continue;
-                AddPart(info, mc.sharedMesh, null, mc.transform, rootT);
-            }
-        }
-
-        static void LogCatalogBundleHint(string propId)
-        {
-            try
-            {
-                string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
-                if (!File.Exists(catalogPath)) return;
-
-                string fileName = Path.GetFileName(propId); // e.g. "Spruce_Norway_Desktop_Stump_Var2.prefab"
-                if (string.IsNullOrEmpty(fileName)) return;
-
-                string json = File.ReadAllText(catalogPath);
-
-                // Also check the decoded key data.
-                string decoded = "";
-                int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
-                if (kdIdx >= 0)
-                {
-                    int vs = json.IndexOf('"', kdIdx + 17) + 1;
-                    int ve = json.IndexOf('"', vs);
-                    if (vs > 0 && ve > vs)
-                    {
-                        try { decoded = Encoding.UTF8.GetString(Convert.FromBase64String(json.Substring(vs, ve - vs))); }
-                        catch { }
-                    }
-                }
-
-                var bundles  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                var scenes   = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var text in new[] { json, decoded })
-                {
-                    if (string.IsNullOrEmpty(text)) continue;
-
-                    // Find all occurrences of the prop filename in this text block.
-                    int searchFrom = 0;
-                    while (searchFrom < text.Length)
-                    {
-                        int hit = text.IndexOf(fileName, searchFrom, StringComparison.OrdinalIgnoreCase);
-                        if (hit < 0) break;
-                        searchFrom = hit + 1;
-
-                        // Scan a ±2 KB window around the hit for bundle/scene references.
-                        int wStart = Math.Max(0, hit - 2048);
-                        int wEnd   = Math.Min(text.Length, hit + 2048);
-                        string window = text.Substring(wStart, wEnd - wStart);
-
-                        // Collect *.bundle names.
-                        int bi = 0;
-                        while (bi < window.Length)
-                        {
-                            int bHit = window.IndexOf(".bundle", bi, StringComparison.OrdinalIgnoreCase);
-                            if (bHit < 0) break;
-                            // Walk backwards to the start of the token.
-                            int bStart = bHit;
-                            while (bStart > 0 && window[bStart - 1] != '"' && window[bStart - 1] != '/'
-                                              && window[bStart - 1] != '\\'&& window[bStart - 1] > ' ')
-                                bStart--;
-                            bundles.Add(window.Substring(bStart, bHit - bStart + 7));
-                            bi = bHit + 7;
-                        }
-
-                        // Collect *.unity scene paths in the window.
-                        int si = 0;
-                        while (si < window.Length)
-                        {
-                            int sHit = window.IndexOf(".unity", si, StringComparison.OrdinalIgnoreCase);
-                            if (sHit < 0) break;
-                            int sStart = sHit;
-                            while (sStart > 0 && window[sStart - 1] != '"' && window[sStart - 1] > ' ')
-                                sStart--;
-                            scenes.Add(window.Substring(sStart, sHit - sStart + 6));
-                            si = sHit + 6;
-                        }
-                    }
-                }
-
-                if (scenes.Count > 0)
-                    BBLog.Msg($"[PropLibrary] Catalog hint for \"{fileName}\": scenes → {string.Join(", ", scenes)}");
-                else if (bundles.Count > 0)
-                    BBLog.Msg($"[PropLibrary] Catalog hint for \"{fileName}\": bundles → {string.Join(", ", System.Linq.Enumerable.Take(bundles, 5))} {(bundles.Count > 5 ? $"(+{bundles.Count - 5} more)" : "")}");
-                else
-                    BBLog.Msg($"[PropLibrary] Catalog hint: \"{fileName}\" not found in catalog text.");
-            }
-            catch (Exception e)
-            {
-                MelonLogger.Warning($"[PropLibrary] LogCatalogBundleHint failed: {e.Message}");
-            }
-        }
-
-        static void EnumerateFromCatalog()
-        {
-            string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
-            if (!File.Exists(catalogPath)) return;
-
-            string json = File.ReadAllText(catalogPath);
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            ScanTextForPaths(json, seen);
-
-            int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
-            if (kdIdx >= 0)
-            {
-                int valStart = json.IndexOf('"', kdIdx + 17) + 1;
-                int valEnd = json.IndexOf('"', valStart);
-                if (valStart > 0 && valEnd > valStart)
-                {
-                    try
-                    {
-                        byte[] bytes = Convert.FromBase64String(json.Substring(valStart, valEnd - valStart));
-                        string decodedKeys = System.Text.Encoding.UTF8.GetString(bytes);
-                        ScanTextForPaths(decodedKeys, seen);
-                    }
-                    catch { }
-                }
-            }
-        }
-
-        static void ScanTextForPaths(string text, HashSet<string> seen)
-        {
-            int i = 0;
-            while (i < text.Length)
-            {
-                int start = text.IndexOf("Assets/", i, StringComparison.Ordinal);
-                if (start < 0) break;
-                int end = start;
-                while (end < text.Length)
-                {
-                    char c = text[end];
-                    if (c == '"' || c == '\0' || c < ' ') break;
-                    end++;
-                }
-                i = end + 1;
-                string entry = text.Substring(start, end - start);
-                if (!entry.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)
-                    && !IsMeshAssetPath(entry))
-                    continue;
-
-                if (IsLowerLodVariant(entry)) continue;
-
-                string name = Path.GetFileNameWithoutExtension(entry);
-                if (entry.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (name.EndsWith("_player", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (name.EndsWith("_Player", StringComparison.OrdinalIgnoreCase)) continue;
-                }
-
-                if (IsExcludedPath(entry)) continue;
-
-                if (!seen.Add(entry)) continue;
-                var info = new PropInfo(entry, name);
-                _all.Add(info);
-                _byId[entry] = info;
-            }
-        }
-
-        static bool IsExcludedPath(string entry)
-        {
-            if (string.IsNullOrEmpty(entry)) return false;
-            var normalized = entry.Replace('\\', '/');
-            if (normalized.IndexOf("imposter", StringComparison.OrdinalIgnoreCase) >= 0
-                || normalized.IndexOf("impostor", StringComparison.OrdinalIgnoreCase) >= 0)
-                return true;
-            foreach (var prefix in ExcludedAssetPrefixes)
-            {
-                if (normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
-            return false;
-        }
-
-        static bool IsLowerLodVariant(string key)
+        internal static bool IsLowerLodVariant(string key)
         {
             string name = Path.GetFileNameWithoutExtension(key);
             int idx = name.IndexOf("_LOD", StringComparison.OrdinalIgnoreCase);
@@ -983,7 +574,7 @@ namespace BabyBlocks
 
             // All methods failed — prop asset not available (wrong area, rare prop, etc.).
             MelonLogger.Warning($"[PropLibrary] All load methods failed for \"{info.displayName}\" (id: {info.id}).");
-            LogCatalogBundleHint(info.id);
+            CatalogEnumerator.LogCatalogBundleHint(info.id);
         }
 
         static bool TryLoadFromBestRegion(PropInfo info)
@@ -1089,68 +680,6 @@ namespace BabyBlocks
             return false;
         }
 
-        static Dictionary<string, string> GetGpuiPlayerPaths()
-        {
-            if (_gpuiPlayerPaths != null) return _gpuiPlayerPaths;
-            _gpuiPlayerPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            try
-            {
-                string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
-                if (!File.Exists(catalogPath)) return _gpuiPlayerPaths;
-                string json = File.ReadAllText(catalogPath);
-
-                AddPlayerPathsToLookup(json, _gpuiPlayerPaths);
-
-                int kdIdx = json.IndexOf("\"m_KeyDataString\"", StringComparison.Ordinal);
-                if (kdIdx >= 0)
-                {
-                    int vs = json.IndexOf('"', kdIdx + 17) + 1;
-                    int ve = json.IndexOf('"', vs);
-                    if (vs > 0 && ve > vs)
-                    {
-                        try
-                        {
-                            string decoded = Encoding.UTF8.GetString(
-                                Convert.FromBase64String(json.Substring(vs, ve - vs)));
-                            AddPlayerPathsToLookup(decoded, _gpuiPlayerPaths);
-                        }
-                        catch { }
-                    }
-                }
-
-                BBLog.Msg($"[PropLibrary] Built GPUI player-path lookup: {_gpuiPlayerPaths.Count} entries.");
-            }
-            catch (Exception e)
-            {
-                MelonLogger.Warning($"[PropLibrary] GetGpuiPlayerPaths failed: {e.Message}");
-            }
-            return _gpuiPlayerPaths;
-        }
-
-        static void AddPlayerPathsToLookup(string text, Dictionary<string, string> lookup)
-        {
-            int i = 0;
-            while (i < text.Length)
-            {
-                int start = text.IndexOf("Assets/_Props/", i, StringComparison.Ordinal);
-                if (start < 0) break;
-                int end = start;
-                while (end < text.Length)
-                {
-                    char c = text[end];
-                    if (c == '"' || c == '\0' || c < ' ') break;
-                    end++;
-                }
-                i = end + 1;
-                string path = text.Substring(start, end - start);
-                if (!path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)) continue;
-                string name = Path.GetFileNameWithoutExtension(path);
-                if (!name.EndsWith("_player", StringComparison.OrdinalIgnoreCase)) continue;
-                if (!lookup.ContainsKey(name))
-                    lookup[name] = path;
-            }
-        }
-
         static void LoadGpuiPropData(PropInfo info)
         {
             BBLog.Msg($"[PropLibrary] GPUI \"{info.displayName}\": visualPath=\"{info.visualPath}\" prefabName=\"{info.gpuiPrefabName}\"");
@@ -1203,7 +732,7 @@ namespace BabyBlocks
                             found = true;
                             var instance = UnityEngine.Object.Instantiate(
                                 go, new Vector3(0f, -99999f, 0f), Quaternion.identity);
-                            try   { ExtractPartsFromColliders(instance, info); }
+                            try   { GpuiPropScanner.ExtractPartsFromColliders(instance, info); }
                             catch { }
                             UnityEngine.Object.Destroy(instance);
                             BBLog.Msg($"[PropLibrary] GPUI \"{info.displayName}\" collider fallback: extracted {info.parts.Count} part(s).");
@@ -1226,7 +755,7 @@ namespace BabyBlocks
             // Addressable fallback: load the _player prefab directly when it's not in loadedProps.
             if (!info.HasMesh && !string.IsNullOrEmpty(info.gpuiPrefabName))
             {
-                var playerPaths = GetGpuiPlayerPaths();
+                var playerPaths = GpuiPropScanner.GetGpuiPlayerPaths();
                 if (playerPaths.TryGetValue(info.gpuiPrefabName, out string playerPath))
                 {
                     try
@@ -1237,7 +766,7 @@ namespace BabyBlocks
                         {
                             if (info._addressableAsset == null) info._addressableAsset = prefab;
                             var inst = UnityEngine.Object.Instantiate(prefab, new Vector3(0f, -99999f, 0f), Quaternion.identity);
-                            try   { ExtractPartsFromColliders(inst, info); }
+                            try   { GpuiPropScanner.ExtractPartsFromColliders(inst, info); }
                             catch { }
                             UnityEngine.Object.Destroy(inst);
                             BBLog.Msg($"[PropLibrary] GPUI \"{info.displayName}\" addressable player: {info.parts.Count} part(s) from {playerPath}");
@@ -1309,7 +838,7 @@ namespace BabyBlocks
             return true;
         }
 
-        static bool IsMeshAssetPath(string path)
+        internal static bool IsMeshAssetPath(string path)
         {
             if (string.IsNullOrEmpty(path)) return false;
             var lower = path.ToLowerInvariant();
@@ -1357,7 +886,7 @@ namespace BabyBlocks
             }
         }
 
-        static GameObject[] TryGetLoadedProps()
+        internal static GameObject[] TryGetLoadedProps()
         {
             try
             {
@@ -1515,7 +1044,7 @@ namespace BabyBlocks
             return s;
         }
 
-        static string NormalizePropName(string name)
+        internal static string NormalizePropName(string name)
         {
             if (string.IsNullOrEmpty(name)) return string.Empty;
             var s = name.Replace("(Clone)", "").Trim();
@@ -1743,7 +1272,7 @@ namespace BabyBlocks
             return !string.IsNullOrEmpty(id) && string.Equals(id, SpawnPointPropId, StringComparison.Ordinal);
         }
 
-        static void AddPart(PropInfo info, Mesh mesh, Material[] materials, Transform t, Transform rootT)
+        internal static void AddPart(PropInfo info, Mesh mesh, Material[] materials, Transform t, Transform rootT)
         {
             if (mesh == null || info == null) return;
 

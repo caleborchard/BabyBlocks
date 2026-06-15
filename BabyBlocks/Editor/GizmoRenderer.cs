@@ -553,7 +553,7 @@ namespace BabyBlocks
 
             if (verts == null || verts.Length == 0 || tris == null || tris.Length == 0)
             {
-                var phys = LevelEditorManager.BuildPhysicsMesh(source);
+                var phys = PhysicsObjectManager.BuildPhysicsMesh(source);
                 if (phys == null) return default;
                 verts = phys.vertices;
                 tris  = phys.triangles;
@@ -1022,48 +1022,6 @@ namespace BabyBlocks
             }
 
             return count > 0 ? sum / count : Vector3.zero;
-        }
-
-        public static void LogSelectionBoundsInfo(LevelEditorObject obj)
-        {
-            if (obj == null) { MelonLogger.Msg("[BoundsLog] obj is null"); return; }
-
-            MelonLogger.Msg($"[BoundsLog] === {obj.gameObject.name} ===");
-            MelonLogger.Msg($"[BoundsLog]   transform.position = {obj.transform.position}");
-
-            var renderers = obj.GetComponentsInChildren<Renderer>(true);
-            MelonLogger.Msg($"[BoundsLog]   Renderers (includeInactive=true): {(renderers == null ? 0 : renderers.Length)}");
-            if (renderers != null)
-            {
-                for (int i = 0; i < renderers.Length; i++)
-                {
-                    var r = renderers[i];
-                    if (r == null) { MelonLogger.Msg($"[BoundsLog]     [{i}] null"); continue; }
-                    MelonLogger.Msg($"[BoundsLog]     [{i}] GO={r.gameObject.name}  activeInHierarchy={r.gameObject.activeInHierarchy}  renderer.enabled={r.enabled}  bounds.center={r.bounds.center}  bounds.size={r.bounds.size}");
-                }
-            }
-
-            var mfs = obj.GetComponentsInChildren<MeshFilter>(true);
-            MelonLogger.Msg($"[BoundsLog]   MeshFilters (includeInactive=true): {(mfs == null ? 0 : mfs.Length)}");
-            if (mfs != null)
-            {
-                for (int i = 0; i < mfs.Length; i++)
-                {
-                    var mf = mfs[i];
-                    if (mf == null) { MelonLogger.Msg($"[BoundsLog]     [{i}] null"); continue; }
-                    var mr = mf.GetComponent<MeshRenderer>();
-                    string meshName = mf.sharedMesh != null ? mf.sharedMesh.name : "NO MESH";
-                    Vector3 worldCenter = mf.sharedMesh != null
-                        ? mf.transform.TransformPoint(mf.sharedMesh.bounds.center)
-                        : mf.transform.position;
-                    MelonLogger.Msg($"[BoundsLog]     [{i}] GO={mf.gameObject.name}  activeInHierarchy={mf.gameObject.activeInHierarchy}  mr.enabled={mr?.enabled.ToString() ?? "no MR"}  mesh={meshName}  worldCenter={worldCenter}");
-                }
-            }
-
-            var fakeSel = new List<LevelEditorObject> { obj };
-            var computed = GetSelectionBoundsCenter(fakeSel);
-            MelonLogger.Msg($"[BoundsLog]   GetSelectionBoundsCenter result = {computed}");
-            MelonLogger.Msg($"[BoundsLog] ===");
         }
     }
 }

@@ -195,7 +195,7 @@ namespace BabyBlocks
                     {
                         GUI.color = new Color(0.45f, 0.45f, 0.45f, 0.7f);
                         if (GUI.Button(itemRect, label + "\n(no mesh)", _itemStyle))
-                            PropMetadataPanel.SetPaletteSelection(prop.id);
+                            PropMetadataEditor.SetPaletteSelection(prop.id);
                     }
                     else
                     {
@@ -206,7 +206,7 @@ namespace BabyBlocks
                         if (e.type == EventType.MouseDown && e.button == 0 && itemRect.Contains(e.mousePosition))
                         {
                             if (isExcluded)
-                                PropMetadataPanel.SetPaletteSelection(prop.id);
+                                PropMetadataEditor.SetPaletteSelection(prop.id);
                             else
                             {
                                 _draggingIndex  = propIdx;
@@ -384,26 +384,7 @@ namespace BabyBlocks
 
         static void EnsureStyles()
         {
-            if (_itemStyle == null)
-            {
-                var padding = new RectOffset();
-                padding.left = 4;
-                padding.right = 4;
-                padding.top = 4;
-                padding.bottom = 4;
-                _itemStyle = new GUIStyle(GUI.skin.box)
-                {
-                    wordWrap = true,
-                    alignment = TextAnchor.MiddleCenter,
-                    clipping = TextClipping.Clip,
-                    padding = padding
-                };
-            }
-
-            if (_ghostStyle == null)
-            {
-                _ghostStyle = new GUIStyle(_itemStyle);
-            }
+            GuiStyleHelpers.EnsureItemAndGhostStyles(ref _itemStyle, ref _ghostStyle);
 
             if (_excludedXStyle == null)
             {

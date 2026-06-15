@@ -123,7 +123,6 @@ namespace BabyBlocks
                 AddSelectionWithGroup(obj);
                 selectedObject = obj;
                 if (!GizmoRenderer.IsReady) GizmoRenderer.Init();
-                // GizmoRenderer.LogSelectionBoundsInfo(obj);
             }
             else
             {
@@ -896,7 +895,7 @@ namespace BabyBlocks
             if (targets.Count == 0) return;
 
             foreach (var obj in targets)
-                if (obj.physicsMode != PhysicsMode.Static) mgr.ClearPhysics(obj, restoreMaterial: mode == PhysicsMode.Static);
+                if (obj.physicsMode != PhysicsMode.Static) PhysicsObjectManager.ClearPhysics(obj, restoreMaterial: mode == PhysicsMode.Static);
             if (mode == PhysicsMode.Static) return;
 
             int sharedLogicalGroup  = targets.All(o => o.groupId > 0 && o.groupId == targets[0].groupId)
@@ -905,12 +904,12 @@ namespace BabyBlocks
                 ? targets[0].physicsGroupId : 0;
 
             bool multi = targets.Count > 1;
-            if (multi && sharedLogicalGroup <= 0) sharedLogicalGroup = mgr.AllocateGroupId();
+            if (multi && sharedLogicalGroup <= 0) sharedLogicalGroup = GroupManager.AllocateGroupId();
 
             if (mode == PhysicsMode.Grabable || mode == PhysicsMode.Hat || mode == PhysicsMode.Rigidbody)
             {
                 if (multi && sharedPhysicsGroup <= 0)
-                    sharedPhysicsGroup = sharedLogicalGroup > 0 ? sharedLogicalGroup : mgr.AllocateGroupId();
+                    sharedPhysicsGroup = sharedLogicalGroup > 0 ? sharedLogicalGroup : GroupManager.AllocateGroupId();
                 if (sharedLogicalGroup <= 0 && sharedPhysicsGroup > 0)
                     sharedLogicalGroup = sharedPhysicsGroup;
             }
@@ -927,17 +926,17 @@ namespace BabyBlocks
 
             if (mode == PhysicsMode.Grabable || mode == PhysicsMode.Hat)
             {
-                if (multi) mgr.ActivatePhysicsGroup(targets, mode);
-                else       mgr.ActivatePhysics(targets[0]);
+                if (multi) GroupManager.ActivateWearableGroup(targets, mode);
+                else       PhysicsObjectManager.ActivatePhysics(targets[0]);
             }
             else if (mode == PhysicsMode.Rigidbody)
             {
-                if (multi) mgr.ActivateRigidbodyGroup(targets);
-                else       mgr.ActivatePhysics(targets[0]);
+                if (multi) GroupManager.ActivateRigidbodyGroup(targets);
+                else       PhysicsObjectManager.ActivatePhysics(targets[0]);
             }
             else
             {
-                foreach (var obj in targets) mgr.ActivatePhysics(obj);
+                foreach (var obj in targets) PhysicsObjectManager.ActivatePhysics(obj);
             }
         }
 
@@ -950,7 +949,7 @@ namespace BabyBlocks
             {
                 if (obj == null || obj.physicsMode != PhysicsMode.Hat) continue;
                 obj.hatHairAmt = hairAmount;
-                mgr.SyncHatHairAmount(obj);
+                PhysicsObjectManager.SyncHatHairAmount(obj);
             }
         }
 
@@ -963,7 +962,7 @@ namespace BabyBlocks
                 if (obj == null || obj.physicsMode != PhysicsMode.Grabable) continue;
                 obj.grabOffsetPos = pos;
                 obj.grabOffsetRot = rotEuler;
-                mgr.SyncGrabOffset(obj);
+                PhysicsObjectManager.SyncGrabOffset(obj);
             }
         }
 
@@ -989,18 +988,18 @@ namespace BabyBlocks
             {
                 foreach (var obj in targets)
                 {
-                    if (obj.physicsMode != PhysicsMode.Static) mgr.ClearPhysics(obj);
+                    if (obj.physicsMode != PhysicsMode.Static) PhysicsObjectManager.ClearPhysics(obj);
                     obj.physicsMode    = PhysicsMode.Static;
                     obj.physicsGroupId = 0;
                 }
             }
 
             var existingGroups = new HashSet<int>(targets.Where(o => o.groupId > 0).Select(o => o.groupId));
-            foreach (var gid in existingGroups) mgr.DissolveGroup(gid);
+            foreach (var gid in existingGroups) GroupManager.DissolveGroup(gid);
 
-            int groupId = mgr.AllocateGroupId();
+            int groupId = GroupManager.AllocateGroupId();
             foreach (var obj in targets) obj.groupId = groupId;
-            mgr.EnsureStaticGroupRoot(groupId, targets);
+            GroupManager.EnsureStaticGroupRoot(groupId, targets);
             Select(targets[0]);
         }
 
@@ -1013,7 +1012,7 @@ namespace BabyBlocks
             if (mgr != null)
             {
                 var groupsToClear = new HashSet<int>(targets.Where(o => o.groupId > 0).Select(o => o.groupId));
-                foreach (var gid in groupsToClear) mgr.DissolveGroup(gid);
+                foreach (var gid in groupsToClear) GroupManager.DissolveGroup(gid);
             }
             else
             {

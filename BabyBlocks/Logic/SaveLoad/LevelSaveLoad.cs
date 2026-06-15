@@ -299,6 +299,11 @@ namespace BabyBlocks
                         var construction = MaterialConstructionLibrary.FindById(materialConstructionId);
                         if (construction != null)
                             MaterialConstructionPanel.ApplyToInstance(leo, construction);
+                        else
+                        {
+                            MelonLogger.Warning($"[SaveLoad] Material construction {materialConstructionId} not found for {leo.addressableKey}");
+                            leo.materialConstructionId = -1;
+                        }
                     }
                     leos[i] = leo;
                     spawned++;
@@ -307,8 +312,8 @@ namespace BabyBlocks
                 if (version >= 6)
                     ReadBakedData(r, leos);
 
-                mgr.ApplyPhysicsGroups();
-                mgr.SyncLoadedHatHairValues();
+                GroupManager.ApplyGroups();
+                PhysicsObjectManager.SyncLoadedHatHairValues();
 
                 // Teleport BEFORE applying the saved base-map state: SetBaseMapEnabled's
                 // chunk-hide scan and brl.off toggling need to happen at the player's
@@ -504,7 +509,7 @@ namespace BabyBlocks
 
         // Reads the block written by WriteBakedData and applies each part to its
         // corresponding spawned object via MaterialBaker.ImportBakedData, BEFORE
-        // ApplyPhysicsGroups() runs - so Bake()'s "already baked" guard skips the GPU
+        // GroupManager.ApplyGroups() runs - so Bake()'s "already baked" guard skips the GPU
         // capture for every renderer covered by the saved data.
         static void ReadBakedData(BinaryReader r, LevelEditorObject[] leos)
         {

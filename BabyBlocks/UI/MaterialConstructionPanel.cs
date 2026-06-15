@@ -336,7 +336,7 @@ namespace BabyBlocks
             if (_showSurfaceDropdown)
             {
                 _surfaceScroll = GUILayout.BeginScrollView(_surfaceScroll, GUILayout.Height(120f));
-                foreach (var tag in PropMetadataPanel.KnownSurfaceTags)
+                foreach (var tag in PropMetadataEditor.KnownSurfaceTags)
                 {
                     string lbl = string.IsNullOrEmpty(tag) ? "(none — game default)" : tag;
                     if (string.Equals(tag, entry.surfaceType, StringComparison.Ordinal))
@@ -540,20 +540,7 @@ namespace BabyBlocks
 
         static void EnsureStyles()
         {
-            if (_itemStyle == null)
-            {
-                var padding = new RectOffset { left = 4, right = 4, top = 4, bottom = 4 };
-                _itemStyle = new GUIStyle(GUI.skin.box)
-                {
-                    wordWrap = true,
-                    alignment = TextAnchor.MiddleCenter,
-                    clipping = TextClipping.Clip,
-                    padding = padding
-                };
-            }
-
-            if (_ghostStyle == null)
-                _ghostStyle = new GUIStyle(_itemStyle);
+            GuiStyleHelpers.EnsureItemAndGhostStyles(ref _itemStyle, ref _ghostStyle);
 
             if (_buttonStyle == null)
             {

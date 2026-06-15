@@ -234,9 +234,6 @@ namespace BabyBlocks
             {
                 if (r != null && r.enabled)
                 {
-                    // TEMP DIAGNOSTIC
-                    if (IsUnderPlayer(r.transform))
-                        BBLog.Msg($"[BaseMapDiag] HidePropRenderers disabling PLAYER renderer '{r.name}' while hiding go='{go.name}'");
                     r.enabled = false;
                     _hiddenPropRenderers.Add(r);
                 }
@@ -390,35 +387,6 @@ namespace BabyBlocks
             }
         }
 
-        // --- TEMP DIAGNOSTICS for the save-load "player invisible" investigation.
-        // Always-on (not gated by BBLog.Verbose) so they show up in the log without
-        // needing a debug toggle. Remove once the root cause is found.
-        internal static bool IsUnderPlayer(Transform t)
-        {
-            var player = PlayerMovement.me;
-            if (player == null) return false;
-            for (var cur = t; cur != null; cur = cur.parent)
-                if (cur == player.transform) return true;
-            return false;
-        }
-
-        internal static string PlayerRendererSummary()
-        {
-            var player = PlayerMovement.me;
-            if (player == null) return "player=null";
-            var renderers = player.GetComponentsInChildren<Renderer>(true);
-            int en = 0, dis = 0;
-            foreach (var r in renderers)
-            {
-                if (r == null) continue;
-                if (r.enabled) en++; else dis++;
-            }
-            return $"player.activeSelf={player.gameObject.activeSelf} " +
-                   $"activeInHierarchy={player.gameObject.activeInHierarchy} " +
-                   $"renderers enabled={en} disabled={dis} total={renderers.Length}";
-        }
-        // --- end TEMP DIAGNOSTICS helpers
-
         // Hides a single loaded chunk's terrain (Terrain/MicroSplat MonoBehaviours),
         // TerrainCollider, and decoration props (via HidePropRenderers). Factored out
         // of SetBaseMapEnabled's chunk loop so RescanLoadedChunksForBaseMapOff can
@@ -482,25 +450,14 @@ namespace BabyBlocks
             // brl.off == true — see the brl.off ordering note on SetBaseMapEnabled.
             // Callers must keep brl.off == false for the duration they expect this
             // to actually do anything (see ApplyLoadedBaseMapStateDelayed).
-            if (brl.off)
-            {
-                // TEMP DIAGNOSTIC
-                BBLog.Msg("[BaseMapDiag] RescanLoadedChunksForBaseMapOff: brl.off==true, no-op");
-                return;
-            }
+            if (brl.off) return;
 
-            int loadedCount = 0, newCount = 0;
             foreach (var cell in brl.chunkMap)
             {
                 if (cell?.loadedChunk == null) continue;
-                loadedCount++;
                 if (!_scannedChunkIds.Add(cell.loadedChunk.GetInstanceID())) continue;
-                newCount++;
                 ScanChunkTerrainAndProps(cell.loadedChunk, disableNow: true);
             }
-
-            // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] RescanLoadedChunksForBaseMapOff: loadedChunks={loadedCount} newlyHidden={newCount}");
         }
 
         // Toggles the base map (terrain, props, vegetation, water/audio) for an empty
@@ -576,17 +533,6 @@ namespace BabyBlocks
                 // setting brl.off, to avoid the native crash described above.
                 _brlRendererCache = brl.GetComponentsInChildren<Renderer>(true);
                 BBLog.Msg($"[BaseMap] brl renderer cache gathered: {_brlRendererCache.Length}");
-
-                // TEMP DIAGNOSTIC: does BRL's hierarchy (and therefore _brlRendererCache,
-                // which Core.OnUpdate disables every frame while BaseMapEnabled==false)
-                // include any of the player's own renderers?
-                {
-                    int playerOverlap = 0;
-                    foreach (var r in _brlRendererCache)
-                        if (r != null && IsUnderPlayer(r.transform)) playerOverlap++;
-                    BBLog.Msg($"[BaseMapDiag] SetBaseMapEnabled(false): _brlRendererCache count={_brlRendererCache.Length} " +
-                        $"playerOverlap={playerOverlap} {PlayerRendererSummary()}");
-                }
 
                 // Lights parented directly under BRL (e.g. day/night sun rig), outside
                 // any chunk's loadedChunk — those are handled separately via
@@ -801,7 +747,7 @@ namespace BabyBlocks
                 var sb = new System.Text.StringBuilder(light.gameObject.name);
                 for (var p = light.transform.parent; p != null; p = p.parent)
                     sb.Insert(0, p.name + "/");
-                MelonLogger.Msg($"[BaseMap] Hiding newly-enabled light: {sb}");
+                BBLog.Msg($"[BaseMap] Hiding newly-enabled light: {sb}");
                 HideLight(light);
             }
         }
@@ -923,14 +869,7 @@ namespace BabyBlocks
         [HideFromIl2Cpp]
         internal static IEnumerator ApplyLoadedBaseMapStateDelayed(bool baseMapOff, int dayWeatherPlaylist, int restoreChapter)
         {
-            // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] ApplyLoadedBaseMapStateDelayed start baseMapOff={baseMapOff} " +
-                $"teleporting={Menu.me?.teleporting} {PlayerRendererSummary()}");
-
             while (Menu.me != null && Menu.me.teleporting) yield return null;
-
-            // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] teleporting finished {PlayerRendererSummary()}");
 
             if (!baseMapOff)
             {
@@ -947,24 +886,15 @@ namespace BabyBlocks
             DeferBrlOff = true;
             ApplyLoadedBaseMapState(baseMapOff, dayWeatherPlaylist, restoreChapter, deferBrlOff: true);
 
-            // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] after ApplyLoadedBaseMapState(deferBrlOff:true) {PlayerRendererSummary()}");
-
             for (int i = 0; i < 90 && !BaseMapEnabled; i++)
             {
                 yield return null;
                 RescanLoadedChunksForBaseMapOff();
-                // TEMP DIAGNOSTIC: sample every ~0.25s
-                if (i % 15 == 0)
-                    BBLog.Msg($"[BaseMapDiag] rescan frame {i} {PlayerRendererSummary()}");
             }
 
             DeferBrlOff = false;
             var brl = BestRegionLoader.me;
             if (brl != null && !BaseMapEnabled) brl.off = true;
-
-            // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] ApplyLoadedBaseMapStateDelayed done {PlayerRendererSummary()}");
         }
     }
 }

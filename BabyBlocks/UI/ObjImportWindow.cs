@@ -30,8 +30,6 @@ namespace BabyBlocks
         static string  _status = "";
         static bool    _invertFaces = false;
 
-        static readonly List<MeshCollider> _chunkColliders = new();
-
         public static bool IsTypingInUI  { get; private set; }
 
         public static bool ContainsPoint(Vector2 guiPoint) =>
@@ -201,15 +199,7 @@ namespace BabyBlocks
 
                 var col = colGO.AddComponent<MeshCollider>();
                 col.sharedMesh = mf.sharedMesh;
-                _chunkColliders.Add(col);
             }
-        }
-
-        public static void UpdateChunkColliders()
-        {
-            // Clean up destroyed colliders.
-            for (int i = _chunkColliders.Count - 1; i >= 0; i--)
-                if (_chunkColliders[i] == null) _chunkColliders.RemoveAt(i);
         }
 
 

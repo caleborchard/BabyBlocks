@@ -147,11 +147,7 @@ namespace BabyBlocks
                 // those chunks get hidden as they finish loading, instead of just
                 // the single chunk that's loaded on this exact frame.
                 if (_wasFarTeleportActive)
-                {
-                    // TEMP DIAGNOSTIC
-                    BBLog.Msg($"[BaseMapDiag] Core.OnUpdate: FarTeleportActive->false transition, brl.off={(BestRegionLoader.me != null ? BestRegionLoader.me.off : true)}, starting rescan window");
                     _postTeleportRescanFramesRemaining = PostTeleportRescanFrames;
-                }
                 _wasFarTeleportActive = false;
 
                 var brl = BestRegionLoader.me;
@@ -161,10 +157,6 @@ namespace BabyBlocks
                     {
                         BaseMapController.RescanLoadedChunksForBaseMapOff();
                         _postTeleportRescanFramesRemaining--;
-                        if (_postTeleportRescanFramesRemaining == 0)
-                        {
-                            BBLog.Msg("[BaseMapDiag] Core.OnUpdate: post-teleport rescan window done");
-                        }
                     }
 
                     if (!brl.off && !BaseMapController.DeferBrlOff && _postTeleportRescanFramesRemaining == 0)
@@ -176,13 +168,7 @@ namespace BabyBlocks
                     foreach (var r in cache)
                     {
                         if (r == null) { needsRefresh = true; break; }
-                        if (r.enabled)
-                        {
-                            // TEMP DIAGNOSTIC
-                            if (BaseMapController.IsUnderPlayer(r.transform))
-                                BBLog.Msg($"[BaseMapDiag] Core.OnUpdate disabling PLAYER renderer '{r.name}' from _brlRendererCache");
-                            r.enabled = false;
-                        }
+                        if (r.enabled) r.enabled = false;
                     }
                     if (needsRefresh)
                         BaseMapController._brlRendererCache =
@@ -271,9 +257,6 @@ namespace BabyBlocks
         static bool Prefix(BBConvoStarter __instance)
         {
             bool suppress = FlyCamController.SuppressCutsceneTriggers;
-            MelonLogger.Msg($"[Cutscene] OnTriggerEnter on '{__instance?.name}' " +
-                $"(used={__instance?.used}, cutscene={__instance?.cutscene}) " +
-                $"FlyCamActive={FlyCamController.FlyCamActive} suppress={suppress} time={Time.unscaledTime:F2}");
             return !suppress;
         }
     }
@@ -288,9 +271,6 @@ namespace BabyBlocks
         static bool Prefix(BBConvoStarter __instance)
         {
             bool suppress = FlyCamController.SuppressCutsceneTriggers;
-            MelonLogger.Msg($"[Cutscene] PlayCutscene on '{__instance?.name}' " +
-                $"(used={__instance?.used}, cutscene={__instance?.cutscene}) " +
-                $"FlyCamActive={FlyCamController.FlyCamActive} suppress={suppress} time={Time.unscaledTime:F2}");
             if (suppress)
                 FlyCamController.RegisterSuppressedCutscene(__instance);
             return !suppress;

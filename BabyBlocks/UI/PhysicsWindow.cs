@@ -156,7 +156,7 @@ namespace BabyBlocks
                     foreach (var id in bakingPropIds)
                     {
                         PropMetadataStore.SetDisableBaking(id, newDisableBaking);
-                        LevelEditorManager.Instance?.RefreshBakingForProp(id);
+                        if (LevelEditorManager.Instance != null) PhysicsObjectManager.RefreshBakingForProp(id);
                     }
                 }
                 y += LineH;

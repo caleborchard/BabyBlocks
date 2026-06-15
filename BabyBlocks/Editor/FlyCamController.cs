@@ -48,7 +48,6 @@ namespace BabyBlocks
             foreach (var bcs in pending)
             {
                 if (bcs == null) continue;
-                MelonLogger.Msg($"[Cutscene] Replaying suppressed PlayCutscene on '{bcs.name}'");
                 bcs.PlayCutscene();
             }
         }
@@ -129,18 +128,14 @@ namespace BabyBlocks
                 && !Menu.me.teleporting && !_farTeleportActive && !Core.IsKeyboardCaptured
                 && !PropPalette.IsDragging && !LevelEditor.IsSurfaceSnapDragging)
             {
-                if (PlayerMovement.me.inCutscene)
-                    MelonLogger.Msg("[Cutscene] R pressed but inCutscene=true — ignoring.");
-                else
+                if (!PlayerMovement.me.inCutscene)
                     ToggleFlyEditorMode();
             }
 
             if (Input.GetKeyDown(KeyCode.BackQuote) && PlayerMovement.me != null
                 && !Menu.me.teleporting && !_farTeleportActive && !Core.IsKeyboardCaptured)
             {
-                if (PlayerMovement.me.inCutscene)
-                    MelonLogger.Msg("[Cutscene] BackQuote pressed but inCutscene=true — ignoring.");
-                else
+                if (!PlayerMovement.me.inCutscene)
                     ToggleTeleportMode();
             }
 
@@ -259,7 +254,7 @@ namespace BabyBlocks
             }
             else
             {
-                LevelEditorManager.Instance?.SetEditorModeActive(false);
+                if (LevelEditorManager.Instance != null) PhysicsObjectManager.SetEditorModeActive(false);
                 CursorMode       = false;
                 _refreezePending = false;
                 Cursor.lockState = CursorLockMode.Locked;
@@ -293,7 +288,7 @@ namespace BabyBlocks
         {
             yield return null;
 
-            PropLibrary.ScanGpuiProps();
+            GpuiPropScanner.ScanGpuiProps();
 
             yield return null;
 
@@ -310,7 +305,7 @@ namespace BabyBlocks
             Cursor.lockState = CursorMode ? CursorLockMode.Confined : CursorLockMode.Locked;
             Cursor.visible   = CursorMode;
             if (LevelEditorManager.Instance != null)
-                LevelEditorManager.Instance.SetEditorModeActive(CursorMode && FlyCamActive);
+                PhysicsObjectManager.SetEditorModeActive(CursorMode && FlyCamActive);
             if (!CursorMode) LevelEditor.HideGizmo();
         }
 
@@ -394,9 +389,6 @@ namespace BabyBlocks
         // Both paths go through FarTeleportCo.
         public static void HandleFarTeleport()
         {
-            // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] HandleFarTeleport called, teleporting={Menu.me.teleporting} refreezePending={_refreezePending} farTeleportActive={_farTeleportActive}");
-
             if (Menu.me.teleporting || _refreezePending || _farTeleportActive) return;
 
             var player = PlayerMovement.me;
@@ -448,9 +440,6 @@ namespace BabyBlocks
         //      during the sequence it records a consistent position.
         static IEnumerator FarTeleportCo(PlayerMovement player, Vector3 target, float facingY)
         {
-            // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] FarTeleportCo start target={target} BaseMapEnabled={BaseMapController.BaseMapEnabled} brl.off={BestRegionLoader.me.off}");
-
             // Pause autosave; stamp target so any stray save writes a consistent position.
             SaveGod.me.stopSaving = true;
             SaveGod.theSave.continuePt = target;
@@ -529,9 +518,6 @@ namespace BabyBlocks
 
             br.off = false;
 
-            // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] FarTeleportCo chunks drained, brl.off=false, about to FreezePlayer/SwitchModes {BaseMapController.PlayerRendererSummary()}");
-
             // Set up player so TeleportCo's ragdoll sequence has the right puppet state.
             FreezePlayer(player, false);
             player.anim.transform.rotation = Quaternion.Euler(0f, facingY, 0f);
@@ -600,13 +586,9 @@ namespace BabyBlocks
                 var crestTransform = bigManager?.transform.Find("CrestWaterRenderer");
                 crestWater = crestTransform?.gameObject;
 
-                // TEMP DIAGNOSTIC
-                BBLog.Msg($"[BaseMapDiag] FarTeleportCo: CrestWaterRenderer found={crestWater != null} activeSelf={(crestWater != null ? crestWater.activeSelf : (bool?)null)}");
-
                 if (crestWater != null && !crestWater.activeSelf)
                 {
                     crestWater.SetActive(true);
-                    BBLog.Msg("[BaseMapDiag] FarTeleportCo: temporarily re-enabled CrestWaterRenderer for Menu.me.Teleport");
                 }
                 else
                 {
@@ -619,25 +601,10 @@ namespace BabyBlocks
             // ragdoll foot-placement sequence and clears Menu.me.teleporting.
             Menu.me.Teleport(target);
 
-            // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] FarTeleportCo called Menu.me.Teleport, teleporting={Menu.me.teleporting} fullyLoaded={BestRegionLoader.fullyLoaded} brl.off={br.off} {BaseMapController.PlayerRendererSummary()}");
-            int waitFrames = 0;
-            while (Menu.me.teleporting)
-            {
-                yield return null;
-                waitFrames++;
-                if (waitFrames % 30 == 0)
-                    BBLog.Msg($"[BaseMapDiag] FarTeleportCo still waiting on teleporting, frame={waitFrames} fullyLoaded={BestRegionLoader.fullyLoaded} brl.off={br.off} FarTeleportActive={_farTeleportActive} BaseMapEnabled={BaseMapController.BaseMapEnabled} {BaseMapController.PlayerRendererSummary()}");
-            }
-
-            // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] FarTeleportCo teleporting finished after {waitFrames} frames {BaseMapController.PlayerRendererSummary()}");
+            while (Menu.me.teleporting) yield return null;
 
             if (crestWater != null && !BaseMapController.BaseMapEnabled)
-            {
                 crestWater.SetActive(false);
-                BBLog.Msg("[BaseMapDiag] FarTeleportCo: re-disabled CrestWaterRenderer after Menu.me.Teleport");
-            }
 
             // Re-point the cached "[MicroSplat] Layer N" prop materials at the freshly loaded
             // terrain's texture arrays. The parallel chunk drain above can drop the shared
@@ -684,9 +651,6 @@ namespace BabyBlocks
             SkipGame.me.blackScreenAlpha = 0f;
 
             _farTeleportActive = false;
-
-            // TEMP DIAGNOSTIC
-            BBLog.Msg($"[BaseMapDiag] FarTeleportCo end, brl.off={br.off} {BaseMapController.PlayerRendererSummary()}");
         }
     }
 }
