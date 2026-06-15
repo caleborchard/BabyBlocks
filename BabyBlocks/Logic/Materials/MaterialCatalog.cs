@@ -30,6 +30,13 @@ namespace BabyBlocks
         internal static bool MaterialSourcesLoaded;
         internal static bool MaterialSourcesLoading;
 
+        // Materials successfully (re)loaded from their recorded materialSourcePropId — the
+        // canonical, correctly-textured native instance. Once verified, ResolveMaterial prefers
+        // these over whatever same-named instance happens to be resident in the current area
+        // (which may be a broken/textureless area-local copy, e.g. "NewMat" in the icy area).
+        // Persists across area changes (InvalidateMaterialCache does not clear it).
+        internal static readonly Dictionary<string, Material> VerifiedSourceMaterials = new(StringComparer.OrdinalIgnoreCase);
+
         internal static void SortMaterialList()
         {
             if (MaterialNames.Count <= 2) return;
@@ -213,12 +220,19 @@ namespace BabyBlocks
 
         // Registers a material source and back-fills materialSourcePropId on every saved entry that
         // shares the same overrideMaterialId but had no source recorded yet. Returns true if any were updated.
+        //
+        // Only fills in EMPTY materialSourcePropId values — never overwrites an existing one.
+        // AddPartsToMaterialList calls this for every material found in a loaded prop's parts, not
+        // just the one being specifically resolved, so a generic material name (e.g. "NewMat")
+        // that's incidentally also present in some unrelated prop's asset must not have its
+        // already-recorded (correct) source clobbered by that unrelated prop's id.
         internal static bool BackfillMaterialSource(string materialName, string sourcePropId)
         {
             if (string.IsNullOrEmpty(materialName) || string.IsNullOrEmpty(sourcePropId)) return false;
             // MicroSplat layer materials are generated at runtime — they have no asset source prop.
             if (materialName.StartsWith("[MicroSplat]", StringComparison.Ordinal)) return false;
-            KnownMaterialSources[materialName] = sourcePropId;
+            if (!KnownMaterialSources.ContainsKey(materialName))
+                KnownMaterialSources[materialName] = sourcePropId;
 
             bool anyChanged = false;
             foreach (var kvp in PropMetadataStore._byId)
@@ -226,7 +240,7 @@ namespace BabyBlocks
                 var item = kvp.Value;
                 if (item.excluded) continue;
                 if (!string.Equals(item.overrideMaterialId, materialName, StringComparison.OrdinalIgnoreCase)) continue;
-                if (string.Equals(item.materialSourcePropId, sourcePropId, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!string.IsNullOrEmpty(item.materialSourcePropId)) continue; // already has a source — don't clobber
                 item.materialSourcePropId = sourcePropId;
                 anyChanged = true;
             }
@@ -328,9 +342,17 @@ namespace BabyBlocks
         // MaterialSourcesLoading is still false until ActivateEditorScanCo's later
         // InvalidateMaterialSources call, so the palette briefly flashes the full prop list
         // (with not-yet-fixed-up materials) before settling into "Loading materials…".
+        //
+        // Deliberately ignores MaterialSourcesLoaded: ApplyMaterialOverridesToRoot (run for
+        // already-placed props as a save loads, before the editor is ever opened) can trigger
+        // EnsureMaterialList -> EnsureMaterialSources's synchronous pass first, which sets
+        // MaterialSourcesLoaded = true without ever setting MaterialSourcesLoading. If that
+        // happened, this would otherwise no-op and leave MaterialSourcesLoading false for the
+        // 1-2 frames before ActivateEditorScanCo's InvalidateMaterialSources call — exactly the
+        // flash this function exists to prevent.
         internal static void MarkMaterialSourcesPending()
         {
-            if (MaterialSourcesLoaded || MaterialSourcesLoading) return;
+            if (MaterialSourcesLoading) return;
             MaterialSourcesLoading = true;
         }
 
@@ -341,8 +363,17 @@ namespace BabyBlocks
             {
                 var item = kvp.Value;
                 if (string.IsNullOrEmpty(item.overrideMaterialId)) continue;
-                if (MaterialByName.ContainsKey(item.overrideMaterialId)) continue; // already in memory
-                if (string.IsNullOrEmpty(item.materialSourcePropId)) continue;      // no source tracked yet
+                if (string.IsNullOrEmpty(item.materialSourcePropId)) continue; // no source tracked yet
+
+                // Already verified from its source prop in a previous pass (this area or an
+                // earlier one) — just re-register it, no reload needed, unless it's been
+                // destroyed (e.g. asset bundle released during a far teleport).
+                if (VerifiedSourceMaterials.TryGetValue(item.overrideMaterialId, out var verified) && verified != null)
+                {
+                    MaterialByName[item.overrideMaterialId] = verified;
+                    continue;
+                }
+
                 list.Add(item);
             }
             return list;
@@ -379,11 +410,32 @@ namespace BabyBlocks
             return anyBackfilled;
         }
 
+        // Finds a material by exact name among a loaded prop's parts. Parts come from the loaded
+        // asset — always native materials, no contamination risk (see AddPartsToMaterialList).
+        static Material FindPartMaterialByName(PropInfo info, string name)
+        {
+            if (info?.parts == null) return null;
+            foreach (var part in info.parts)
+            {
+                if (part?.materials == null) continue;
+                foreach (var mat in part.materials)
+                    if (mat != null && string.Equals(mat.name, name, StringComparison.OrdinalIgnoreCase))
+                        return mat;
+            }
+            return null;
+        }
+
         static bool RunOneSourceItem(PropExtraInfo item, out bool anyLoaded, out bool anyBackfilled)
         {
             anyLoaded = false;
             anyBackfilled = false;
-            if (MaterialByName.ContainsKey(item.overrideMaterialId)) return false; // filled by an earlier item
+
+            // Filled by an earlier item in this same pass that shares the same overrideMaterialId.
+            if (VerifiedSourceMaterials.TryGetValue(item.overrideMaterialId, out var already) && already != null)
+            {
+                MaterialByName[item.overrideMaterialId] = already;
+                return false;
+            }
 
             var sourceInfo = PropLibrary.FindById(item.materialSourcePropId);
             if (sourceInfo == null) return false;
@@ -392,25 +444,32 @@ namespace BabyBlocks
             {
                 PropLibrary.LoadPropData(sourceInfo);
                 anyLoaded = true;
+
                 // Scan parts directly — GPUI materials don't reliably appear in
                 // Resources.FindObjectsOfTypeAll after loading, but parts hold the real refs.
                 AddPartsToMaterialList(sourceInfo);
 
-                // Validate: if the material still isn't in the list after loading the recorded
-                // source prop, the source was recorded incorrectly (e.g. from a contaminated
-                // renderer). Clear it so we don't keep trying the wrong prop.
-                if (!MaterialByName.ContainsKey(item.overrideMaterialId))
+                // Validate: if the override material isn't among the loaded source's parts, the
+                // source was recorded incorrectly (e.g. from a contaminated renderer). Clear it
+                // so we don't keep trying the wrong prop.
+                var loadedMat = FindPartMaterialByName(sourceInfo, item.overrideMaterialId);
+                if (loadedMat == null)
                 {
                     item.materialSourcePropId = string.Empty;
                     anyBackfilled = true; // trigger Save() to persist the correction
                     return true;
                 }
 
+                // This is the canonical, correctly-textured instance — overwrite any inferior
+                // area-local instance that the in-memory scan may have picked up under this name.
+                MaterialByName[item.overrideMaterialId] = loadedMat;
+                VerifiedSourceMaterials[item.overrideMaterialId] = loadedMat;
+
                 // Propagate this source to all other entries that share the same override material.
                 if (BackfillMaterialSource(item.overrideMaterialId, item.materialSourcePropId))
                     anyBackfilled = true;
             }
-            catch { }
+            catch (Exception) { }
             return true;
         }
 
@@ -898,12 +957,23 @@ namespace BabyBlocks
         internal static Material ResolveMaterial(string matName, string sourcePropId = null)
         {
             if (string.IsNullOrEmpty(matName)) return null;
+
+            // A material verified-loaded from its recorded materialSourcePropId is the canonical,
+            // correctly-textured instance — it wins over whatever same-named instance happens to
+            // be resident in the current scene (which may be a broken/textureless area-local copy).
+            if (VerifiedSourceMaterials.TryGetValue(matName, out var verifiedMat) && verifiedMat != null)
+            {
+                MaterialByName[matName] = verifiedMat;
+                return verifiedMat;
+            }
+
             if (MaterialVariantTracker.SceneCurrentByName.TryGetValue(matName, out var liveMat) && liveMat != null)
             {
                 MaterialByName[matName] = liveMat;
                 return liveMat;
             }
-            if (MaterialByName.TryGetValue(matName, out var mat) && mat != null) return mat;
+            if (MaterialByName.TryGetValue(matName, out var mat) && mat != null)
+                return mat;
 
             // Scene-variant clones are looked up by display name — no .name access on Il2Cpp objects.
             if (MaterialVariantTracker.SceneVariantByDisplayName.TryGetValue(matName, out var clone) && clone != null)
@@ -920,7 +990,8 @@ namespace BabyBlocks
                 string baseName = (bracket > 0 && matName.EndsWith("]", StringComparison.Ordinal))
                     ? matName.Substring(0, bracket)
                     : matName;
-                if (MaterialByName.TryGetValue(baseName, out mat) && mat != null) return mat;
+                if (MaterialByName.TryGetValue(baseName, out mat) && mat != null)
+                    return mat;
                 mat = MaterialPathCatalog.TryLoadMaterialByName(baseName, sourcePropId);
                 if (mat != null && !MaterialByName.ContainsKey(baseName)) MaterialByName[baseName] = mat;
                 return mat;
@@ -935,7 +1006,8 @@ namespace BabyBlocks
             if (lastBracket > 0 && matName.EndsWith("]", StringComparison.Ordinal))
             {
                 string baseName = matName.Substring(0, lastBracket);
-                if (MaterialByName.TryGetValue(baseName, out mat) && mat != null) return mat;
+                if (MaterialByName.TryGetValue(baseName, out mat) && mat != null)
+                    return mat;
                 mat = MaterialPathCatalog.TryLoadMaterialByName(baseName, sourcePropId);
                 if (mat != null)
                 {
