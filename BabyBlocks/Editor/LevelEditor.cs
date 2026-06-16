@@ -961,7 +961,7 @@ namespace BabyBlocks
                     {
                         // Diagonal of the plane handle's two (possibly camera-flipped) axes.
                         // GetEffectivePivotRot already accounts for the per-axis flip state.
-                        var   rot    = LocalMode ? selectedObject.transform.rotation : Quaternion.identity;
+                        var   rot    = selectedObject.transform.rotation; // scale is always local-axis
                         var   dirA   = GizmoRenderer.GetEffectivePivotRot(aIdx) * Vector3.up;
                         var   dirB   = GizmoRenderer.GetEffectivePivotRot(bIdx) * Vector3.up;
                         var   localDiag = rot * (dirA + dirB).normalized;
@@ -1020,7 +1020,7 @@ namespace BabyBlocks
             {
                 // Project onto the effective arrow direction (accounts for camera-side flip).
                 // In local mode the gizmo inherits obj.rotation, so we apply it here too.
-                var   scaleObjRot    = LocalMode ? selectedObject.transform.rotation : Quaternion.identity;
+                var   scaleObjRot    = selectedObject.transform.rotation; // scale is always local-axis
                 var   localAxis      = scaleObjRot * (GizmoRenderer.GetEffectivePivotRot(_dragAxis) * Vector3.up);
                 var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
                 float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localAxis, cam);

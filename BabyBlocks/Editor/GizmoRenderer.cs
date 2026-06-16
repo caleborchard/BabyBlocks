@@ -139,7 +139,7 @@ namespace BabyBlocks
 
             _pivotPos = _pivotOverrideActive ? _pivotOverride : GetSelectionBoundsCenter(selection);
             _root.transform.position = _pivotPos;
-            bool useObjRot = LevelEditor.LocalMode && primary != null;
+            bool useObjRot = (LevelEditor.LocalMode || tool == LevelEditor.ToolMode.Scale) && primary != null;
             _root.transform.rotation = useObjRot ? primary.transform.rotation : Quaternion.identity;
             float dist = Vector3.Distance(mainCam.transform.position, _root.transform.position);
             _root.transform.localScale = Vector3.one * Mathf.Max(dist * 0.14f, 0.02f);
