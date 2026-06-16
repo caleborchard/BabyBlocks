@@ -1,19 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
-using BabyStepsNetworking.Client;
-using BabyStepsNetworking.Extensions;
-using BabyStepsNetworking.Transport;
 using Il2Cpp;
 using MelonLoader;
 using UnityEngine;
 
 namespace BabyBlocks.Networking
 {
-    // Bridges to BabyStepsMultiplayerClient's NetworkManager purely via reflection (so
-    // BabyBlocks has no hard dependency on that mod and keeps working fine when it isn't
-    // installed), then talks to its NetworkClient through a real BabyStepsNetworking
-    // mod channel (BabyBlocks references BabyStepsNetworking directly).
+    // Bridges to BabyStepsMultiplayerClient's NetworkManager and BabyStepsNetworking's channel
+    // types purely via reflection, so BabyBlocks has no hard dependency on either and keeps
+    // working fine when they aren't installed.
     //
     // Every connected client that has BabyBlocks periodically broadcasts a 1-byte "hello"
     // packet over a mod channel. The multiplayer server auto-relays any unrecognized
@@ -93,7 +89,15 @@ namespace BabyBlocks.Networking
         private static PropertyInfo _suitColorValueProp; // MelonPreferences_Entry<Color>.Value
         private static PropertyInfo _nicknameValueProp;  // MelonPreferences_Entry<string>.Value
 
-        private static IModChannel _channel;
+        // BabyStepsNetworking channel (object so no hard type dependency)
+        private static object   _channel;
+        private static MethodInfo _createModChannelMethod;
+        private static MethodInfo _channelSendMethod;
+        private static EventInfo  _channelDataReceivedEvent;
+        private static object     _packetDeliveryReliable;
+        private static object     _packetDeliveryUnreliable;
+        private static Delegate   _dataReceivedHandler;
+
         private static float _nextAnnounceTime;
         private static float _nextFreecamSendTime;
         private static bool _wasFlyCamActive;
@@ -188,6 +192,44 @@ namespace BabyBlocks.Networking
                 _reflectionOk = true;
                 BBLog.Msg("[BabyBlocks][ModNetworking] Reflection bridge to BabyStepsMultiplayerClient established");
 
+                // Resolve BabyStepsNetworking channel types (optional — absent = no channel sync)
+                try
+                {
+                    Assembly bsnAsm = null;
+                    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                        if (asm.GetName().Name == "BabyStepsNetworking") { bsnAsm = asm; break; }
+
+                    if (bsnAsm == null)
+                    {
+                        BBLog.Msg("[BabyBlocks][ModNetworking] BabyStepsNetworking not present — channel sync disabled");
+                    }
+                    else
+                    {
+                        var networkClientType    = bsnAsm.GetType("BabyStepsNetworking.Client.NetworkClient");
+                        var modChannelType       = bsnAsm.GetType("BabyStepsNetworking.Client.IModChannel");
+                        var packetDeliveryType   = bsnAsm.GetType("BabyStepsNetworking.Transport.PacketDelivery");
+
+                        _createModChannelMethod    = networkClientType?.GetMethod("CreateModChannel", new[] { typeof(string) });
+                        _channelSendMethod         = modChannelType?.GetMethod("Send");
+                        _channelDataReceivedEvent  = modChannelType?.GetEvent("DataReceived");
+
+                        if (packetDeliveryType != null)
+                        {
+                            _packetDeliveryReliable   = Enum.Parse(packetDeliveryType, "ReliableOrdered");
+                            _packetDeliveryUnreliable = Enum.Parse(packetDeliveryType, "Unreliable");
+                        }
+
+                        if (_createModChannelMethod != null && _channelSendMethod != null && _channelDataReceivedEvent != null)
+                            BBLog.Msg("[BabyBlocks][ModNetworking] BabyStepsNetworking channel types resolved");
+                        else
+                            MelonLogger.Warning("[BabyBlocks][ModNetworking] BabyStepsNetworking found but channel types incomplete — sync disabled");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"[BabyBlocks][ModNetworking] BabyStepsNetworking reflection failed: {ex.Message}");
+                }
+
                 // Best-effort: resolve ModSettings.player.SuitColor/Nickname so freecam
                 // broadcasts can include our own appearance. Failure here is non-fatal.
                 try
@@ -251,10 +293,12 @@ namespace BabyBlocks.Networking
         {
             try
             {
-                var networkClient = _networkClientField.GetValue(networkManager) as NetworkClient;
+                if (_createModChannelMethod == null) return; // BabyStepsNetworking not available
+
+                var networkClient = _networkClientField.GetValue(networkManager);
                 if (networkClient == null) return;
 
-                var channel = networkClient.CreateModChannel("BabyBlocks");
+                var channel = _createModChannelMethod.Invoke(networkClient, new object[] { "BabyBlocks" });
                 if (channel == null) return;
 
                 // Ensure the level manager and prop library exist before we start
@@ -282,7 +326,10 @@ namespace BabyBlocks.Networking
                 LevelEditor.ClearAllSelectionState();
                 _networkedObjects.Clear();
 
-                channel.DataReceived += OnDataReceived;
+                _dataReceivedHandler = Delegate.CreateDelegate(
+                    _channelDataReceivedEvent.EventHandlerType, null,
+                    typeof(ModNetworking).GetMethod("OnDataReceived", BindingFlags.NonPublic | BindingFlags.Static));
+                _channelDataReceivedEvent.AddEventHandler(channel, _dataReceivedHandler);
 
                 _channel = channel;
                 PeersWithBabyBlocks.Clear();
@@ -303,11 +350,12 @@ namespace BabyBlocks.Networking
         {
             try
             {
-                if (_channel != null)
-                    _channel.DataReceived -= OnDataReceived;
+                if (_channel != null && _channelDataReceivedEvent != null && _dataReceivedHandler != null)
+                    _channelDataReceivedEvent.RemoveEventHandler(_channel, _dataReceivedHandler);
             }
             catch { /* best-effort */ }
 
+            _dataReceivedHandler = null;
             _channel = null;
             _pendingLevelSnapshot = null;
             _levelChunkStates.Clear();
@@ -322,7 +370,7 @@ namespace BabyBlocks.Networking
         {
             try
             {
-                _channel.Send(new byte[] { HelloMarker }, PacketDelivery.ReliableOrdered);
+                ChannelSend(new byte[] { HelloMarker }, reliable: true);
             }
             catch (Exception ex)
             {
@@ -399,7 +447,7 @@ namespace BabyBlocks.Networking
                 WriteFloat(payload, ref o, scale.y);
                 WriteFloat(payload, ref o, scale.z);
 
-                _channel.Send(payload, PacketDelivery.ReliableOrdered);
+                ChannelSend(payload, reliable: true);
             }
             catch (Exception ex)
             {
@@ -444,11 +492,24 @@ namespace BabyBlocks.Networking
                 payload[o++] = (byte)((nameBytes.Length >> 8) & 0xFF);
                 Buffer.BlockCopy(nameBytes, 0, payload, o, nameBytes.Length);
 
-                _channel.Send(payload, (!active || reliable) ? PacketDelivery.ReliableOrdered : PacketDelivery.Unreliable);
+                ChannelSend(payload, !active || reliable);
             }
             catch (Exception ex)
             {
                 MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendFreecamUpdate failed: {ex.Message}");
+            }
+        }
+
+        private static void ChannelSend(byte[] payload, bool reliable)
+        {
+            if (_channel == null || _channelSendMethod == null) return;
+            try
+            {
+                _channelSendMethod.Invoke(_channel, new object[] { payload, reliable ? _packetDeliveryReliable : _packetDeliveryUnreliable });
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] Send failed: {ex.Message}");
             }
         }
 
@@ -665,7 +726,7 @@ namespace BabyBlocks.Networking
                 WriteFloat(payload, ref o, scale.y);
                 WriteFloat(payload, ref o, scale.z);
 
-                _channel.Send(payload, reliable ? PacketDelivery.ReliableOrdered : PacketDelivery.Unreliable);
+                ChannelSend(payload, reliable);
             }
             catch (Exception ex)
             {
@@ -712,7 +773,7 @@ namespace BabyBlocks.Networking
                 payload[o++] = PropDeletedMarker;
                 WriteULong(payload, ref o, netId);
 
-                _channel.Send(payload, PacketDelivery.ReliableOrdered);
+                ChannelSend(payload, reliable: true);
             }
             catch (Exception ex)
             {
@@ -759,7 +820,7 @@ namespace BabyBlocks.Networking
                 WriteULong(payload, ref o, netId);
                 Buffer.BlockCopy(BitConverter.GetBytes(materialConstructionId), 0, payload, o, 4);
 
-                _channel.Send(payload, PacketDelivery.ReliableOrdered);
+                ChannelSend(payload, reliable: true);
             }
             catch (Exception ex)
             {
@@ -776,7 +837,7 @@ namespace BabyBlocks.Networking
             if (_channel == null) return;
             try
             {
-                _channel.Send(new byte[] { LevelClearedMarker }, PacketDelivery.ReliableOrdered);
+                ChannelSend(new byte[] { LevelClearedMarker }, reliable: true);
             }
             catch (Exception ex)
             {
@@ -822,7 +883,7 @@ namespace BabyBlocks.Networking
                 for (int i = 0; i < n; i++)
                     WriteULong(payload, ref o, ids[i]);
 
-                _channel.Send(payload, PacketDelivery.ReliableOrdered);
+                ChannelSend(payload, reliable: true);
             }
             catch (Exception ex)
             {
@@ -879,7 +940,7 @@ namespace BabyBlocks.Networking
             if (_channel == null) return;
             try
             {
-                _channel.Send(new byte[] { BaseMapStateMarker, (byte)(enabled ? 1 : 0) }, PacketDelivery.ReliableOrdered);
+                ChannelSend(new byte[] { BaseMapStateMarker, (byte)(enabled ? 1 : 0) }, reliable: true);
             }
             catch (Exception ex)
             {
@@ -908,7 +969,7 @@ namespace BabyBlocks.Networking
             if (_channel == null) return;
             try
             {
-                _channel.Send(new byte[] { LevelTransferRequestMarker }, PacketDelivery.ReliableOrdered);
+                ChannelSend(new byte[] { LevelTransferRequestMarker }, reliable: true);
             }
             catch (Exception ex)
             {
@@ -936,7 +997,7 @@ namespace BabyBlocks.Networking
                     Buffer.BlockCopy(BitConverter.GetBytes((ushort)totalChunks), 0, payload, o, 2); o += 2;
                     Buffer.BlockCopy(BitConverter.GetBytes((ushort)i), 0, payload, o, 2); o += 2;
                     Buffer.BlockCopy(data, offset, payload, o, chunkLen);
-                    _channel.Send(payload, PacketDelivery.ReliableOrdered);
+                    ChannelSend(payload, reliable: true);
                 }
             }
             catch (Exception ex)
@@ -1090,7 +1151,7 @@ namespace BabyBlocks.Networking
                     payload[o++] = (byte)Mathf.Clamp(Mathf.RoundToInt(color.b * 255f), 0, 255);
                 }
 
-                _channel.Send(payload, PacketDelivery.ReliableOrdered);
+                ChannelSend(payload, reliable: true);
             }
             catch (Exception ex)
             {
@@ -1157,7 +1218,7 @@ namespace BabyBlocks.Networking
                 WriteFloat(payload, ref o, scale.y);
                 WriteFloat(payload, ref o, scale.z);
 
-                _channel.Send(payload, reliable ? PacketDelivery.ReliableOrdered : PacketDelivery.Unreliable);
+                ChannelSend(payload, reliable);
             }
             catch (Exception ex)
             {
@@ -1172,7 +1233,7 @@ namespace BabyBlocks.Networking
             if (_channel == null) return;
             try
             {
-                _channel.Send(new byte[] { PropGhostEndMarker }, PacketDelivery.ReliableOrdered);
+                ChannelSend(new byte[] { PropGhostEndMarker }, reliable: true);
             }
             catch (Exception ex)
             {

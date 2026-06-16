@@ -678,10 +678,6 @@
 
 	</ItemGroup>
 
-	<ItemGroup>
-		<ProjectReference Include="..\..\BabyStepsNetworking\BabyStepsNetworking\BabyStepsNetworking.csproj" />
-	</ItemGroup>
-
 	<PropertyGroup>
 		<AllowUnsafeBlocks>True</AllowUnsafeBlocks>
 		<EnableDefaultCompileItems>false</EnableDefaultCompileItems>
