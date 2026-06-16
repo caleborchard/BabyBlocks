@@ -171,6 +171,8 @@ namespace BabyBlocks
                 int spawned = 0;
 
                 mgr.RemoveAll();
+                LevelEditor.ClearAllSelectionState();
+                BabyBlocks.Networking.ModNetworking.ClearNetworkedObjects();
 
                 var leos = new LevelEditorObject[count];
 
@@ -307,6 +309,12 @@ namespace BabyBlocks
                     }
                     leos[i] = leo;
                     spawned++;
+
+                    // Both clients load the same .bbb in the same record order, so the
+                    // record index is a netId both sides agree on without any negotiation -
+                    // lets selection-highlight/transform/delete sync work for props that
+                    // came from a shared save file rather than being placed live this session.
+                    BabyBlocks.Networking.ModNetworking.RegisterLoadedNetworkedObject((ulong)(i + 1), leo);
                 }
 
                 if (version >= 6)

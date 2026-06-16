@@ -51,9 +51,9 @@ namespace BabyBlocks
         static float _nextNetTransformSendTime;
         static float _nextNetTransformReliableTime;
 
-        // Last netId broadcast via SendPropSelected, so selection changes are only sent
-        // once (ulong.MaxValue = "never sent yet", forcing an initial broadcast).
-        static ulong _lastBroadcastSelectedNetId = ulong.MaxValue;
+        // netIds last broadcast via SendPropSelected, so selection changes are only sent
+        // when the set of selected networked props actually changes.
+        static List<ulong> _lastBroadcastSelectedNetIds = new();
 
         // Throttling for SendPropGhostUpdate broadcasts while dragging a prop out of the
         // palette (before it's dropped), mirroring the drag-transform cadence above.
@@ -196,6 +196,26 @@ namespace BabyBlocks
             selectedObject = null;
         }
 
+        // Called after the entire level is cleared (locally via the Clear button, or
+        // remotely via a peer's clear broadcast) since every LevelEditorObject reference
+        // becomes stale at once - resets selection/drag/gizmo state accordingly.
+        public static void ClearAllSelectionState()
+        {
+            _selection.Clear();
+            selectedObject = null;
+            _dragObjects.Clear();
+            _dragStartPositions.Clear();
+            _dragStartScales.Clear();
+            _dragStartRotations.Clear();
+            _isDragging = false;
+            if (_pivotLocked)
+            {
+                GizmoRenderer.ClearPivotOverride();
+                _pivotLocked = false;
+            }
+            HideGizmo();
+        }
+
         // Called when a peer deletes a networked prop, so our copy is dropped from
         // selection/drag state before LevelEditorManager destroys it - otherwise we'd be
         // left holding a reference to a destroyed object.
@@ -295,13 +315,18 @@ namespace BabyBlocks
             GizmoRenderer.DrawOutline(IsSurfaceSnapDragging ? null : _selection, main);
 
             // Broadcast selection changes for the remote highlight feature. Only networked
-            // props (netId != 0) are reported; selecting a non-networked prop or nothing
-            // is reported as netId 0, telling peers to clear our highlight.
-            ulong selectedNetId = selectedObject != null ? selectedObject.netId : 0;
-            if (selectedNetId != _lastBroadcastSelectedNetId)
+            // props (netId != 0) are reported; an empty list tells peers to clear our
+            // highlight entirely.
+            var selectedNetIds = new List<ulong>();
+            for (int i = 0; i < _selection.Count; i++)
             {
-                BabyBlocks.Networking.ModNetworking.SendPropSelected(selectedNetId);
-                _lastBroadcastSelectedNetId = selectedNetId;
+                var sel = _selection[i];
+                if (sel != null && sel.netId != 0) selectedNetIds.Add(sel.netId);
+            }
+            if (!selectedNetIds.SequenceEqual(_lastBroadcastSelectedNetIds))
+            {
+                BabyBlocks.Networking.ModNetworking.SendPropSelected(selectedNetIds);
+                _lastBroadcastSelectedNetIds = selectedNetIds;
             }
 
             if (Input.GetMouseButton(1)) return;
@@ -448,9 +473,9 @@ namespace BabyBlocks
         // selection-broadcast loop above stops running while the editor is closed.
         public static void ClearRemoteSelectionBroadcast()
         {
-            if (_lastBroadcastSelectedNetId == 0) return;
-            BabyBlocks.Networking.ModNetworking.SendPropSelected(0);
-            _lastBroadcastSelectedNetId = 0;
+            if (_lastBroadcastSelectedNetIds.Count == 0) return;
+            BabyBlocks.Networking.ModNetworking.SendPropSelected(new List<ulong>());
+            _lastBroadcastSelectedNetIds = new List<ulong>();
         }
 
         static bool IsPointerOverUI()
@@ -1130,6 +1155,10 @@ namespace BabyBlocks
             foreach (var obj in targets) obj.groupId = groupId;
             GroupManager.EnsureStaticGroupRoot(groupId, targets);
             Select(targets[0]);
+
+            var netIds = targets.Where(o => o.netId != 0).Select(o => o.netId).ToList();
+            if (netIds.Count > 0)
+                BabyBlocks.Networking.ModNetworking.SendGroupSync(netIds, group: true);
         }
 
         public static void UngroupSelection()
@@ -1149,6 +1178,10 @@ namespace BabyBlocks
             }
 
             selectedObject = targets[0];
+
+            var netIds = targets.Where(o => o.netId != 0).Select(o => o.netId).ToList();
+            if (netIds.Count > 0)
+                BabyBlocks.Networking.ModNetworking.SendGroupSync(netIds, group: false);
         }
 
         static void DeleteSelected()
@@ -1262,6 +1295,16 @@ namespace BabyBlocks
                 obj.transform.rotation = entry.rotation;
                 newSelection.Add(obj);
                 LevelEditorHistory.PushSpawn(obj);
+
+                // Only addressable (prop-library) pastes can be synced - peers reconstruct
+                // the prop via PropLibrary.FindById(propId), which has no equivalent for
+                // primitives spawned via SpawnPrimitive.
+                if (entry.isAddressable)
+                {
+                    ulong netId = BabyBlocks.Networking.ModNetworking.RegisterNetworkedObject(obj);
+                    BabyBlocks.Networking.ModNetworking.SendPropPlaced(
+                        netId, entry.addressableKey, obj.transform.position, obj.transform.rotation, obj.transform.localScale);
+                }
             }
 
             if (newSelection.Count > 0)

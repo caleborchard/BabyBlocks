@@ -12,7 +12,7 @@ namespace BabyBlocks.Networking
     {
         class Highlight
         {
-            public LevelEditorObject target;
+            public readonly List<LevelEditorObject> targets = new();
             public Color color;
             public Material outlineMat;
             public CommandBuffer buffer;
@@ -33,7 +33,8 @@ namespace BabyBlocks.Networking
             foreach (var kv in _highlights)
             {
                 var h = kv.Value;
-                if (h.target == null)
+                h.targets.RemoveAll(t => t == null);
+                if (h.targets.Count == 0)
                 {
                     (stale ??= new List<byte>()).Add(kv.Key);
                     continue;
@@ -44,7 +45,7 @@ namespace BabyBlocks.Networking
                 if (cam == null || !GizmoRenderer.StencilMaterialsReady) continue;
 
                 h.buffer.Clear();
-                GizmoRenderer.DrawRemoteOutline(h.target, h.outlineMat, h.buffer);
+                GizmoRenderer.DrawRemoteOutline(h.targets, h.outlineMat, h.buffer);
                 cam.AddCommandBuffer(CameraEvent.AfterEverything, h.buffer);
                 h.attachedCam = cam;
             }
@@ -53,9 +54,9 @@ namespace BabyBlocks.Networking
                 foreach (var uuid in stale) Remove(uuid);
         }
 
-        public static void SetHighlight(byte uuid, LevelEditorObject target, Color color)
+        public static void SetHighlights(byte uuid, List<LevelEditorObject> targets, Color color)
         {
-            if (target == null) return;
+            if (targets == null || targets.Count == 0) return;
             if (!_highlights.TryGetValue(uuid, out var h))
             {
                 h = new Highlight
@@ -67,7 +68,8 @@ namespace BabyBlocks.Networking
                 _highlights[uuid] = h;
             }
 
-            h.target = target;
+            h.targets.Clear();
+            h.targets.AddRange(targets);
             if (h.color != color)
             {
                 h.color = color;

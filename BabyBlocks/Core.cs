@@ -68,6 +68,51 @@ namespace BabyBlocks
         public static bool IsKeyboardCaptured =>
             IsMultiplayerChatOpen || (Menu.me != null && Menu.me.paused);
 
+        // TEMP DIAGNOSTIC: set every frame by FlyCamUpdatePatch.Prefix, read by
+        // FlyCamController's far-teleport overlay to confirm whether FlyCam.Update is
+        // actually running and what raw mouse deltas it's seeing.
+        public static int   DiagFlyCamUpdateCount;
+        public static float DiagMouseX, DiagMouseY;
+
+        // BestRegionLoader.LoadProp/UnloadProp are async UniTaskVoid methods that set
+        // somebodyLoading = true, await an Addressables handle (or UniTask.DelayFrame), then
+        // clear it. If that await never resolves - e.g. its handle gets invalidated by a
+        // concurrent chunk/scene unload, which the fly cam's much-faster-than-walking
+        // movement provokes far more often than normal play - somebodyLoading is stuck true
+        // forever. That semaphore also gates UpdateChunkLoading/UpdatePropPrefabLoading in
+        // BestRegionLoader.Update and our own FarTeleportCo's first wait, so a stuck flag
+        // here reads as "the whole game locked up". Force-clear it if it's been stuck too
+        // long so whichever loaders are blocked on it can make forward progress again.
+        const float SomebodyLoadingStuckTimeout = 1.5f;
+        static bool  _somebodyLoadingWasTrue;
+        static float _somebodyLoadingSinceTime;
+        public static int DiagSomebodyLoadingForceClears;
+
+        static void WatchSomebodyLoading()
+        {
+            if (BestRegionLoader.somebodyLoading)
+            {
+                if (!_somebodyLoadingWasTrue)
+                {
+                    _somebodyLoadingWasTrue = true;
+                    _somebodyLoadingSinceTime = Time.realtimeSinceStartup;
+                }
+                else if (Time.realtimeSinceStartup - _somebodyLoadingSinceTime > SomebodyLoadingStuckTimeout)
+                {
+                    DiagSomebodyLoadingForceClears++;
+                    MelonLogger.Warning(
+                        $"[BabyBlocks] BestRegionLoader.somebodyLoading stuck true for " +
+                        $"{SomebodyLoadingStuckTimeout}s, force-clearing (count={DiagSomebodyLoadingForceClears}).");
+                    BestRegionLoader.somebodyLoading = false;
+                    _somebodyLoadingWasTrue = false;
+                }
+            }
+            else
+            {
+                _somebodyLoadingWasTrue = false;
+            }
+        }
+
         public static string LastSavePath
         {
             get => _lastSavePath?.Value ?? "";
@@ -129,6 +174,8 @@ namespace BabyBlocks
 
         public override void OnUpdate()
         {
+            WatchSomebodyLoading();
+
             if (!_networkingDisabled)
             {
                 try { ModNetworking.Update(); }
@@ -211,6 +258,10 @@ namespace BabyBlocks
     {
         static bool Prefix(FlyCam __instance)
         {
+            Core.DiagFlyCamUpdateCount++;
+            Core.DiagMouseX = Input.GetAxis("Mouse X");
+            Core.DiagMouseY = Input.GetAxis("Mouse Y");
+
             if (FlyCam.locked) return false;
 
             bool uiTyping = FlyCamController.CursorMode && (LevelEditor.IsTypingInUI || Core.IsKeyboardCaptured);

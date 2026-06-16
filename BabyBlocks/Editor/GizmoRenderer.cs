@@ -558,34 +558,42 @@ namespace BabyBlocks
             return mat;
         }
 
-        // Draws a stencil-based outline around obj using outlineMat instead of the local
-        // selection's hardcoded yellow, into a caller-owned CommandBuffer. Mirrors DrawOutline's
-        // per-mesh "active drag" path (no combined-mesh caching) since the target object may be
-        // moved every frame by a remote peer's drag. Used by RemotePropHighlightManager to show
-        // a peer's current selection in their suit color.
-        public static void DrawRemoteOutline(LevelEditorObject obj, Material outlineMat, CommandBuffer buffer)
+        // Draws a single combined stencil-based outline around all of targets using outlineMat
+        // instead of the local selection's hardcoded yellow, into a caller-owned CommandBuffer.
+        // Mirrors DrawOutline's per-mesh "active drag" path (no combined-mesh caching) since the
+        // targets may be moved every frame by a remote peer's drag. All clears happen before all
+        // marks before all outline draws, so a multi-object selection renders as ONE outline
+        // around the combined silhouette rather than separate outlines per object. Used by
+        // RemotePropHighlightManager to show a peer's current selection in their suit color.
+        public static void DrawRemoteOutline(IReadOnlyList<LevelEditorObject> targets, Material outlineMat, CommandBuffer buffer)
         {
-            if (obj == null || outlineMat == null || buffer == null) return;
+            if (targets == null || targets.Count == 0 || outlineMat == null || buffer == null) return;
             if (!StencilMaterialsReady) return;
 
             _remoteOutlineShells.Clear();
             _remoteOutlineMarks.Clear();
 
-            var mfs = obj.GetComponentsInChildren<MeshFilter>();
-            if (mfs == null) return;
-
-            for (int i = 0; i < mfs.Length; i++)
+            for (int t = 0; t < targets.Count; t++)
             {
-                var mf = mfs[i];
-                if (mf == null || mf.sharedMesh == null) continue;
-                var mr = mf.GetComponent<MeshRenderer>();
-                if (mr == null || !mr.enabled) continue;
+                var obj = targets[t];
+                if (obj == null) continue;
 
-                var shell = GetOrBuildOutlineShell(mf.sharedMesh, mf.transform);
-                if (shell.mesh == null) continue;
+                var mfs = obj.GetComponentsInChildren<MeshFilter>();
+                if (mfs == null) continue;
 
-                _remoteOutlineShells.Add(shell.mesh);
-                _remoteOutlineMarks.Add((mf.sharedMesh, mf.transform.localToWorldMatrix, mf.sharedMesh.subMeshCount));
+                for (int i = 0; i < mfs.Length; i++)
+                {
+                    var mf = mfs[i];
+                    if (mf == null || mf.sharedMesh == null) continue;
+                    var mr = mf.GetComponent<MeshRenderer>();
+                    if (mr == null || !mr.enabled) continue;
+
+                    var shell = GetOrBuildOutlineShell(mf.sharedMesh, mf.transform);
+                    if (shell.mesh == null) continue;
+
+                    _remoteOutlineShells.Add(shell.mesh);
+                    _remoteOutlineMarks.Add((mf.sharedMesh, mf.transform.localToWorldMatrix, mf.sharedMesh.subMeshCount));
+                }
             }
 
             if (_remoteOutlineShells.Count == 0) return;

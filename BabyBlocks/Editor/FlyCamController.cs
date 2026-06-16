@@ -57,6 +57,20 @@ namespace BabyBlocks
         static bool  _farTeleportActive;
         static bool  _editorScanDone;
 
+        // True original BestRegionLoader.propLoadDists/propUnloadDists, cached on the first
+        // far teleport. See FarTeleportCo / RampPropDistancesCo.
+        static float[] _origPropLoadDists;
+        static float[] _origPropUnloadDists;
+        static int      _propRampToken;
+
+        // True while RampPropDistancesCo is restoring propLoadDists/propUnloadDists after a
+        // far teleport. Firing another far teleport during this window starts a fresh chunk
+        // drain while a wave of LoadProp/UnloadProp tasks from the ramp is still in flight —
+        // the drain can invalidate one of those in-flight Addressables loads and hang it
+        // forever (somebodyLoading stuck true, freezing the whole game). Block new far
+        // teleports until the ramp settles.
+        static bool _propRampActive;
+
         // True for the whole duration of FarTeleportCo. While true, Core.OnUpdate's
         // Base-Map-off block must not touch brl.off or player/renderer state —
         // FarTeleportCo needs uncontested control of br.off (it flips it false to
@@ -198,7 +212,63 @@ namespace BabyBlocks
         {
             if (FlyCamActive && CursorMode)
                 LevelEditor.OnGUI();
+
+            // TEMP DIAGNOSTIC: while a far teleport is in flight, dump the state that
+            // FlyCamUpdatePatch depends on for mouse-look, to find out why the camera
+            // sometimes won't turn during far teleports.
+            if (_farTeleportActive)
+            {
+                if (!_diagWasActive)
+                {
+                    _diagWasActive    = true;
+                    _diagLastTime     = Time.realtimeSinceStartup;
+                    _diagLastUpdates  = Core.DiagFlyCamUpdateCount;
+                }
+
+                float now = Time.realtimeSinceStartup;
+                float dt  = now - _diagLastTime;
+                float ups = dt > 0f ? (Core.DiagFlyCamUpdateCount - _diagLastUpdates) / dt : 0f;
+                _diagLastTime    = now;
+                _diagLastUpdates = Core.DiagFlyCamUpdateCount;
+
+                var flyCam = PlayerMovement.me?.flyCam;
+                string text =
+                    $"FarTeleportActive\n" +
+                    $"CursorMode={CursorMode}\n" +
+                    $"Cursor.lockState={Cursor.lockState} visible={Cursor.visible}\n" +
+                    $"Mouse X/Y={Input.GetAxis("Mouse X"):F4}/{Input.GetAxis("Mouse Y"):F4}\n" +
+                    $"FlyCam.Update count={Core.DiagFlyCamUpdateCount} (~{ups:F1}/sec) mouseX/Y seen={Core.DiagMouseX:F4}/{Core.DiagMouseY:F4}\n" +
+                    $"FlyCam.locked={FlyCam.locked}\n" +
+                    $"flyCam.enabled={flyCam?.enabled} activeInHierarchy={flyCam?.gameObject.activeInHierarchy}\n" +
+                    $"Time.timeScale={Time.timeScale} Menu.paused={Menu.me?.paused} Menu.teleporting={Menu.me?.teleporting}\n" +
+                    $"BRL.off={BestRegionLoader.me?.off} somebodyLoading={BestRegionLoader.somebodyLoading}\n" +
+                    $"Phase={_teleportPhase} drainIters={_diagDrainIters} convergeIters={_diagConvergeIters}\n" +
+                    $"forceClears={Core.DiagSomebodyLoadingForceClears} landingRetries={_diagLandingRetries}";
+                GUI.Label(new Rect(10, 10, 600, 220), text);
+            }
+            else
+            {
+                _diagWasActive = false;
+
+                // TEMP DIAGNOSTIC: always-visible small counter so a stuck somebodyLoading
+                // outside of a far teleport (e.g. during normal fly-cam movement) is visible too.
+                if (FlyCamActive && Core.DiagSomebodyLoadingForceClears > 0)
+                    GUI.Label(new Rect(10, 10, 400, 20),
+                        $"somebodyLoading force-clears: {Core.DiagSomebodyLoadingForceClears}");
+            }
         }
+
+        static bool  _diagWasActive;
+        static float _diagLastTime;
+        static int   _diagLastUpdates;
+
+        // TEMP DIAGNOSTIC: which step of FarTeleportCo is currently executing, plus
+        // iteration counts for its wait loops, so a frozen overlay shows exactly where
+        // execution is stuck rather than just "FarTeleportActive".
+        static string _teleportPhase = "(idle)";
+        static int    _diagDrainIters;
+        static int    _diagConvergeIters;
+        static int    _diagLandingRetries;
 
         // BackQuote key: direct game ↔ editor toggle (skips bare fly mode).
         static void ToggleTeleportMode()
@@ -395,7 +465,7 @@ namespace BabyBlocks
         // Both paths go through FarTeleportCo.
         public static void HandleFarTeleport()
         {
-            if (Menu.me.teleporting || _refreezePending || _farTeleportActive) return;
+            if (Menu.me.teleporting || _refreezePending || _farTeleportActive || _propRampActive) return;
 
             var player = PlayerMovement.me;
             if (player == null) return;
@@ -446,21 +516,80 @@ namespace BabyBlocks
         //      during the sequence it records a consistent position.
         static IEnumerator FarTeleportCo(PlayerMovement player, Vector3 target, float facingY)
         {
+            _diagDrainIters = 0;
+            _diagConvergeIters = 0;
+            _diagLandingRetries = 0;
+
             // Pause autosave; stamp target so any stray save writes a consistent position.
             SaveGod.me.stopSaving = true;
             SaveGod.theSave.continuePt = target;
 
-            // Freeze the loader so nothing new starts while we drain.
-            BestRegionLoader.me.off = true;
+            var br = BestRegionLoader.me;
 
-            // Wait for any in-flight async op to settle before we touch loadStates.
+            // Wait for any in-flight async op to settle before we touch anything.
+            _teleportPhase = "wait-somebodyLoading-pre";
             while (BestRegionLoader.somebodyLoading) yield return null;
+
+            // --- Ramp prop load/unload distances down to zero ---
+            // The old (instant) version zeroed propLoadDists/propUnloadDists in a single frame
+            // right before flipping br.off back on near the new position. UpdateLoaderCells
+            // then sees every prop-loader cell around the OLD position as instantly
+            // out-of-range (their dist thresholds are now 0) and fires UnloadProp/UnloadPropLOD/
+            // UnloadGC for every loaded prop type in a single UpdatePropLoading pass — a
+            // dozen-plus async tasks all spinning on the single shared `somebodyLoading` flag at
+            // once. Whichever loses the race sits stuck until Core.WatchSomebodyLoading's 1.5s
+            // timeout force-clears it, then the next one immediately re-stalls — the repeating
+            // "stuck true for 1.5s, force-clearing" storm seen on far teleports (and on very far
+            // ones, some never resolve at all, leaving Menu.me.teleporting stuck true forever).
+            //
+            // Instead, ramp the distances down to zero over PropDistRampDuration while br.off is
+            // still false and loadingTransform hasn't moved yet — UpdateLoaderCells then marks
+            // cells out-of-range gradually, the same one-or-two-per-frame way normal player
+            // movement does, so the unload tasks it queues never pile up on somebodyLoading all
+            // at once. Symmetric with RampPropDistancesCo's ramp back up at the end.
+            var propLoad   = br.propLoadDists;
+            var propUnload = br.propUnloadDists;
+
+            // Cache the game's real prop load/unload distances once. We can't just snapshot
+            // "current" values here — if a previous teleport's ramp-up (below) is still in
+            // progress, "current" would be some partially-ramped value, not the true original.
+            if (_origPropLoadDists == null)
+            {
+                _origPropLoadDists   = new float[propLoad.Length];
+                _origPropUnloadDists = new float[propUnload.Length];
+                for (int i = 0; i < propLoad.Length; i++)   _origPropLoadDists[i]   = propLoad[i];
+                for (int i = 0; i < propUnload.Length; i++) _origPropUnloadDists[i] = propUnload[i];
+            }
+            _propRampToken++;
+
+            _teleportPhase = "ramp-props-down";
+            float rampT = 0f;
+            while (rampT < PropDistRampDuration)
+            {
+                yield return null;
+                _diagDrainIters++;
+                rampT += Time.unscaledDeltaTime;
+                float frac = 1f - Mathf.Clamp01(rampT / PropDistRampDuration);
+                for (int i = 0; i < propLoad.Length; i++)   propLoad[i]   = _origPropLoadDists[i]   * frac;
+                for (int i = 0; i < propUnload.Length; i++) propUnload[i] = _origPropUnloadDists[i] * frac;
+            }
+            for (int i = 0; i < propLoad.Length; i++)   propLoad[i]   = 0f;
+            for (int i = 0; i < propUnload.Length; i++) propUnload[i] = 0f;
+
+            // Let any unload tasks the ramp-down just queued settle before the chunk drain
+            // starts its own (much larger) wave of somebodyLoading users.
+            _teleportPhase = "wait-somebodyLoading-post-ramp";
+            while (BestRegionLoader.somebodyLoading) yield return null;
+
+            // Freeze the loader so nothing new starts while we drain chunks.
+            br.off = true;
 
             // --- Parallel chunk drain ---
             // Kick off every loaded chunk's unload simultaneously. The game normally
             // serialises these one at a time (UnloadAll); firing them all at once lets
             // Addressables pipeline the scene unloads concurrently.
-            var chunkMap = BestRegionLoader.me.chunkMap;
+            _teleportPhase = "drain-kickoff";
+            var chunkMap = br.chunkMap;
             for (int i = 0; i < chunkMap.Length; i++)
             {
                 if (chunkMap[i].loadState == LoadState.loaded)
@@ -468,10 +597,12 @@ namespace BabyBlocks
             }
 
             // Any chunk still mid-load: wait for it to finish, then unload it too.
+            _teleportPhase = "drain-wait-inflight";
             bool anyInFlight;
             do
             {
                 yield return null;
+                _diagDrainIters++;
                 anyInFlight = false;
                 for (int i = 0; i < chunkMap.Length; i++)
                 {
@@ -489,10 +620,12 @@ namespace BabyBlocks
             } while (anyInFlight);
 
             // Wait for all unload callbacks to complete.
+            _teleportPhase = "drain-wait-allclear";
             bool allClear;
             do
             {
                 yield return null;
+                _diagDrainIters++;
                 allClear = true;
                 for (int i = 0; i < chunkMap.Length; i++)
                 {
@@ -506,21 +639,14 @@ namespace BabyBlocks
             // --- Absolute minimum load: 1 chunk terrain scene, zero props ---
             // UpdateLoaderCells() also contributes to fullyLoaded via its own shouldLoad
             // check, so any props within propLoadDists would gate the wait just like chunks.
-            // Zero all prop distances so only the single chunk terrain scene is required.
-            // chunkLoadDist = 1f means only the chunk whose bounding box contains the
-            // target point (distance == 0 < 1) gets shouldLoad=true.
-            var br = BestRegionLoader.me;
+            // propLoadDists/propUnloadDists are already 0 from the ramp-down above, so only the
+            // single chunk terrain scene is required. chunkLoadDist = 1f means only the chunk
+            // whose bounding box contains the target point (distance == 0 < 1) gets
+            // shouldLoad=true.
             float origLoad   = br.chunkLoadDist;
             float origUnload = br.chunkUnloadDist;
             br.chunkLoadDist   = 1f;
             br.chunkUnloadDist = 1f;
-
-            var propLoad   = br.propLoadDists;
-            var propUnload = br.propUnloadDists;
-            var origPropLoad   = new float[propLoad.Length];
-            var origPropUnload = new float[propUnload.Length];
-            for (int i = 0; i < propLoad.Length; i++)   { origPropLoad[i]   = propLoad[i];   propLoad[i]   = 0f; }
-            for (int i = 0; i < propUnload.Length; i++) { origPropUnload[i] = propUnload[i]; propUnload[i] = 0f; }
 
             br.off = false;
 
@@ -554,21 +680,8 @@ namespace BabyBlocks
             // out of range — not all in lockstep — so checking a single cell (e.g. (0,0)) can
             // report "converged" while other cells are still mid-shift, leaving the grid in an
             // inconsistent intermediate state. Compare the WHOLE array each pass instead.
-            player.flyCam.transform.position = target;
-            br.loadingTransform = player.flyCam.transform;
-            var chunkPositions = br.chunkPositions;
-            var prevPositions = new Vector3[chunkPositions.Length];
-            for (int i = 0; i < 64; i++)
-            {
-                for (int j = 0; j < chunkPositions.Length; j++) prevPositions[j] = chunkPositions[j];
-                br.Update();
-                bool changed = false;
-                for (int j = 0; j < chunkPositions.Length; j++)
-                {
-                    if (chunkPositions[j] != prevPositions[j]) { changed = true; break; }
-                }
-                if (!changed) break;
-            }
+            _teleportPhase = "converge-chunk-positions";
+            ConvergeChunkPositions(br, target, player.flyCam.transform);
 
             // Menu.TeleportCo unconditionally calls OceanRenderer.Instance.RebuildOcean()
             // (no null check) as part of its foot-placement sequence. When Base Map is off,
@@ -580,6 +693,7 @@ namespace BabyBlocks
             // (invisible, shadow only). Re-enable CrestWaterRenderer for the duration of the
             // handoff below — the screen is fully black (SkipGame blackScreenAlpha=1) so the
             // ocean briefly reappearing is not visible — then hide it again afterward.
+            _teleportPhase = "crest-water-handoff";
             GameObject crestWater = null;
             if (!BaseMapController.BaseMapEnabled)
             {
@@ -605,10 +719,44 @@ namespace BabyBlocks
             // Hand off to the game's teleport machinery. It forces one BestRegionLoader
             // update, waits for fullyLoaded (1 chunk = very fast), then runs the full
             // ragdoll foot-placement sequence and clears Menu.me.teleporting.
+            _teleportPhase = "menu-teleport-call";
             Menu.me.Teleport(target);
 
+            _teleportPhase = "wait-menu-teleporting";
             while (Menu.me.teleporting) yield return null;
 
+            // Landing sanity check. If the destination chunk's real terrain/prop colliders
+            // hadn't actually finished loading yet (fullyLoaded was true too early - e.g.
+            // chunkPositions hadn't fully converged, or a stuck somebodyLoading was
+            // force-cleared by Core.WatchSomebodyLoading before its load truly settled),
+            // TeleportCo's upward ground-search raycast hits whatever low-LOD/proxy collider
+            // it can find instead, landing the player far from (often high above) `target`.
+            // Give the real terrain more time to load and retry placement rather than
+            // stranding the player on a proxy with no real colliders around it.
+            _teleportPhase = "landing-check";
+            const float BadLandingDistanceSq = 15f * 15f;
+            while (_diagLandingRetries < 3 &&
+                   (player.torsoRbs[0].transform.position - target).sqrMagnitude > BadLandingDistanceSq)
+            {
+                _diagLandingRetries++;
+
+                _teleportPhase = $"landing-retry{_diagLandingRetries}-wait-fullyLoaded";
+                int waitFrames = 0;
+                while (!BestRegionLoader.fullyLoaded && waitFrames < 300)
+                {
+                    yield return null;
+                    waitFrames++;
+                }
+
+                _teleportPhase = $"landing-retry{_diagLandingRetries}-converge";
+                ConvergeChunkPositions(br, target, player.flyCam.transform);
+
+                _teleportPhase = $"landing-retry{_diagLandingRetries}-teleport";
+                Menu.me.Teleport(target);
+                while (Menu.me.teleporting) yield return null;
+            }
+
+            _teleportPhase = "post-teleport-material-refresh";
             if (crestWater != null && !BaseMapController.BaseMapEnabled)
                 crestWater.SetActive(false);
 
@@ -642,11 +790,14 @@ namespace BabyBlocks
             // when the player walks around after exiting fly-cam mode.
             player.flyCam.transform.position = player.torsoRbs[0].transform.position;
 
-            // Restore all distances — surrounding terrain and props stream in normally.
+            // Restore chunk distances immediately — surrounding terrain streams in normally.
             br.chunkLoadDist   = origLoad;
             br.chunkUnloadDist = origUnload;
-            for (int i = 0; i < propLoad.Length; i++)   propLoad[i]   = origPropLoad[i];
-            for (int i = 0; i < propUnload.Length; i++) propUnload[i] = origPropUnload[i];
+
+            // Prop distances are ramped back up gradually rather than restored instantly —
+            // see RampPropDistancesCo for why.
+            _propRampActive = true;
+            MelonCoroutines.Start(RampPropDistancesCo(propLoad, propUnload, _propRampToken));
 
             // Back into fly-cam state.
             FreezePlayer(player, true);
@@ -657,6 +808,63 @@ namespace BabyBlocks
             SkipGame.me.blackScreenAlpha = 0f;
 
             _farTeleportActive = false;
+            _teleportPhase = "(idle)";
+        }
+
+        // Drives BestRegionLoader.chunkPositions[] toward convergence on `target` by calling
+        // br.Update() synchronously up to 64 times (each LoopChunkMapPositions pass shifts
+        // whichever columns/rows are individually out of range, not all in lockstep, so a
+        // single cell can read "converged" while others are still mid-shift — compare the
+        // whole array each pass). See FarTeleportCo's original comment for why this matters:
+        // without it, BestRegionLoader.fullyLoaded can read true before the grid actually
+        // covers `target`, and TeleportCo's ground raycast then finds nothing near `target`.
+        static void ConvergeChunkPositions(BestRegionLoader br, Vector3 target, Transform flyCamTransform)
+        {
+            flyCamTransform.position = target;
+            br.loadingTransform = flyCamTransform;
+            var chunkPositions = br.chunkPositions;
+            var prevPositions = new Vector3[chunkPositions.Length];
+            for (int i = 0; i < 64; i++)
+            {
+                for (int j = 0; j < chunkPositions.Length; j++) prevPositions[j] = chunkPositions[j];
+                br.Update();
+                _diagConvergeIters++;
+                bool changed = false;
+                for (int j = 0; j < chunkPositions.Length; j++)
+                {
+                    if (chunkPositions[j] != prevPositions[j]) { changed = true; break; }
+                }
+                if (!changed) break;
+            }
+        }
+
+        // Restoring propLoadDists/propUnloadDists to their full values in a single frame (the
+        // old behavior) lets BestRegionLoader.UpdateLoaderCells mark every prop cell within
+        // that radius as shouldLoad on the very next Update, all at once. For GPUI'd props
+        // (e.g. base-game rocks) that dumps hundreds of instances into gpuiLoadedCellIndices
+        // in one go, pushing gpuiPositions[].Count past instanceCountGPUICutOff (100). Past
+        // that cutoff the game deactivates ALL of that prop's collider pool objects and falls
+        // back to GPU-instanced visuals only — full LOD, but zero collisions. Ramping the
+        // distances up over a couple seconds instead lets cells get picked up a few at a time,
+        // same as normal walking, so the loaded instance count never spikes past the cutoff.
+        const float PropDistRampDuration = 2f;
+        static IEnumerator RampPropDistancesCo(float[] propLoad, float[] propUnload, int token)
+        {
+            float t = 0f;
+            while (t < PropDistRampDuration)
+            {
+                // A newer far teleport has zeroed these arrays out again and started its own
+                // ramp — let that one drive from here.
+                if (token != _propRampToken) yield break;
+
+                yield return null;
+                t += Time.unscaledDeltaTime;
+                float frac = Mathf.Clamp01(t / PropDistRampDuration);
+                for (int i = 0; i < propLoad.Length; i++)   propLoad[i]   = _origPropLoadDists[i]   * frac;
+                for (int i = 0; i < propUnload.Length; i++) propUnload[i] = _origPropUnloadDists[i] * frac;
+            }
+
+            if (token == _propRampToken) _propRampActive = false;
         }
     }
 }

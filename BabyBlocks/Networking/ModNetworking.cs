@@ -31,6 +31,9 @@ namespace BabyBlocks.Networking
         private const byte PropGhostEndMarker = 0xBB; // a peer's in-progress palette placement ended without placing
         private const byte PropDeletedMarker = 0xBC; // a peer deleted a networked prop
         private const byte MaterialAppliedMarker = 0xBD; // a peer dragged a material construction onto a networked prop
+        private const byte LevelClearedMarker = 0xBE; // a peer pressed the Clear Level button
+        private const byte GroupSyncMarker = 0xBF; // a peer grouped/ungrouped a set of networked static props
+        private const byte BaseMapStateMarker = 0xC0; // a peer toggled the Base Map on/off
         private const float AnnounceIntervalSeconds = 5f;
         private const float FreecamSendIntervalSeconds = 0.15f;
 
@@ -232,6 +235,23 @@ namespace BabyBlocks.Networking
                 var channel = networkClient.CreateModChannel("BabyBlocks");
                 if (channel == null) return;
 
+                // Ensure the level manager and prop library exist before we start
+                // receiving packets. ScanGpuiProps() is NOT called here — it runs
+                // lazily the first time a gpui:// prop arrives that FindById can't
+                // locate. Calling it eagerly at connect time disrupts the material
+                // source state that MaterialCatalog.InvalidateMaterialSources() set up
+                // during a prior editor-open on the same client.
+                LevelEditor.EnsureManager();
+
+                // Start both clients from an empty, known-equal level on connect, as a
+                // baseline for the not-yet-built "send .bbb on connect" map transfer.
+                // This runs BEFORE subscribing so we can't receive packets for objects
+                // we're about to destroy (avoids race-condition on prop-placed packets
+                // sent by the peer during our connect window).
+                LevelEditorManager.Instance?.RemoveAll();
+                LevelEditor.ClearAllSelectionState();
+                _networkedObjects.Clear();
+
                 channel.DataReceived += OnDataReceived;
 
                 _channel = channel;
@@ -293,6 +313,24 @@ namespace BabyBlocks.Networking
             obj.netId = GenerateNetId();
             _networkedObjects[obj.netId] = obj;
             return obj.netId;
+        }
+
+        // Drops all current netId -> object mappings, e.g. before re-populating them from
+        // a freshly loaded .bbb file (whose RemoveAll() just destroyed every previously
+        // registered object anyway).
+        public static void ClearNetworkedObjects() => _networkedObjects.Clear();
+
+        // Registers an object spawned while loading a .bbb file under a netId both clients
+        // derive the same way (its record index + 1), so it participates in
+        // selection/transform/delete sync just like a live-placed prop, even though no
+        // PropPlaced negotiation ever happened for it. GenerateNetId's GUID-derived ids
+        // occupy the full 64-bit range, so collisions with these small sequential ids are
+        // astronomically unlikely.
+        public static void RegisterLoadedNetworkedObject(ulong netId, LevelEditorObject obj)
+        {
+            if (obj == null || netId == 0) return;
+            obj.netId = netId;
+            _networkedObjects[netId] = obj;
         }
 
         // Broadcasts that a prop was just placed via the level editor's drag-and-drop
@@ -446,6 +484,18 @@ namespace BabyBlocks.Networking
                 case MaterialAppliedMarker:
                     HandleMaterialApplied(senderUuid, payload);
                     break;
+
+                case LevelClearedMarker:
+                    HandleLevelCleared(senderUuid, payload);
+                    break;
+
+                case GroupSyncMarker:
+                    HandleGroupSync(senderUuid, payload);
+                    break;
+
+                case BaseMapStateMarker:
+                    HandleBaseMapState(senderUuid, payload);
+                    break;
             }
         }
 
@@ -490,14 +540,27 @@ namespace BabyBlocks.Networking
                 var rotation  = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 var scale     = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
 
+                LevelEditor.EnsureManager();
+
                 var info = PropLibrary.FindById(propId);
+                if (info == null && propId.StartsWith("gpui://", StringComparison.OrdinalIgnoreCase)
+                    && GpuiPropScanner.GpuiScannedNames.Count == 0)
+                {
+                    GpuiPropScanner.ScanGpuiProps();
+                    info = PropLibrary.FindById(propId);
+                    // Invalidate so the async scan re-verifies VerifiedSourceMaterials against
+                    // fully-loaded assets. This also sets MaterialSourcesLoaded=true immediately
+                    // (via the coroutine's first MoveNext), preventing EnsureMaterialSources from
+                    // running synchronously during the SpawnFromPropInfo call below (which would
+                    // load source prefabs in an early/incomplete state and cache broken materials).
+                    MaterialCatalog.InvalidateMaterialSources();
+                }
                 if (info == null)
                 {
                     MelonLogger.Warning($"[BabyBlocks][ModNetworking] Player {senderUuid} placed unknown prop '{propId}'");
                     return;
                 }
 
-                LevelEditor.EnsureManager();
                 PropLibrary.LoadPropData(info);
 
                 var obj = LevelEditorManager.Instance.SpawnFromPropInfo(info, position);
@@ -660,6 +723,140 @@ namespace BabyBlocks.Networking
             }
         }
 
+        // Broadcasts that the local player pressed the Clear Level button, so peers wipe
+        // their copy of the level too. Only sent for the manual button press - loading a
+        // level, undo/redo, etc. are not broadcast. Payload layout: [marker]
+        public static void SendLevelCleared()
+        {
+            _networkedObjects.Clear();
+            if (_channel == null) return;
+            try
+            {
+                _channel.Send(new byte[] { LevelClearedMarker }, PacketDelivery.ReliableOrdered);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendLevelCleared failed: {ex.Message}");
+            }
+        }
+
+        private static void HandleLevelCleared(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                _networkedObjects.Clear();
+                LevelEditorManager.Instance?.RemoveAll();
+                LevelEditor.ClearAllSelectionState();
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleLevelCleared failed: {ex.Message}");
+            }
+        }
+
+        // Broadcasts that the local player grouped or ungrouped a selection of static
+        // (logically-grouped, non-physics) networked props, so peers apply the same
+        // groupId grouping/dissolution to their copies. Only props with a netId
+        // (placed/received over the network this session) are sent. Up to 255 netIds.
+        // Payload layout: [marker][group:byte][count:byte][netId1..netIdN:ulong LE]
+        public static void SendGroupSync(List<ulong> netIds, bool group)
+        {
+            if (_channel == null || netIds == null) return;
+            var ids = new List<ulong>();
+            foreach (var id in netIds)
+                if (id != 0) ids.Add(id);
+            if (ids.Count == 0) return;
+
+            try
+            {
+                int n = Math.Min(ids.Count, 255);
+                var payload = new byte[1 + 1 + 1 + n * 8];
+                int o = 0;
+                payload[o++] = GroupSyncMarker;
+                payload[o++] = (byte)(group ? 1 : 0);
+                payload[o++] = (byte)n;
+                for (int i = 0; i < n; i++)
+                    WriteULong(payload, ref o, ids[i]);
+
+                _channel.Send(payload, PacketDelivery.ReliableOrdered);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendGroupSync failed: {ex.Message}");
+            }
+        }
+
+        private static void HandleGroupSync(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                int o = 1;
+                bool group = payload[o++] != 0;
+                int n = payload[o++];
+
+                var targets = new List<LevelEditorObject>(n);
+                for (int i = 0; i < n; i++)
+                {
+                    ulong netId = ReadULong(payload, ref o);
+                    if (_networkedObjects.TryGetValue(netId, out var obj) && obj != null)
+                        targets.Add(obj);
+                }
+                if (targets.Count == 0) return;
+
+                if (group)
+                {
+                    var existingGroups = new HashSet<int>();
+                    foreach (var t in targets)
+                        if (t.groupId > 0) existingGroups.Add(t.groupId);
+                    foreach (var gid in existingGroups) GroupManager.DissolveGroup(gid);
+
+                    int groupId = GroupManager.AllocateGroupId();
+                    foreach (var obj in targets) obj.groupId = groupId;
+                    GroupManager.EnsureStaticGroupRoot(groupId, targets);
+                }
+                else
+                {
+                    var groupsToClear = new HashSet<int>();
+                    foreach (var t in targets)
+                        if (t.groupId > 0) groupsToClear.Add(t.groupId);
+                    foreach (var gid in groupsToClear) GroupManager.DissolveGroup(gid);
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleGroupSync failed: {ex.Message}");
+            }
+        }
+
+        // Broadcasts that the local player toggled the Base Map on/off, so peers apply the
+        // same toggle. Payload layout: [marker][enabled:byte]
+        public static void SendBaseMapState(bool enabled)
+        {
+            if (_channel == null) return;
+            try
+            {
+                _channel.Send(new byte[] { BaseMapStateMarker, (byte)(enabled ? 1 : 0) }, PacketDelivery.ReliableOrdered);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendBaseMapState failed: {ex.Message}");
+            }
+        }
+
+        private static void HandleBaseMapState(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                bool enabled = payload[1] != 0;
+                if (BaseMapController.BaseMapEnabled == enabled) return;
+                BaseMapController.SetBaseMapEnabled(enabled);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleBaseMapState failed: {ex.Message}");
+            }
+        }
+
         private static void HandleMaterialApplied(byte senderUuid, byte[] payload)
         {
             try
@@ -685,25 +882,26 @@ namespace BabyBlocks.Networking
             }
         }
 
-        // Broadcasts the local player's current selection (of a networked prop) so peers can
-        // show a highlight around it in our suit color. netId == 0 means "nothing selected" /
-        // selection cleared. Payload layout:
-        //   [marker][netId:ulong LE][selected:byte][color.rgb bytes (only if selected)]
-        public static void SendPropSelected(ulong netId)
+        // Broadcasts the local player's current selection (of networked props) so peers can
+        // show a highlight around each in our suit color. An empty list means "nothing
+        // selected" / selection cleared. Up to 255 netIds are sent. Payload layout:
+        //   [marker][count:byte][netId1..netIdN:ulong LE][color.rgb bytes (only if count > 0)]
+        public static void SendPropSelected(List<ulong> netIds)
         {
             if (_channel == null) return;
             try
             {
-                bool selected = netId != 0;
+                int n = netIds == null ? 0 : Math.Min(netIds.Count, 255);
                 Color color = Color.white;
-                if (selected) TryGetLocalAppearance(out color, out _);
+                if (n > 0) TryGetLocalAppearance(out color, out _);
 
-                var payload = new byte[1 + 8 + 1 + (selected ? 3 : 0)];
+                var payload = new byte[1 + 1 + n * 8 + (n > 0 ? 3 : 0)];
                 int o = 0;
                 payload[o++] = PropSelectedMarker;
-                WriteULong(payload, ref o, netId);
-                payload[o++] = (byte)(selected ? 1 : 0);
-                if (selected)
+                payload[o++] = (byte)n;
+                for (int i = 0; i < n; i++)
+                    WriteULong(payload, ref o, netIds[i]);
+                if (n > 0)
                 {
                     payload[o++] = (byte)Mathf.Clamp(Mathf.RoundToInt(color.r * 255f), 0, 255);
                     payload[o++] = (byte)Mathf.Clamp(Mathf.RoundToInt(color.g * 255f), 0, 255);
@@ -723,18 +921,24 @@ namespace BabyBlocks.Networking
             try
             {
                 int o = 1;
-                ulong netId = ReadULong(payload, ref o);
-                bool selected = payload[o++] != 0;
+                int n = payload[o++];
 
-                if (!selected || netId == 0 || !_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
+                var targets = new List<LevelEditorObject>(n);
+                for (int i = 0; i < n; i++)
                 {
-                    _networkedObjects.Remove(netId);
+                    ulong netId = ReadULong(payload, ref o);
+                    if (_networkedObjects.TryGetValue(netId, out var obj) && obj != null)
+                        targets.Add(obj);
+                }
+
+                if (targets.Count == 0)
+                {
                     RemotePropHighlightManager.Remove(senderUuid);
                     return;
                 }
 
                 var color = new Color(payload[o++] / 255f, payload[o++] / 255f, payload[o++] / 255f);
-                RemotePropHighlightManager.SetHighlight(senderUuid, obj, color);
+                RemotePropHighlightManager.SetHighlights(senderUuid, targets, color);
             }
             catch (Exception ex)
             {
@@ -809,6 +1013,13 @@ namespace BabyBlocks.Networking
                 var scale     = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
 
                 var info = PropLibrary.FindById(propId);
+                if (info == null && propId.StartsWith("gpui://", StringComparison.OrdinalIgnoreCase)
+                    && GpuiPropScanner.GpuiScannedNames.Count == 0)
+                {
+                    GpuiPropScanner.ScanGpuiProps();
+                    info = PropLibrary.FindById(propId);
+                    MaterialCatalog.InvalidateMaterialSources();
+                }
                 if (info == null) return;
 
                 RemotePropGhostManager.UpdateGhost(senderUuid, info, position, rotation, scale);

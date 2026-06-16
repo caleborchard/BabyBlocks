@@ -263,7 +263,10 @@ namespace BabyBlocks
             bool newBaseMap = GUI.Toggle(new Rect(contentX, contentY, innerW, 20f),
                 BaseMapController.BaseMapEnabled, "Base map");
             if (newBaseMap != BaseMapController.BaseMapEnabled)
+            {
                 BaseMapController.SetBaseMapEnabled(newBaseMap);
+                BabyBlocks.Networking.ModNetworking.SendBaseMapState(newBaseMap);
+            }
 
             contentY += 24f;
 
@@ -350,6 +353,8 @@ namespace BabyBlocks
             var mgr = LevelEditorManager.Instance;
             if (mgr == null) { SetStatus("Level editor not ready."); return; }
             mgr.RemoveAll();
+            LevelEditor.ClearAllSelectionState();
+            BabyBlocks.Networking.ModNetworking.SendLevelCleared();
             SetStatus("Cleared.");
         }
 

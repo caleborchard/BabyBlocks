@@ -460,6 +460,25 @@ namespace BabyBlocks
                     return true;
                 }
 
+                // Validate quality: Standard-shader materials with no mainTexture are placeholder
+                // instances produced when an asset bundle isn't fully initialised (Unity falls back
+                // to a default Standard material). The correct material lives in the prop's own
+                // visual prefab instead. Clear the bad source and the polluted MaterialByName entry
+                // so self-discovery can re-derive the real material this session.
+                if (loadedMat.shader != null && loadedMat.shader.name == "Standard"
+                    && loadedMat.mainTexture == null)
+                {
+                    item.materialSourcePropId = string.Empty;
+                    anyBackfilled = true;
+                    // Remove any existing Standard placeholder so self-discovery isn't blocked.
+                    if (MaterialByName.TryGetValue(item.overrideMaterialId, out var existing)
+                        && existing != null && existing.shader != null
+                        && existing.shader.name == "Standard" && existing.mainTexture == null)
+                        MaterialByName.Remove(item.overrideMaterialId);
+                    VerifiedSourceMaterials.Remove(item.overrideMaterialId);
+                    return true;
+                }
+
                 // This is the canonical, correctly-textured instance — overwrite any inferior
                 // area-local instance that the in-memory scan may have picked up under this name.
                 MaterialByName[item.overrideMaterialId] = loadedMat;
@@ -483,7 +502,11 @@ namespace BabyBlocks
 
         static bool RunOneSelfDiscoveryItem(PropExtraInfo item)
         {
-            if (MaterialByName.ContainsKey(item.overrideMaterialId)) return false;
+            // Skip only if a non-placeholder material is already cached; a Standard/no-texture
+            // entry left by RunOneSourceItem's quality rejection still needs self-discovery.
+            if (MaterialByName.TryGetValue(item.overrideMaterialId, out var cached) && cached != null
+                && !(cached.shader != null && cached.shader.name == "Standard" && cached.mainTexture == null))
+                return false;
 
             var selfInfo = PropLibrary.FindById(item.id);
             if (selfInfo == null) return false;
@@ -831,7 +854,8 @@ namespace BabyBlocks
         {
             PropMetadataStore.EnsureLoaded();
             if (string.IsNullOrEmpty(propId) || root == null) return;
-            if (!PropMetadataStore._byId.TryGetValue(propId, out var info)) return;
+            if (!PropMetadataStore._byId.TryGetValue(propId, out var info))
+                return;
 
             // Ensure the full material list is built even when the debug UI has never been shown
             // (non-debug mode, first launch). This populates MaterialByName with hashed variants
@@ -1051,6 +1075,12 @@ namespace BabyBlocks
         // the one-time scan cost to editor-open time, where a freeze is less disruptive than mid-drag.
         public static void InvalidateMaterialSources()
         {
+            // Clear verified-source cache so the async scan can re-verify entries against
+            // freshly-loaded assets. Without this, a bad entry written by an early sync scan
+            // (e.g. a prop loaded before shaders fully initialise returns Standard/no-texture)
+            // would never be overwritten: CollectSourceCandidates skips anything already present
+            // in VerifiedSourceMaterials, so the async scan just reuses the wrong instance.
+            VerifiedSourceMaterials.Clear();
             MaterialSourcesLoaded = false;
 
             // Build the in-memory material list now (cheap — FindObjectsOfTypeAll is ~0ms). Suppress
