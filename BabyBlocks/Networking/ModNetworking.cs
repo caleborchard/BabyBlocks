@@ -34,8 +34,30 @@ namespace BabyBlocks.Networking
         private const byte LevelClearedMarker = 0xBE; // a peer pressed the Clear Level button
         private const byte GroupSyncMarker = 0xBF; // a peer grouped/ungrouped a set of networked static props
         private const byte BaseMapStateMarker = 0xC0; // a peer toggled the Base Map on/off
+        private const byte LevelTransferRequestMarker = 0xC1; // a peer is asking for the current level
+        private const byte LevelTransferDataMarker = 0xC2; // level payload (BBB without baked data) in response
         private const float AnnounceIntervalSeconds = 5f;
         private const float FreecamSendIntervalSeconds = 0.15f;
+
+        // Snapshot of the level taken immediately before TryCreateChannel clears it on
+        // connect. Held so we can respond to a LevelTransferRequest from a peer that
+        // connected at roughly the same time (and therefore sees our empty level).
+        // Cleared once we receive level data from a peer (our snapshot is then stale).
+        private static byte[] _pendingLevelSnapshot;
+
+        // Maximum bytes of BBB payload per network packet. Conservative to stay well
+        // under any UDP-derived MTU the relay server might impose.
+        private const int LevelChunkSize = 8192;
+
+        // Per-sender in-progress chunk assembly state, keyed by sender UUID.
+        private static readonly Dictionary<byte, LevelChunkState> _levelChunkStates = new();
+
+        private class LevelChunkState
+        {
+            public byte[][] Chunks;
+            public int ReceivedCount;
+            public int TotalLen;
+        }
 
         // Networked props, keyed by a netId shared between both clients' copies of the
         // same logical prop. Lets HandlePropTransformUpdate/HandlePropSelected apply
@@ -236,18 +258,26 @@ namespace BabyBlocks.Networking
                 if (channel == null) return;
 
                 // Ensure the level manager and prop library exist before we start
-                // receiving packets. ScanGpuiProps() is NOT called here — it runs
-                // lazily the first time a gpui:// prop arrives that FindById can't
-                // locate. Calling it eagerly at connect time disrupts the material
-                // source state that MaterialCatalog.InvalidateMaterialSources() set up
-                // during a prior editor-open on the same client.
+                // receiving packets.
                 LevelEditor.EnsureManager();
 
-                // Start both clients from an empty, known-equal level on connect, as a
-                // baseline for the not-yet-built "send .bbb on connect" map transfer.
-                // This runs BEFORE subscribing so we can't receive packets for objects
-                // we're about to destroy (avoids race-condition on prop-placed packets
-                // sent by the peer during our connect window).
+                // Scan GPUI props eagerly so level-transfer data received immediately
+                // on connect can resolve gpui:// prop IDs. Follow with InvalidateMaterialSources
+                // for the same reason the lazy-scan sites do: prevents a synchronous
+                // EnsureMaterialSources from caching placeholder materials during spawn.
+                if (GpuiPropScanner.GpuiScannedNames.Count == 0)
+                {
+                    GpuiPropScanner.ScanGpuiProps();
+                    MaterialCatalog.InvalidateMaterialSources();
+                }
+
+                // Snapshot the current level before clearing so we can respond to a
+                // LevelTransferRequest from a peer who also just connected and sees our
+                // empty slate. SerializeForNetwork() returns null if the scene is empty.
+                _pendingLevelSnapshot = LevelSaveLoad.SerializeForNetwork();
+
+                // Clear before subscribing so we can't receive packets for objects we're
+                // about to destroy.
                 LevelEditorManager.Instance?.RemoveAll();
                 LevelEditor.ClearAllSelectionState();
                 _networkedObjects.Clear();
@@ -257,6 +287,10 @@ namespace BabyBlocks.Networking
                 _channel = channel;
                 PeersWithBabyBlocks.Clear();
                 _nextAnnounceTime = 0f; // announce immediately on the next Update
+
+                // Ask peers for their current level. Whoever has one will respond with
+                // LevelTransferData so we can load it.
+                SendLevelTransferRequest();
                 BBLog.Msg("[BabyBlocks][ModNetworking] Mod channel established");
             }
             catch (Exception ex)
@@ -275,6 +309,8 @@ namespace BabyBlocks.Networking
             catch { /* best-effort */ }
 
             _channel = null;
+            _pendingLevelSnapshot = null;
+            _levelChunkStates.Clear();
             PeersWithBabyBlocks.Clear();
             _networkedObjects.Clear();
             RemoteFreecamManager.ClearAll();
@@ -495,6 +531,14 @@ namespace BabyBlocks.Networking
 
                 case BaseMapStateMarker:
                     HandleBaseMapState(senderUuid, payload);
+                    break;
+
+                case LevelTransferRequestMarker:
+                    HandleLevelTransferRequest(senderUuid, payload);
+                    break;
+
+                case LevelTransferDataMarker:
+                    HandleLevelTransferData(senderUuid, payload);
                     break;
             }
         }
@@ -855,6 +899,144 @@ namespace BabyBlocks.Networking
             {
                 MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleBaseMapState failed: {ex.Message}");
             }
+        }
+
+        // Broadcasts that this client wants to receive the current level from any peer
+        // who has one. Sent once per connect (in TryCreateChannel).
+        private static void SendLevelTransferRequest()
+        {
+            if (_channel == null) return;
+            try
+            {
+                _channel.Send(new byte[] { LevelTransferRequestMarker }, PacketDelivery.ReliableOrdered);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendLevelTransferRequest failed: {ex.Message}");
+            }
+        }
+
+        // Broadcasts the current level (serialized BBB without baked data) to all peers,
+        // split into LevelChunkSize-byte chunks. Peers reassemble and load once all chunks
+        // arrive. Payload per chunk: [marker][totalLen:int32][totalChunks:uint16][chunkIndex:uint16][data]
+        private static void SendLevelTransferData(byte[] data)
+        {
+            if (_channel == null || data == null || data.Length == 0) return;
+            try
+            {
+                int totalChunks = (data.Length + LevelChunkSize - 1) / LevelChunkSize;
+                for (int i = 0; i < totalChunks; i++)
+                {
+                    int offset   = i * LevelChunkSize;
+                    int chunkLen = Math.Min(LevelChunkSize, data.Length - offset);
+                    var payload  = new byte[1 + 4 + 2 + 2 + chunkLen];
+                    int o = 0;
+                    payload[o++] = LevelTransferDataMarker;
+                    Buffer.BlockCopy(BitConverter.GetBytes(data.Length), 0, payload, o, 4); o += 4;
+                    Buffer.BlockCopy(BitConverter.GetBytes((ushort)totalChunks), 0, payload, o, 2); o += 2;
+                    Buffer.BlockCopy(BitConverter.GetBytes((ushort)i), 0, payload, o, 2); o += 2;
+                    Buffer.BlockCopy(data, offset, payload, o, chunkLen);
+                    _channel.Send(payload, PacketDelivery.ReliableOrdered);
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendLevelTransferData failed: {ex.Message}");
+            }
+        }
+
+        // Responds to a peer's LevelTransferRequest with our current level. Uses the
+        // pre-clear snapshot taken in TryCreateChannel if we have no objects yet (i.e.
+        // our own request hasn't been answered), otherwise serializes the live scene.
+        private static void HandleLevelTransferRequest(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                byte[] data = null;
+                var mgr = LevelEditorManager.Instance;
+                if (mgr != null && mgr.Objects.Count > 0)
+                    data = LevelSaveLoad.SerializeForNetwork();
+                data ??= _pendingLevelSnapshot;
+                if (data == null) return;
+                SendLevelTransferData(data);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleLevelTransferRequest failed: {ex.Message}");
+            }
+        }
+
+        // Receives one chunk of level data. Buffers chunks per sender and loads the level
+        // once all chunks for a transfer have arrived.
+        private static void HandleLevelTransferData(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                // Header: [marker(1)][totalLen(4)][totalChunks(2)][chunkIndex(2)][data]
+                if (payload.Length < 9) return;
+                int   totalLen    = BitConverter.ToInt32(payload, 1);
+                int   totalChunks = BitConverter.ToUInt16(payload, 5);
+                int   chunkIndex  = BitConverter.ToUInt16(payload, 7);
+                int   chunkDataLen = payload.Length - 9;
+
+                if (totalLen <= 0 || totalChunks <= 0 || chunkIndex >= totalChunks || chunkDataLen <= 0) return;
+
+                // Start or reset the assembly buffer when a new transfer begins.
+                if (!_levelChunkStates.TryGetValue(senderUuid, out var state)
+                    || state.Chunks.Length != totalChunks)
+                {
+                    state = new LevelChunkState
+                    {
+                        Chunks        = new byte[totalChunks][],
+                        ReceivedCount = 0,
+                        TotalLen      = totalLen,
+                    };
+                    _levelChunkStates[senderUuid] = state;
+                }
+
+                if (state.Chunks[chunkIndex] == null)
+                {
+                    var chunk = new byte[chunkDataLen];
+                    Buffer.BlockCopy(payload, 9, chunk, 0, chunkDataLen);
+                    state.Chunks[chunkIndex] = chunk;
+                    state.ReceivedCount++;
+                }
+
+                if (state.ReceivedCount < totalChunks) return;
+
+                // All chunks received — reassemble and load.
+                _levelChunkStates.Remove(senderUuid);
+                var assembled = new byte[state.TotalLen];
+                int pos = 0;
+                foreach (var chunk in state.Chunks)
+                {
+                    Buffer.BlockCopy(chunk, 0, assembled, pos, chunk.Length);
+                    pos += chunk.Length;
+                }
+
+                _pendingLevelSnapshot = null;
+                LevelEditor.EnsureManager();
+                var (ok, count, error) = LevelSaveLoad.LoadFromNetworkData(assembled);
+                if (ok)
+                    MelonLogger.Msg($"[BabyBlocks] Received level from player {senderUuid}: {count} object(s)");
+                else
+                    MelonLogger.Warning($"[BabyBlocks] Level transfer from player {senderUuid} failed: {error}");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleLevelTransferData failed: {ex.Message}");
+            }
+        }
+
+        // Serializes and broadcasts the current level to all connected peers. Call this
+        // after a successful local file load so everyone loads the same level.
+        public static void BroadcastLevelLoad()
+        {
+            if (_channel == null) return;
+            var data = LevelSaveLoad.SerializeForNetwork();
+            if (data == null) return;
+            SendLevelTransferData(data);
+            MelonLogger.Msg($"[BabyBlocks] Broadcast level load: {data.Length} bytes");
         }
 
         private static void HandleMaterialApplied(byte senderUuid, byte[] payload)

@@ -394,7 +394,11 @@ namespace BabyBlocks
                 return;
             }
             var (ok, count, error) = LevelSaveLoad.Load(_filePath);
-            if (ok) Core.LastSavePath = _filePath;
+            if (ok)
+            {
+                Core.LastSavePath = _filePath;
+                BabyBlocks.Networking.ModNetworking.BroadcastLevelLoad();
+            }
             SetStatus(ok ? $"Loaded {count} object(s)." : $"Load failed: {error}");
         }
 

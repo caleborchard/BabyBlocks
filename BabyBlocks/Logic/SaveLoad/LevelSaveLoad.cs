@@ -145,205 +145,262 @@ namespace BabyBlocks
 
             try
             {
-                LevelEditor.Select(null);
                 using var fs = File.Open(path, FileMode.Open, FileAccess.Read);
                 using var r  = new BinaryReader(fs, Encoding.UTF8, leaveOpen: false);
-
-                var magic = r.ReadBytes(3);
-                if (magic.Length < 3 || magic[0] != 0x42 || magic[1] != 0x42 || magic[2] != 0x42)
-                    return (false, 0, "Not a .bbb file.");
-
-                byte version = r.ReadByte();
-                if (version > 8)
-                    return (false, 0, $"Unsupported format version {version}.");
-
-                bool baseMapOff = false;
-                int dayWeatherPlaylist = 0;
-                int restoreDayWeatherPlaylist = 0;
-                if (version >= 7)
-                {
-                    baseMapOff = r.ReadBoolean();
-                    dayWeatherPlaylist = r.ReadInt32();
-                    restoreDayWeatherPlaylist = r.ReadInt32();
-                }
-
-                int count = r.ReadInt32();
-                int spawned = 0;
-
-                mgr.RemoveAll();
-                LevelEditor.ClearAllSelectionState();
-                BabyBlocks.Networking.ModNetworking.ClearNetworkedObjects();
-
-                var leos = new LevelEditorObject[count];
-
-                for (int i = 0; i < count; i++)
-                {
-                    string propId;
-                    int chunkIndex = -1;
-                    if (version == 1)
-                    {
-                        // Legacy: string propId + metaIndex (discarded — use propId directly).
-                        propId = ReadLegacyString(r);
-                        r.ReadInt32();
-                    }
-                    else if (version == 2)
-                    {
-                        int metaIndex = r.ReadInt32();
-                        propId = PropMetadataStore.FindIdByIndex(metaIndex);
-                        if (string.IsNullOrEmpty(propId))
-                        {
-                            MelonLogger.Warning($"[SaveLoad] No prop for index {metaIndex}");
-                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // pos
-                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // rot
-                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // scale
-                            continue;
-                        }
-                    }
-                    else
-                    {
-                        int metaIndex = r.ReadInt32();
-                        chunkIndex = r.ReadByte();
-                        propId = metaIndex == SpawnPointMetaIndex
-                            ? PropLibrary.SpawnPointPropId
-                            : PropMetadataStore.FindIdByIndex(metaIndex);
-                        if (string.IsNullOrEmpty(propId))
-                        {
-                            MelonLogger.Warning($"[SaveLoad] No prop for index {metaIndex}");
-                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // pos
-                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // rot (compact)
-                            r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // scale
-                            if (version >= 4)
-                            {
-                                r.ReadByte(); // physicsType
-                                r.ReadByte(); // groupId
-                                r.ReadByte(); // physicsGroupId
-                                r.ReadSingle(); // hatHairAmt
-                            }
-                            if (version >= 5)
-                            {
-                                for (int k = 0; k < 12; k++) r.ReadSingle(); // grab/hat offsets
-                            }
-                            continue;
-                        }
-                    }
-
-                    var pos   = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                    var rot   = (version >= 3) ? ReadCompactRotation(r)
-                                               : new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                    var scale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-
-                    PhysicsMode physicsType      = PhysicsMode.Static;
-                    int recordGroupId            = 0;
-                    int recordPhysicsGroupId     = 0;
-                    float hatHairAmt             = 0f;
-                    var grabOffsetPos = Vector3.zero;
-                    var grabOffsetRot = Vector3.zero;
-                    var hatOffsetPos  = Vector3.zero;
-                    var hatOffsetRot  = Vector3.zero;
-                    if (version >= 4)
-                    {
-                        byte rawPhysics = r.ReadByte();
-                        physicsType = Enum.IsDefined(typeof(PhysicsMode), (int)rawPhysics)
-                            ? (PhysicsMode)rawPhysics : PhysicsMode.Static;
-                        recordGroupId        = r.ReadByte();
-                        recordPhysicsGroupId = r.ReadByte();
-                        hatHairAmt           = Mathf.Clamp01(r.ReadSingle());
-                    }
-                    if (version >= 5)
-                    {
-                        grabOffsetPos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                        grabOffsetRot = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                        hatOffsetPos  = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                        hatOffsetRot  = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                    }
-
-                    int materialConstructionId = version >= 8 ? r.ReadInt32() : -1;
-
-                    var info = PropLibrary.FindById(propId);
-                    if (info == null)
-                    {
-                        MelonLogger.Warning($"[SaveLoad] Prop not found: {propId}");
-                        continue;
-                    }
-
-                    var leo = mgr.SpawnFromPropInfo(info, pos);
-                    if (leo == null) continue;
-
-                    leo.transform.rotation   = rot;
-                    // The spawn point marker is fixed-size — ignore any saved scale.
-                    leo.transform.localScale = PropLibrary.IsSpawnPointProp(propId) ? Vector3.one : scale;
-                    mgr.SyncLoopBase(leo);
-                    if (version >= 3 && chunkIndex >= 0)
-                    {
-                        if (chunkIndex == 255)
-                        {
-                            leo.chunkIndex = 255;
-                            leo.chunkCoord = new Vector2Int(-1, -1);
-                        }
-                        else
-                        {
-                            int safeChunk = Mathf.Clamp(chunkIndex, 0, 63);
-                            leo.chunkIndex = safeChunk;
-                            leo.chunkCoord = new Vector2Int(safeChunk % 8, safeChunk / 8);
-                        }
-                    }
-                    leo.physicsMode      = physicsType;
-                    leo.groupId          = recordGroupId;
-                    leo.physicsGroupId   = recordPhysicsGroupId;
-                    leo.hatHairAmt       = hatHairAmt;
-                    leo.grabOffsetPos    = grabOffsetPos;
-                    leo.grabOffsetRot    = grabOffsetRot;
-                    leo.hatOffsetPos     = hatOffsetPos;
-                    leo.hatOffsetRot     = hatOffsetRot;
-                    leo.materialConstructionId = materialConstructionId;
-                    if (materialConstructionId >= 0)
-                    {
-                        var construction = MaterialConstructionLibrary.FindById(materialConstructionId);
-                        if (construction != null)
-                            MaterialConstructionPanel.ApplyToInstance(leo, construction);
-                        else
-                        {
-                            MelonLogger.Warning($"[SaveLoad] Material construction {materialConstructionId} not found for {leo.addressableKey}");
-                            leo.materialConstructionId = -1;
-                        }
-                    }
-                    leos[i] = leo;
-                    spawned++;
-
-                    // Both clients load the same .bbb in the same record order, so the
-                    // record index is a netId both sides agree on without any negotiation -
-                    // lets selection-highlight/transform/delete sync work for props that
-                    // came from a shared save file rather than being placed live this session.
-                    BabyBlocks.Networking.ModNetworking.RegisterLoadedNetworkedObject((ulong)(i + 1), leo);
-                }
-
-                if (version >= 6)
-                    ReadBakedData(r, leos);
-
-                GroupManager.ApplyGroups();
-                PhysicsObjectManager.SyncLoadedHatHairValues();
-
-                // Teleport BEFORE applying the saved base-map state: SetBaseMapEnabled's
-                // chunk-hide scan and brl.off toggling need to happen at the player's
-                // final position, and Teleport itself needs BRL active to stream in
-                // chunks at the destination — doing this after brl.off=true left the
-                // player ungrounded with stale chunks and stuck Menu.me.teleporting.
-                TeleportToSpawnPoint(leos);
-
-                // Menu.Teleport's coroutine runs across many frames, so defer applying
-                // the base-map state until it finishes (see ApplyLoadedBaseMapStateDelayed).
-                if (version >= 7)
-                    MelonCoroutines.Start(
-                        BaseMapController.ApplyLoadedBaseMapStateDelayed(baseMapOff, dayWeatherPlaylist, restoreDayWeatherPlaylist));
-
-                MelonLogger.Msg($"[SaveLoad] Loaded {spawned}/{count} object(s) from {path}");
-                return (true, spawned, null);
+                return LoadFromReader(r, mgr, path);
             }
             catch (Exception e)
             {
                 MelonLogger.Warning($"[SaveLoad] Load failed: {e.Message}");
                 return (false, 0, e.Message);
             }
+        }
+
+        // Deserializes a level from a BBB byte buffer (e.g. received over the network).
+        // Behaves identically to Load() except baked render data is not expected/read.
+        public static (bool ok, int count, string error) LoadFromNetworkData(byte[] data)
+        {
+            if (data == null || data.Length == 0) return (false, 0, "No data.");
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null) return (false, 0, "Level editor not ready.");
+            try
+            {
+                using var ms = new MemoryStream(data);
+                using var r  = new BinaryReader(ms, Encoding.UTF8, leaveOpen: false);
+                return LoadFromReader(r, mgr, "[network]");
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[SaveLoad] LoadFromNetworkData failed: {e.Message}");
+                return (false, 0, e.Message);
+            }
+        }
+
+        // Serializes the current level to a BBB byte buffer suitable for network
+        // transmission — same format as Save() but with no baked render data block,
+        // since baked data is large and re-baking on load is fast enough.
+        // Returns null if the level manager is unavailable or the scene is empty.
+        public static byte[] SerializeForNetwork()
+        {
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null) return null;
+            var records = BuildSortedRecords(mgr);
+            if (records.Count == 0) return null;
+            try
+            {
+                using var ms = new MemoryStream();
+                using var w  = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: false);
+                w.Write(Magic);
+                w.Write(FormatVersion);
+                w.Write(!BaseMapController.BaseMapEnabled);
+                w.Write(BaseMapController.DayWeatherPlaylist);
+                w.Write(BaseMapController.RestoreDayWeatherPlaylist);
+                w.Write(records.Count);
+                foreach (var rec in records)
+                    WriteRecord(w, rec);
+                w.Write(0); // CompressedLen = 0 — no baked data
+                return ms.ToArray();
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[SaveLoad] SerializeForNetwork failed: {e.Message}");
+                return null;
+            }
+        }
+
+        private static (bool ok, int count, string error) LoadFromReader(BinaryReader r, LevelEditorManager mgr, string sourceName)
+        {
+            LevelEditor.Select(null);
+
+            var magic = r.ReadBytes(3);
+            if (magic.Length < 3 || magic[0] != 0x42 || magic[1] != 0x42 || magic[2] != 0x42)
+                return (false, 0, "Not a .bbb file.");
+
+            byte version = r.ReadByte();
+            if (version > 8)
+                return (false, 0, $"Unsupported format version {version}.");
+
+            bool baseMapOff = false;
+            int dayWeatherPlaylist = 0;
+            int restoreDayWeatherPlaylist = 0;
+            if (version >= 7)
+            {
+                baseMapOff = r.ReadBoolean();
+                dayWeatherPlaylist = r.ReadInt32();
+                restoreDayWeatherPlaylist = r.ReadInt32();
+            }
+
+            int count = r.ReadInt32();
+            int spawned = 0;
+
+            mgr.RemoveAll();
+            LevelEditor.ClearAllSelectionState();
+            BabyBlocks.Networking.ModNetworking.ClearNetworkedObjects();
+
+            var leos = new LevelEditorObject[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                string propId;
+                int chunkIndex = -1;
+                if (version == 1)
+                {
+                    // Legacy: string propId + metaIndex (discarded — use propId directly).
+                    propId = ReadLegacyString(r);
+                    r.ReadInt32();
+                }
+                else if (version == 2)
+                {
+                    int metaIndex = r.ReadInt32();
+                    propId = PropMetadataStore.FindIdByIndex(metaIndex);
+                    if (string.IsNullOrEmpty(propId))
+                    {
+                        MelonLogger.Warning($"[SaveLoad] No prop for index {metaIndex}");
+                        r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // pos
+                        r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // rot
+                        r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // scale
+                        continue;
+                    }
+                }
+                else
+                {
+                    int metaIndex = r.ReadInt32();
+                    chunkIndex = r.ReadByte();
+                    propId = metaIndex == SpawnPointMetaIndex
+                        ? PropLibrary.SpawnPointPropId
+                        : PropMetadataStore.FindIdByIndex(metaIndex);
+                    if (string.IsNullOrEmpty(propId))
+                    {
+                        MelonLogger.Warning($"[SaveLoad] No prop for index {metaIndex}");
+                        r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // pos
+                        r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // rot (compact)
+                        r.ReadSingle(); r.ReadSingle(); r.ReadSingle(); // scale
+                        if (version >= 4)
+                        {
+                            r.ReadByte(); // physicsType
+                            r.ReadByte(); // groupId
+                            r.ReadByte(); // physicsGroupId
+                            r.ReadSingle(); // hatHairAmt
+                        }
+                        if (version >= 5)
+                        {
+                            for (int k = 0; k < 12; k++) r.ReadSingle(); // grab/hat offsets
+                        }
+                        continue;
+                    }
+                }
+
+                var pos   = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                var rot   = (version >= 3) ? ReadCompactRotation(r)
+                                           : new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                var scale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+
+                PhysicsMode physicsType      = PhysicsMode.Static;
+                int recordGroupId            = 0;
+                int recordPhysicsGroupId     = 0;
+                float hatHairAmt             = 0f;
+                var grabOffsetPos = Vector3.zero;
+                var grabOffsetRot = Vector3.zero;
+                var hatOffsetPos  = Vector3.zero;
+                var hatOffsetRot  = Vector3.zero;
+                if (version >= 4)
+                {
+                    byte rawPhysics = r.ReadByte();
+                    physicsType = Enum.IsDefined(typeof(PhysicsMode), (int)rawPhysics)
+                        ? (PhysicsMode)rawPhysics : PhysicsMode.Static;
+                    recordGroupId        = r.ReadByte();
+                    recordPhysicsGroupId = r.ReadByte();
+                    hatHairAmt           = Mathf.Clamp01(r.ReadSingle());
+                }
+                if (version >= 5)
+                {
+                    grabOffsetPos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    grabOffsetRot = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    hatOffsetPos  = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    hatOffsetRot  = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                }
+
+                int materialConstructionId = version >= 8 ? r.ReadInt32() : -1;
+
+                var info = PropLibrary.FindById(propId);
+                if (info == null)
+                {
+                    MelonLogger.Warning($"[SaveLoad] Prop not found: {propId}");
+                    continue;
+                }
+
+                var leo = mgr.SpawnFromPropInfo(info, pos);
+                if (leo == null) continue;
+
+                leo.transform.rotation   = rot;
+                // The spawn point marker is fixed-size — ignore any saved scale.
+                leo.transform.localScale = PropLibrary.IsSpawnPointProp(propId) ? Vector3.one : scale;
+                mgr.SyncLoopBase(leo);
+                if (version >= 3 && chunkIndex >= 0)
+                {
+                    if (chunkIndex == 255)
+                    {
+                        leo.chunkIndex = 255;
+                        leo.chunkCoord = new Vector2Int(-1, -1);
+                    }
+                    else
+                    {
+                        int safeChunk = Mathf.Clamp(chunkIndex, 0, 63);
+                        leo.chunkIndex = safeChunk;
+                        leo.chunkCoord = new Vector2Int(safeChunk % 8, safeChunk / 8);
+                    }
+                }
+                leo.physicsMode      = physicsType;
+                leo.groupId          = recordGroupId;
+                leo.physicsGroupId   = recordPhysicsGroupId;
+                leo.hatHairAmt       = hatHairAmt;
+                leo.grabOffsetPos    = grabOffsetPos;
+                leo.grabOffsetRot    = grabOffsetRot;
+                leo.hatOffsetPos     = hatOffsetPos;
+                leo.hatOffsetRot     = hatOffsetRot;
+                leo.materialConstructionId = materialConstructionId;
+                if (materialConstructionId >= 0)
+                {
+                    var construction = MaterialConstructionLibrary.FindById(materialConstructionId);
+                    if (construction != null)
+                        MaterialConstructionPanel.ApplyToInstance(leo, construction);
+                    else
+                    {
+                        MelonLogger.Warning($"[SaveLoad] Material construction {materialConstructionId} not found for {leo.addressableKey}");
+                        leo.materialConstructionId = -1;
+                    }
+                }
+                leos[i] = leo;
+                spawned++;
+
+                // Both clients load the same .bbb in the same record order, so the
+                // record index is a netId both sides agree on without any negotiation -
+                // lets selection-highlight/transform/delete sync work for props that
+                // came from a shared save file rather than being placed live this session.
+                BabyBlocks.Networking.ModNetworking.RegisterLoadedNetworkedObject((ulong)(i + 1), leo);
+            }
+
+            if (version >= 6)
+                ReadBakedData(r, leos);
+
+            GroupManager.ApplyGroups();
+            PhysicsObjectManager.SyncLoadedHatHairValues();
+
+            // Teleport BEFORE applying the saved base-map state: SetBaseMapEnabled's
+            // chunk-hide scan and brl.off toggling need to happen at the player's
+            // final position, and Teleport itself needs BRL active to stream in
+            // chunks at the destination — doing this after brl.off=true left the
+            // player ungrounded with stale chunks and stuck Menu.me.teleporting.
+            TeleportToSpawnPoint(leos);
+
+            // Menu.Teleport's coroutine runs across many frames, so defer applying
+            // the base-map state until it finishes (see ApplyLoadedBaseMapStateDelayed).
+            if (version >= 7)
+                MelonCoroutines.Start(
+                    BaseMapController.ApplyLoadedBaseMapStateDelayed(baseMapOff, dayWeatherPlaylist, restoreDayWeatherPlaylist));
+
+            MelonLogger.Msg($"[SaveLoad] Loaded {spawned}/{count} object(s) from {sourceName}");
+            return (true, spawned, null);
         }
 
         // Teleports the player to the level's Spawn Point (if one was loaded). Only
