@@ -539,7 +539,10 @@ namespace BabyBlocks
             leo.materialConstructionId = entry.id;
 
             if (pushHistory)
+            {
                 LevelEditorHistory.PushMaterial(leo, renderers, matsBefore, tagObjs, tagsBefore, idBefore);
+                PropHistory.RecordMaterialUse(entry.id);
+            }
         }
 
         // ── Styles ───────────────────────────────────────────────────────────

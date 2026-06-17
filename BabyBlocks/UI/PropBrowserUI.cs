@@ -387,7 +387,28 @@ namespace BabyBlocks.UI
             foreach (var cat in cats)
                 AddFilterItem(cat, cat, showingMats: false);
             AddFilterItem("Materials", null, showingMats: true);
-            AddFilterItem("History", "History", showingMats: false);
+
+            // History preserves whatever ShowingMaterials mode is active when clicked,
+            // so it works as "prop history" or "material history" depending on context.
+            {
+                var histBtn = UIFactory.CreateButton(_catItemsContainer, "Item_History", "History");
+                UIFactory.SetLayoutElement(histBtn.Component.gameObject, minHeight: 26, flexibleWidth: 9999);
+                PropBrowserUI.ApplyButtonColors(histBtn);
+                bool isHistCurrent = !PropPalette.ShowingMaterials && string.Equals(PropPalette.SelectedCategory, "History", StringComparison.OrdinalIgnoreCase);
+                if (isHistCurrent)
+                {
+                    var img = histBtn.Component.GetComponent<Image>();
+                    if (img != null) img.color = new Color(0.3f, 0.5f, 0.8f, 1f);
+                }
+                histBtn.OnClick += () =>
+                {
+                    PropBrowserUI.Deselect();
+                    CloseCat();
+                    PropPalette.ShowingMaterials = false;
+                    PropPalette.SelectedCategory = "History";
+                    PropLibrary.RebuildFiltered();
+                };
+            }
 
             int itemCount = cats.Count + 3; // All + History + cats + Materials
             const int itemH = 26, pad = 3, spacing = 1;
@@ -507,17 +528,18 @@ namespace BabyBlocks.UI
 
         struct PropCard
         {
-            public GameObject    Root;
-            public RectTransform RootRT;
-            public RawImage      Preview;
-            public RectTransform PreviewRT;
-            public Text          Label;
-            public RectTransform LabelRect;
-            public RectTransform LabelMask;
-            public Image         CardBg;
-            public LayoutElement CardLE;
-            public string        DisplayedName;
-            public bool          IsDoubled;
+            public GameObject              Root;
+            public RectTransform           RootRT;
+            public RawImage                Preview;
+            public RectTransform           PreviewRT;
+            public Text                    Label;
+            public RectTransform           LabelRect;
+            public RectTransform           LabelMask;
+            public Image                   CardBg;
+            public LayoutElement           CardLE;
+            public string                  DisplayedName;
+            public bool                    IsDoubled;
+            public MaterialConstructionEntry HistoryMat; // non-null when this history card is a material
         }
 
         readonly PropCard[] _cards = new PropCard[SlotCount];
@@ -689,18 +711,6 @@ namespace BabyBlocks.UI
         IReadOnlyList<PropInfo> GetPanelProps()
         {
             if (PropPalette.ShowingMaterials) return Array.Empty<PropInfo>();
-
-            if (string.Equals(PropPalette.SelectedCategory, "History", StringComparison.OrdinalIgnoreCase))
-            {
-                var hist = PropHistory.GetHistoryProps();
-                if (_lastPropCount != hist.Count)
-                {
-                    _lastPropCount = hist.Count;
-                    _offset = Math.Clamp(_offset, 0, Math.Max(0, hist.Count - _activeSlotCount));
-                }
-                return hist;
-            }
-
             var filtered = PropLibrary.FilteredProps;
             if (_lastPropCount != filtered.Count)
             {
@@ -724,11 +734,18 @@ namespace BabyBlocks.UI
 
         // ---- Wrap-around navigation (same logic as PropPalette.StepPageOffset) ----
 
+        bool IsHistoryMode => string.Equals(PropPalette.SelectedCategory, "History", StringComparison.OrdinalIgnoreCase);
+
+        int GetCurrentCount()
+        {
+            if (PropPalette.ShowingMaterials) return GetPanelMaterials().Count;
+            if (IsHistoryMode) return PropHistory.GetAllResolved().Count;
+            return GetPanelProps().Count;
+        }
+
         void Scroll(int delta)
         {
-            int total = PropPalette.ShowingMaterials
-                ? GetPanelMaterials().Count
-                : GetPanelProps().Count;
+            int total = GetCurrentCount();
             if (total <= 0) return;
             int maxOffset = ((total - 1) / _activeSlotCount) * _activeSlotCount;
             int next = _offset + delta;
@@ -775,6 +792,8 @@ namespace BabyBlocks.UI
 
             if (showMats)
                 TickMaterialsMode();
+            else if (IsHistoryMode)
+                TickHistoryMode();
             else
                 TickPropsMode();
 
@@ -785,7 +804,7 @@ namespace BabyBlocks.UI
         void TickPageLabel()
         {
             if (_pageLabel == null) return;
-            int total = PropPalette.ShowingMaterials ? GetPanelMaterials().Count : GetPanelProps().Count;
+            int total = GetCurrentCount();
             int totalPages  = total <= 0 ? 1 : (total - 1) / _activeSlotCount + 1;
             int currentPage = _offset / _activeSlotCount + 1;
             _pageLabel.text = $"{currentPage} / {totalPages}";
@@ -894,6 +913,27 @@ namespace BabyBlocks.UI
                     if (_dragLabelRT != null) _dragLabelRT.gameObject.SetActive(true);
                 }
             }
+            else if (IsHistoryMode)
+            {
+                ref var card = ref _cards[cardIndex];
+                if (card.HistoryMat != null)
+                {
+                    _matDragEntry = card.HistoryMat;
+                    if (_dragLabel != null) _dragLabel.text = card.HistoryMat.name;
+                    if (_dragLabelRT != null) _dragLabelRT.gameObject.SetActive(true);
+                }
+                else
+                {
+                    var history = PropHistory.GetAllResolved();
+                    int idx = _offset + cardIndex;
+                    if (idx < history.Count && !history[idx].IsMat)
+                    {
+                        var info = history[idx].Prop;
+                        PropHistory.RecordUse(info.id);
+                        PropPalette.BeginDragDirect(info);
+                    }
+                }
+            }
             else
             {
                 var props = GetPanelProps();
@@ -902,10 +942,7 @@ namespace BabyBlocks.UI
                 {
                     var dragInfo = props[idx];
                     PropHistory.RecordUse(dragInfo.id);
-                    if (string.Equals(PropPalette.SelectedCategory, "History", StringComparison.OrdinalIgnoreCase))
-                        PropPalette.BeginDragDirect(dragInfo);
-                    else
-                        PropPalette.BeginDrag(idx, dragInfo);
+                    PropPalette.BeginDrag(idx, dragInfo);
                 }
             }
         }
@@ -997,6 +1034,81 @@ namespace BabyBlocks.UI
                         else
                         { card.Preview.texture = _debugTex; card.Preview.uvRect = new Rect(0f, 0f, 4f, 4f); }
                     }
+                }
+
+                TickMarquee(i);
+            }
+        }
+
+        // ---- History mode tick (unified props + materials) ----
+
+        void TickHistoryMode()
+        {
+            var history = PropHistory.GetAllResolved();
+            int total = history.Count;
+
+            if (_lastPropCount != total)
+            {
+                _lastPropCount = total;
+                _offset = Math.Clamp(_offset, 0, Math.Max(0, total - _activeSlotCount));
+            }
+
+            if (_prevBtn != null) _prevBtn.Component.interactable = true;
+            if (_nextBtn != null) _nextBtn.Component.interactable = total > _activeSlotCount;
+
+            for (int i = 0; i < SlotCount; i++)
+            {
+                int histIdx = _offset + i;
+                ref var card = ref _cards[i];
+                if (card.Root == null) continue;
+
+                bool hasEntry = i < _activeSlotCount && histIdx < total;
+                card.Root.SetActive(hasEntry);
+                card.HistoryMat = null;
+                if (!hasEntry) continue;
+
+                var entry = history[histIdx];
+
+                if (entry.IsMat)
+                {
+                    card.HistoryMat = entry.Mat;
+                    MaterialCatalog.EnsureMaterialList();
+                    Material mat = null;
+                    if (!string.IsNullOrEmpty(entry.Mat.materialName))
+                        mat = MaterialCatalog.ResolveMaterialByName(entry.Mat.materialName);
+                    if (mat != null)
+                        PropPreviewRenderer.RequestMaterialSphere(entry.Mat.id, mat);
+                    var tex = PropPreviewRenderer.GetMaterialSphere(entry.Mat.id);
+                    if (card.Preview != null)
+                    {
+                        card.Preview.texture = tex ?? _debugTex;
+                        card.Preview.uvRect  = tex != null ? new Rect(0f, 0f, 1f, 1f) : new Rect(0f, 0f, 4f, 4f);
+                    }
+                    string matName = entry.Mat.name;
+                    if (card.DisplayedName != matName)
+                    {
+                        card.DisplayedName = matName;
+                        if (card.Label != null) card.Label.text = matName;
+                    }
+                }
+                else
+                {
+                    var info = entry.Prop;
+                    PropPreviewRenderer.Request(info);
+                    var tex = PropPreviewRenderer.Get(info.id);
+                    if (card.Preview != null)
+                    {
+                        card.Preview.texture = tex ?? _debugTex;
+                        card.Preview.uvRect  = tex != null ? new Rect(0f, 0f, 1f, 1f) : new Rect(0f, 0f, 4f, 4f);
+                    }
+                    string displayName = PropMetadataStore.GetDisplayName(info.id) ?? info.displayName;
+                    if (card.DisplayedName != displayName)
+                    {
+                        card.DisplayedName = displayName;
+                        if (card.Label != null) card.Label.text = displayName;
+                    }
+                    if (!info.isLoaded && !info.isInvalid)
+                        PropLibrary.LoadPropData(info);
                 }
 
                 TickMarquee(i);
