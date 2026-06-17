@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using BabyBlocks.UI;
 using Il2Cpp;
 using UnityEngine;
 
@@ -35,7 +36,7 @@ namespace BabyBlocks
         static int        _hoveredAxis = -1;
         static bool       _pivotLocked;
 
-        public static bool IsTypingInUI => PropMetadataPanel.IsTypingInUI || ObjImportWindow.IsTypingInUI || PhysicsWindow.IsTypingInUI;
+        public static bool IsTypingInUI => PropMetadataPanel.IsTypingInUI || ObjImportWindow.IsTypingInUI || PhysicsWindow.IsTypingInUI || PropBrowserUI.IsTypingInUI;
         public static bool IsDragging   => _isDragging;
 
         static readonly List<LevelEditorObject> _dragObjects = new();

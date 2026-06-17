@@ -15,6 +15,7 @@ namespace BabyBlocks.UI
     static class PropBrowserUI
     {
         public static bool Ready { get; private set; }
+        public static bool IsTypingInUI => _panel != null && _panel.IsSearchFocused;
 
         static UIBase           _uiBase;
         static TopBarPanel      _topBar;
@@ -516,6 +517,8 @@ namespace BabyBlocks.UI
         public override Vector2 DefaultAnchorMax => new(0f, 1f);
         public override bool    CanDragAndResize => false;
 
+        internal bool IsSearchFocused => _searchInput?.Component?.isFocused == true;
+
         public override void SetDefaultSizeAndPosition()
         {
             int h = TopBarPanel.BarHeight;
@@ -553,6 +556,13 @@ namespace BabyBlocks.UI
         int  _lastScreenH      = -1;
         int  _activeSlotCount  = SlotCount;
 
+        // Search
+        InputFieldRef _searchInput;
+        string        _searchText = "";
+        readonly List<PropInfo>                          _propSearchResults = new();
+        readonly List<MaterialConstructionEntry>         _matSearchResults  = new();
+        readonly List<PropHistory.ResolvedHistoryEntry>  _histSearchResults = new();
+
         // Drag state
         int                     _mouseDownCard = -1;
         Vector2                 _mouseDownPos;
@@ -574,6 +584,14 @@ namespace BabyBlocks.UI
                 forceWidth: true, forceHeight: false,
                 childControlWidth: true, childControlHeight: true,
                 spacing: 2, padTop: 2, padBottom: 2, padLeft: 2, padRight: 2);
+
+            // Search bar
+            var searchRow = UIFactory.CreateHorizontalGroup(ContentRoot, "SearchRow",
+                false, false, true, true, spacing: 4, padding: new Vector4(2, 1, 2, 1));
+            UIFactory.SetLayoutElement(searchRow, minHeight: 26, flexibleWidth: 9999);
+            _searchInput = UIFactory.CreateInputField(searchRow, "SearchInput", "Search...");
+            UIFactory.SetLayoutElement(_searchInput.Component.gameObject, flexibleWidth: 9999, minHeight: 22);
+            _searchInput.Component.characterLimit = 64;
 
             for (int i = 0; i < SlotCount; i++)
                 _cards[i] = BuildCard(ContentRoot, i);
@@ -712,34 +730,73 @@ namespace BabyBlocks.UI
         {
             if (PropPalette.ShowingMaterials) return Array.Empty<PropInfo>();
             var filtered = PropLibrary.FilteredProps;
-            if (_lastPropCount != filtered.Count)
+            IReadOnlyList<PropInfo> result = filtered;
+            if (!string.IsNullOrEmpty(_searchText))
             {
-                _lastPropCount = filtered.Count;
-                _offset = Math.Clamp(_offset, 0, Math.Max(0, filtered.Count - _activeSlotCount));
+                _propSearchResults.Clear();
+                foreach (var p in filtered)
+                {
+                    var name = PropMetadataStore.GetDisplayName(p.id) ?? p.displayName ?? "";
+                    if (name.IndexOf(_searchText, StringComparison.OrdinalIgnoreCase) >= 0)
+                        _propSearchResults.Add(p);
+                }
+                result = _propSearchResults;
             }
-            return filtered;
+            if (_lastPropCount != result.Count)
+            {
+                _lastPropCount = result.Count;
+                _offset = Math.Clamp(_offset, 0, Math.Max(0, result.Count - _activeSlotCount));
+            }
+            return result;
         }
 
         IReadOnlyList<MaterialConstructionEntry> GetPanelMaterials()
         {
             PropMetadataStore.EnsureLoaded();
             var mats = MaterialConstructionLibrary.Entries;
-            if (_lastMatCount != mats.Count)
+            IReadOnlyList<MaterialConstructionEntry> result = mats;
+            if (!string.IsNullOrEmpty(_searchText))
             {
-                _lastMatCount = mats.Count;
-                _offset = Math.Clamp(_offset, 0, Math.Max(0, mats.Count - _activeSlotCount));
+                _matSearchResults.Clear();
+                foreach (var m in mats)
+                {
+                    if ((m.name ?? "").IndexOf(_searchText, StringComparison.OrdinalIgnoreCase) >= 0)
+                        _matSearchResults.Add(m);
+                }
+                result = _matSearchResults;
             }
-            return mats;
+            if (_lastMatCount != result.Count)
+            {
+                _lastMatCount = result.Count;
+                _offset = Math.Clamp(_offset, 0, Math.Max(0, result.Count - _activeSlotCount));
+            }
+            return result;
         }
 
         // ---- Wrap-around navigation (same logic as PropPalette.StepPageOffset) ----
 
         bool IsHistoryMode => string.Equals(PropPalette.SelectedCategory, "History", StringComparison.OrdinalIgnoreCase);
 
+        IReadOnlyList<PropHistory.ResolvedHistoryEntry> GetHistoryFiltered()
+        {
+            var all = PropHistory.GetAllResolved();
+            if (string.IsNullOrEmpty(_searchText)) return all;
+            _histSearchResults.Clear();
+            foreach (var e in all)
+            {
+                string name = e.IsMat
+                    ? (e.Mat?.name ?? "")
+                    : (PropMetadataStore.GetDisplayName(e.Prop?.id) ?? e.Prop?.displayName ?? "");
+                if (name.IndexOf(_searchText, StringComparison.OrdinalIgnoreCase) >= 0)
+                    _histSearchResults.Add(e);
+            }
+            return _histSearchResults;
+        }
+
         int GetCurrentCount()
         {
             if (PropPalette.ShowingMaterials) return GetPanelMaterials().Count;
-            if (IsHistoryMode) return PropHistory.GetAllResolved().Count;
+            if (IsHistoryMode) return GetHistoryFiltered().Count;
             return GetPanelProps().Count;
         }
 
@@ -779,6 +836,24 @@ namespace BabyBlocks.UI
                 }
             }
 
+            if (_searchInput?.Component != null)
+            {
+                // Deselect if user clicks outside the search field
+                if (_searchInput.Component.isFocused && (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1)))
+                {
+                    var rt = _searchInput.Component.GetComponent<RectTransform>();
+                    if (rt == null || !RectTransformUtility.RectangleContainsScreenPoint(rt, Input.mousePosition, null))
+                        _searchInput.Component.DeactivateInputField();
+                }
+
+                string cur = _searchInput.Component.text ?? "";
+                if (cur != _searchText)
+                {
+                    _searchText = cur;
+                    _offset = 0;
+                }
+            }
+
             PropPreviewRenderer.Update();
 
             if (!Core.IsKeyboardCaptured)
@@ -812,10 +887,8 @@ namespace BabyBlocks.UI
 
         void UpdateCardLayout()
         {
-            // Fixed overhead per slot count n: navRow(56) + pageLabel(20) + padTop(2) + padBottom(2)
-            // + (n+1) spacing gaps × 2px.  Rearranged: available = n*(cardH+2) + 82, so
-            // n = floor((available-82) / (targetCardH+2)), cardH = (available-82)/n - 2.
-            const int FixedBase   = 56 + 20 + 2 + 2; // 80
+            // Fixed overhead: navRow(56) + pageLabel(20) + searchBar(26) + padTop(2) + padBottom(2) + spacing(2).
+            const int FixedBase   = 56 + 20 + 26 + 2 + 2 + 2; // 108
             const int TargetCardH = 80;
             int available = Screen.height - TopBarPanel.BarHeight;
 
@@ -942,7 +1015,12 @@ namespace BabyBlocks.UI
                 {
                     var dragInfo = props[idx];
                     PropHistory.RecordUse(dragInfo.id);
-                    PropPalette.BeginDrag(idx, dragInfo);
+                    // When search is active, idx is an index into search results, not FilteredProps,
+                    // so BeginDrag's filteredIndex would point at the wrong prop. Use direct instead.
+                    if (!string.IsNullOrEmpty(_searchText))
+                        PropPalette.BeginDragDirect(dragInfo);
+                    else
+                        PropPalette.BeginDrag(idx, dragInfo);
                 }
             }
         }
@@ -1044,7 +1122,7 @@ namespace BabyBlocks.UI
 
         void TickHistoryMode()
         {
-            var history = PropHistory.GetAllResolved();
+            var history = GetHistoryFiltered();
             int total = history.Count;
 
             if (_lastPropCount != total)
