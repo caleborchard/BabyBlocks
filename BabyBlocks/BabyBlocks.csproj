@@ -726,6 +726,7 @@
 		<Compile Include="Props\MaterialInspectorPanel.cs" />
 		<Compile Include="Props\MaterialConstructionLibrary.cs" />
 		<Compile Include="Logic\SaveLoad\LevelSaveLoad.cs" />
+		<Compile Include="UI\FileBrowserPanel.cs" />
 		<Compile Include="UI\SaveLoadWindow.cs" />
 		<Compile Include="UI\GuiStyleHelpers.cs" />
 		<Compile Include="UI\PropPalette.cs" />

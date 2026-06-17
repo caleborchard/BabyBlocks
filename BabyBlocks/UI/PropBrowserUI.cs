@@ -20,6 +20,7 @@ namespace BabyBlocks.UI
         static UIBase           _uiBase;
         static TopBarPanel      _topBar;
         static PropLibraryPanel _panel;
+        static FileBrowserPanel _fileBrowser;
 
         public static void Init()
         {
@@ -35,8 +36,9 @@ namespace BabyBlocks.UI
             _uiBase = UniversalUI.RegisterUI<PropBrowserUIBase>("BabyBlocks.PropBrowser", OnUpdate);
             try
             {
-                _topBar = new TopBarPanel(_uiBase);
-                _panel  = new PropLibraryPanel(_uiBase);
+                _topBar      = new TopBarPanel(_uiBase);
+                _panel       = new PropLibraryPanel(_uiBase);
+                _fileBrowser = new FileBrowserPanel(_uiBase);
                 Ready = true;
                 MelonLogger.Msg("[BabyBlocks] Prop browser UI ready.");
             }
@@ -110,6 +112,7 @@ namespace BabyBlocks.UI
             UniversalUI.EventSys?.SetSelectedGameObject(null);
             _topBar?.Tick();
             _panel?.Tick();
+            _fileBrowser?.Tick();
 
             // Re-apply camera viewport fraction if the screen width changes while editor is open.
             if (_uiBase != null && _uiBase.Enabled && Screen.width != _lastViewportW)
@@ -274,12 +277,12 @@ namespace BabyBlocks.UI
             var saveBtn = UIFactory.CreateButton(_fileItemsContainer, "SaveBtn", "Save");
             UIFactory.SetLayoutElement(saveBtn.Component.gameObject, minHeight: itemH, flexibleWidth: 9999);
             PropBrowserUI.ApplyButtonColors(saveBtn);
-            saveBtn.OnClick += () => { PropBrowserUI.Deselect(); CloseFile(); SaveLoadWindow.TriggerSaveDialog(); };
+            saveBtn.OnClick += () => { PropBrowserUI.Deselect(); CloseFile(); FileBrowserPanel.OpenPanel(); };
 
             var loadBtn = UIFactory.CreateButton(_fileItemsContainer, "LoadBtn", "Load");
             UIFactory.SetLayoutElement(loadBtn.Component.gameObject, minHeight: itemH, flexibleWidth: 9999);
             PropBrowserUI.ApplyButtonColors(loadBtn);
-            loadBtn.OnClick += () => { PropBrowserUI.Deselect(); CloseFile(); SaveLoadWindow.TriggerLoadDialog(); };
+            loadBtn.OnClick += () => { PropBrowserUI.Deselect(); CloseFile(); FileBrowserPanel.OpenPanel(); };
 
             string clearLabel = _pendingClear ? "Confirm clear?" : "Clear";
             _clearBtn = UIFactory.CreateButton(_fileItemsContainer, "ClearBtn", clearLabel);
