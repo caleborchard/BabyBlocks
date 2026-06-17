@@ -70,6 +70,7 @@ namespace BabyBlocks
             public Vector3 scale;
             public Quaternion rotation;
             public bool isAddressable;
+            public int materialConstructionId; // -1 if none
         }
 
         static readonly List<CopyEntry> _copyEntries = new();
@@ -1245,7 +1246,8 @@ namespace BabyBlocks
                     offset = obj.transform.position - _copyPivot,
                     scale = obj.transform.localScale,
                     rotation = obj.transform.rotation,
-                    isAddressable = !string.IsNullOrEmpty(obj.addressableKey)
+                    isAddressable = !string.IsNullOrEmpty(obj.addressableKey),
+                    materialConstructionId = obj.materialConstructionId,
                 };
 
                 if (!entry.isAddressable)
@@ -1283,7 +1285,16 @@ namespace BabyBlocks
                 {
                     var info = PropLibrary.FindById(entry.addressableKey);
                     if (info != null)
+                    {
                         obj = LevelEditorManager.Instance.SpawnFromPropInfo(info, targetPos);
+                        PropHistory.RecordUse(entry.addressableKey);
+                        if (entry.materialConstructionId >= 0)
+                        {
+                            var matEntry = MaterialConstructionLibrary.FindById(entry.materialConstructionId);
+                            if (matEntry != null)
+                                MaterialConstructionPanel.ApplyToInstance(obj, matEntry, pushHistory: false);
+                        }
+                    }
                 }
                 else
                 {

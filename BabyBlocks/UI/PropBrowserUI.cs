@@ -50,13 +50,58 @@ namespace BabyBlocks.UI
             }
         }
 
+        static bool _savedCenterDot;
+        static bool _lastFlyCamActive;
+
         public static void UpdateVisibility()
         {
             if (!Ready) return;
-            bool inEditor = FlyCamController.FlyCamActive && FlyCamController.CursorMode;
+            bool inEditor   = FlyCamController.FlyCamActive && FlyCamController.CursorMode;
+            bool flyCamNow  = FlyCamController.FlyCamActive;
+
             if (_uiBase.Enabled != inEditor)
+            {
                 _uiBase.Enabled = inEditor;
+                ApplyCameraViewport(inEditor);
+            }
+
+            if (flyCamNow != _lastFlyCamActive)
+            {
+                _lastFlyCamActive = flyCamNow;
+                ApplyCrosshair(flyCamNow);
+            }
         }
+
+        static void ApplyCrosshair(bool flyCamActive)
+        {
+            if (Menu.me == null) return;
+            if (flyCamActive)
+            {
+                _savedCenterDot = Menu.cfg.centerDot;
+                Menu.me.ToggleCenterDot(true);
+            }
+            else
+            {
+                Menu.me.ToggleCenterDot(_savedCenterDot);
+            }
+        }
+
+        static void ApplyCameraViewport(bool editorOpen)
+        {
+            var cam = Camera.main;
+            if (cam == null) return;
+            if (editorOpen)
+            {
+                float panelFrac = PropLibraryPanel.PanelWidth / (float)Screen.width;
+                cam.rect = new Rect(panelFrac, 0f, 1f - panelFrac, 1f);
+            }
+            else
+            {
+                cam.rect = new Rect(0f, 0f, 1f, 1f);
+            }
+        }
+
+        static int _lastViewportW = -1;
 
         static void OnUpdate()
         {
@@ -64,6 +109,13 @@ namespace BabyBlocks.UI
             UniversalUI.EventSys?.SetSelectedGameObject(null);
             _topBar?.Tick();
             _panel?.Tick();
+
+            // Re-apply camera viewport fraction if the screen width changes while editor is open.
+            if (_uiBase != null && _uiBase.Enabled && Screen.width != _lastViewportW)
+            {
+                _lastViewportW = Screen.width;
+                ApplyCameraViewport(true);
+            }
         }
 
         internal static void ApplyButtonColors(ButtonRef btn)
@@ -132,12 +184,14 @@ namespace BabyBlocks.UI
         const float ClearConfirmTimeout = 5f;
         ButtonRef  _clearBtn;
 
-        ButtonRef  _catBtn;
-        GameObject _catDropdown;
-        GameObject _catItemsContainer;
-        bool       _catOpen;
+        ButtonRef    _catBtn;
+        LayoutElement _catBtnLE;
+        GameObject   _catDropdown;
+        GameObject   _catItemsContainer;
+        bool         _catOpen;
 
         const float CatDropdownOffsetX = 4f;
+        const float CatDropdownGap     = 6f; // gap widget between cat and file buttons
 
         public TopBarPanel(UIBase owner) : base(owner) { }
 
@@ -149,16 +203,17 @@ namespace BabyBlocks.UI
                 false, false, true, true, spacing: 0, padding: new Vector4(0, 2, 4, 2));
             UIFactory.SetLayoutElement(barRow, flexibleWidth: 9999, minHeight: BarHeight - 4);
 
-            // Category / mode selector — fixed width matching the prop list panel
+            // Category / mode selector — width sized to content in RebuildCatItems
             _catBtn = UIFactory.CreateButton(barRow, "CatBtn", " All ▼ ");
             UIFactory.SetLayoutElement(_catBtn.Component.gameObject,
-                minWidth: PropLibraryPanel.PanelWidth, flexibleWidth: 0, minHeight: 22);
+                minWidth: 60, flexibleWidth: 0, minHeight: 22);
+            _catBtnLE = _catBtn.Component.gameObject.GetComponent<LayoutElement>();
             PropBrowserUI.ApplyButtonColors(_catBtn);
             _catBtn.OnClick += ToggleCat;
 
             // Gap between cat button and file menu
             var gap = UIFactory.CreateUIObject("Gap", barRow);
-            UIFactory.SetLayoutElement(gap, minWidth: 6, flexibleWidth: 0);
+            UIFactory.SetLayoutElement(gap, minWidth: (int)CatDropdownGap, flexibleWidth: 0);
 
             // File
             var fileBtn = UIFactory.CreateButton(barRow, "FileBtn", " File ");
@@ -171,6 +226,10 @@ namespace BabyBlocks.UI
 
             _catDropdown = BuildCatDropdown();
             _catDropdown.SetActive(false);
+
+            // Size cat button and dropdowns immediately so File dropdown is at the right X from the start.
+            RebuildCatItems();
+            _catDropdown.SetActive(false);
         }
 
         // ---- File dropdown ----
@@ -182,7 +241,7 @@ namespace BabyBlocks.UI
             rt.anchorMin        = new Vector2(0f, 1f);
             rt.anchorMax        = new Vector2(0f, 1f);
             rt.pivot            = new Vector2(0f, 1f);
-            rt.anchoredPosition = new Vector2(4f, -(BarHeight + 1f));
+            rt.anchoredPosition = new Vector2(60f + CatDropdownGap, -(BarHeight + 1f)); // X updated in RebuildCatItems
             rt.sizeDelta        = new Vector2(150f, 10f); // height set by layout
 
             go.AddComponent<Image>().color = new Color(0.13f, 0.13f, 0.16f, 0.97f);
@@ -304,23 +363,38 @@ namespace BabyBlocks.UI
 
         void RebuildCatItems()
         {
+            // DestroyImmediate so children are gone before we add new ones and measure.
             for (int i = _catItemsContainer.transform.childCount - 1; i >= 0; i--)
-                UnityEngine.Object.Destroy(_catItemsContainer.transform.GetChild(i).gameObject);
+                UnityEngine.Object.DestroyImmediate(_catItemsContainer.transform.GetChild(i).gameObject);
 
             var cats = PropMetadataStore.GetAllCategories();
-            // All + each category + "Materials" at bottom = cats.Count + 2
-            int itemCount = cats.Count + 2;
-            const int itemH = 26;
-            const int pad   = 3;
-            float totalH = pad + itemCount * itemH + (itemCount - 1) * 1 + pad;
+            cats.Sort(StringComparer.OrdinalIgnoreCase);
 
-            var rt = _catDropdown.GetComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(rt.sizeDelta.x, totalH);
+            // Width: sized to the longest button label. The button shows " {name} ▼ ", so
+            // add 4 chars to the raw name length. ~11px per char fits the default UniverseLib font.
+            int maxLen = 9; // "Materials"
+            foreach (var cat in cats)
+                if (cat.Length > maxLen) maxLen = cat.Length;
+            float dropW = Mathf.Max(100f, (maxLen + 4) * 11f + 8f); // +4 for " ▼ " + leading space
+
+            // Keep cat button and file dropdown X in sync with computed width.
+            if (_catBtnLE != null) _catBtnLE.minWidth = dropW;
+            var fileDDRT = _fileDropdown?.GetComponent<RectTransform>();
+            if (fileDDRT != null)
+                fileDDRT.anchoredPosition = new Vector2(dropW + CatDropdownGap, -(BarHeight + 1f));
 
             AddFilterItem("All", null, showingMats: false);
             foreach (var cat in cats)
                 AddFilterItem(cat, cat, showingMats: false);
             AddFilterItem("Materials", null, showingMats: true);
+            AddFilterItem("History", "History", showingMats: false);
+
+            int itemCount = cats.Count + 3; // All + History + cats + Materials
+            const int itemH = 26, pad = 3, spacing = 1;
+            float totalH = pad + itemCount * itemH + (itemCount - 1) * spacing + pad;
+
+            var rt = _catDropdown.GetComponent<RectTransform>();
+            rt.sizeDelta = new Vector2(dropW, totalH);
         }
 
         void AddFilterItem(string label, string category, bool showingMats)
@@ -436,10 +510,12 @@ namespace BabyBlocks.UI
             public GameObject    Root;
             public RectTransform RootRT;
             public RawImage      Preview;
+            public RectTransform PreviewRT;
             public Text          Label;
             public RectTransform LabelRect;
             public RectTransform LabelMask;
             public Image         CardBg;
+            public LayoutElement CardLE;
             public string        DisplayedName;
             public bool          IsDoubled;
         }
@@ -449,9 +525,11 @@ namespace BabyBlocks.UI
         int                 _offset;
         static Texture2D    _debugTex;
 
-        int  _lastPropCount  = -1;
-        int  _lastMatCount   = -1;
-        bool _wasShowingMats = false;
+        int  _lastPropCount    = -1;
+        int  _lastMatCount     = -1;
+        bool _wasShowingMats   = false;
+        int  _lastScreenH      = -1;
+        int  _activeSlotCount  = SlotCount;
 
         // Drag state
         int                     _mouseDownCard = -1;
@@ -478,6 +556,10 @@ namespace BabyBlocks.UI
             for (int i = 0; i < SlotCount; i++)
                 _cards[i] = BuildCard(ContentRoot, i);
 
+            // Flexible spacer: pushes nav row to the bottom when fewer than SlotCount cards are visible.
+            var navSpacer = UIFactory.CreateUIObject("NavSpacer", ContentRoot);
+            UIFactory.SetLayoutElement(navSpacer, flexibleHeight: 9999, minHeight: 0);
+
             var navRow = UIFactory.CreateHorizontalGroup(ContentRoot, "NavRow",
                 false, false, true, true, spacing: 2, padding: new Vector4(2, 2, 2, 2));
             UIFactory.SetLayoutElement(navRow, minHeight: 56, flexibleWidth: 9999);
@@ -486,13 +568,13 @@ namespace BabyBlocks.UI
             UIFactory.SetLayoutElement(_prevBtn.Component.gameObject, minHeight: 52, flexibleWidth: 9999);
             SetButtonLabel(_prevBtn, "◄", "-");
             PropBrowserUI.ApplyButtonColors(_prevBtn);
-            _prevBtn.OnClick += () => { Scroll(-SlotCount); PropBrowserUI.Deselect(); };
+            _prevBtn.OnClick += () => { Scroll(-_activeSlotCount); PropBrowserUI.Deselect(); };
 
             _nextBtn = UIFactory.CreateButton(navRow, "NextBtn", "►");
             UIFactory.SetLayoutElement(_nextBtn.Component.gameObject, minHeight: 52, flexibleWidth: 9999);
             SetButtonLabel(_nextBtn, "►", "=");
             PropBrowserUI.ApplyButtonColors(_nextBtn);
-            _nextBtn.OnClick += () => { Scroll(+SlotCount); PropBrowserUI.Deselect(); };
+            _nextBtn.OnClick += () => { Scroll(+_activeSlotCount); PropBrowserUI.Deselect(); };
 
             _pageLabel = UIFactory.CreateLabel(ContentRoot, "PageLabel", "1 / 1",
                 TextAnchor.MiddleCenter, new Color(0.6f, 0.6f, 0.6f), fontSize: 14);
@@ -552,6 +634,7 @@ namespace BabyBlocks.UI
             var cardBg = cardGO.AddComponent<Image>();
             cardBg.color = new Color(0.13f, 0.13f, 0.16f);
             UIFactory.SetLayoutElement(cardGO, minHeight: CardHeight, flexibleWidth: 9999, flexibleHeight: 0);
+            var cardLE = cardGO.GetComponent<LayoutElement>();
 
             var previewGO = UIFactory.CreateUIObject($"Preview{index}", cardGO);
             var preview   = previewGO.AddComponent<RawImage>();
@@ -592,10 +675,12 @@ namespace BabyBlocks.UI
                 Root      = cardGO,
                 RootRT    = cardGO.GetComponent<RectTransform>(),
                 Preview   = preview,
+                PreviewRT = previewRect,
                 Label     = lbl,
                 LabelRect = lblRect,
                 LabelMask = maskRect,
                 CardBg    = cardBg,
+                CardLE    = cardLE,
             };
         }
 
@@ -604,11 +689,23 @@ namespace BabyBlocks.UI
         IReadOnlyList<PropInfo> GetPanelProps()
         {
             if (PropPalette.ShowingMaterials) return Array.Empty<PropInfo>();
+
+            if (string.Equals(PropPalette.SelectedCategory, "History", StringComparison.OrdinalIgnoreCase))
+            {
+                var hist = PropHistory.GetHistoryProps();
+                if (_lastPropCount != hist.Count)
+                {
+                    _lastPropCount = hist.Count;
+                    _offset = Math.Clamp(_offset, 0, Math.Max(0, hist.Count - _activeSlotCount));
+                }
+                return hist;
+            }
+
             var filtered = PropLibrary.FilteredProps;
             if (_lastPropCount != filtered.Count)
             {
                 _lastPropCount = filtered.Count;
-                _offset = Math.Clamp(_offset, 0, Math.Max(0, filtered.Count - SlotCount));
+                _offset = Math.Clamp(_offset, 0, Math.Max(0, filtered.Count - _activeSlotCount));
             }
             return filtered;
         }
@@ -620,7 +717,7 @@ namespace BabyBlocks.UI
             if (_lastMatCount != mats.Count)
             {
                 _lastMatCount = mats.Count;
-                _offset = Math.Clamp(_offset, 0, Math.Max(0, mats.Count - SlotCount));
+                _offset = Math.Clamp(_offset, 0, Math.Max(0, mats.Count - _activeSlotCount));
             }
             return mats;
         }
@@ -633,7 +730,7 @@ namespace BabyBlocks.UI
                 ? GetPanelMaterials().Count
                 : GetPanelProps().Count;
             if (total <= 0) return;
-            int maxOffset = ((total - 1) / SlotCount) * SlotCount;
+            int maxOffset = ((total - 1) / _activeSlotCount) * _activeSlotCount;
             int next = _offset + delta;
             if (next > maxOffset) _offset = 0;
             else if (next < 0)   _offset = maxOffset;
@@ -645,6 +742,12 @@ namespace BabyBlocks.UI
         public void Tick()
         {
             if (!PropLibrary.IsInitialized) LevelEditor.EnsureManager();
+
+            if (Screen.height != _lastScreenH)
+            {
+                _lastScreenH = Screen.height;
+                UpdateCardLayout();
+            }
 
             bool showMats = PropPalette.ShowingMaterials;
             if (showMats != _wasShowingMats)
@@ -663,8 +766,8 @@ namespace BabyBlocks.UI
 
             if (!Core.IsKeyboardCaptured)
             {
-                if (Input.GetKeyDown(KeyCode.Minus))  Scroll(-SlotCount);
-                if (Input.GetKeyDown(KeyCode.Equals)) Scroll(+SlotCount);
+                if (Input.GetKeyDown(KeyCode.Minus))  Scroll(-_activeSlotCount);
+                if (Input.GetKeyDown(KeyCode.Equals)) Scroll(+_activeSlotCount);
             }
 
             TickDragDetection();
@@ -683,9 +786,42 @@ namespace BabyBlocks.UI
         {
             if (_pageLabel == null) return;
             int total = PropPalette.ShowingMaterials ? GetPanelMaterials().Count : GetPanelProps().Count;
-            int totalPages  = total <= 0 ? 1 : (total - 1) / SlotCount + 1;
-            int currentPage = _offset / SlotCount + 1;
+            int totalPages  = total <= 0 ? 1 : (total - 1) / _activeSlotCount + 1;
+            int currentPage = _offset / _activeSlotCount + 1;
             _pageLabel.text = $"{currentPage} / {totalPages}";
+        }
+
+        void UpdateCardLayout()
+        {
+            // Fixed overhead per slot count n: navRow(56) + pageLabel(20) + padTop(2) + padBottom(2)
+            // + (n+1) spacing gaps × 2px.  Rearranged: available = n*(cardH+2) + 82, so
+            // n = floor((available-82) / (targetCardH+2)), cardH = (available-82)/n - 2.
+            const int FixedBase   = 56 + 20 + 2 + 2; // 80
+            const int TargetCardH = 80;
+            int available = Screen.height - TopBarPanel.BarHeight;
+
+            int n = Mathf.Clamp(
+                Mathf.FloorToInt((available - FixedBase) / (float)(TargetCardH + 2)),
+                3, SlotCount);
+            int cardH = Mathf.Max(50, (available - FixedBase - (n + 1) * 2) / n);
+
+            _activeSlotCount = n;
+            const float gap = 4f;
+
+            for (int i = 0; i < SlotCount; i++)
+            {
+                bool active = i < _activeSlotCount;
+                ref var card = ref _cards[i];
+                if (!active && card.Root != null) card.Root.SetActive(false);
+                if (!active) continue;
+                if (card.CardLE   != null) card.CardLE.minHeight             = cardH;
+                if (card.PreviewRT != null) card.PreviewRT.sizeDelta         = new Vector2(cardH, 0f);
+                if (card.LabelMask != null)
+                {
+                    card.LabelMask.anchoredPosition = new Vector2(cardH + gap, 0f);
+                    card.LabelMask.sizeDelta        = new Vector2(-(cardH + gap), 0f);
+                }
+            }
         }
 
         // ---- Card hover highlight ----
@@ -763,7 +899,14 @@ namespace BabyBlocks.UI
                 var props = GetPanelProps();
                 int idx   = _offset + cardIndex;
                 if (idx < props.Count)
-                    PropPalette.BeginDrag(idx, props[idx]);
+                {
+                    var dragInfo = props[idx];
+                    PropHistory.RecordUse(dragInfo.id);
+                    if (string.Equals(PropPalette.SelectedCategory, "History", StringComparison.OrdinalIgnoreCase))
+                        PropPalette.BeginDragDirect(dragInfo);
+                    else
+                        PropPalette.BeginDrag(idx, dragInfo);
+                }
             }
         }
 
@@ -906,7 +1049,7 @@ namespace BabyBlocks.UI
         {
             int total = props.Count;
             if (_prevBtn != null) _prevBtn.Component.interactable = true;
-            if (_nextBtn != null) _nextBtn.Component.interactable = total > SlotCount;
+            if (_nextBtn != null) _nextBtn.Component.interactable = total > _activeSlotCount;
 
             for (int i = 0; i < SlotCount; i++)
             {
@@ -914,7 +1057,7 @@ namespace BabyBlocks.UI
                 ref var card = ref _cards[i];
                 if (card.Root == null) continue;
 
-                bool hasProp = propIdx < total;
+                bool hasProp = i < _activeSlotCount && propIdx < total;
                 card.Root.SetActive(hasProp);
                 if (!hasProp) continue;
 
@@ -935,7 +1078,7 @@ namespace BabyBlocks.UI
         {
             int total = mats.Count;
             if (_prevBtn != null) _prevBtn.Component.interactable = true;
-            if (_nextBtn != null) _nextBtn.Component.interactable = total > SlotCount;
+            if (_nextBtn != null) _nextBtn.Component.interactable = total > _activeSlotCount;
 
             for (int i = 0; i < SlotCount; i++)
             {
@@ -943,7 +1086,7 @@ namespace BabyBlocks.UI
                 ref var card = ref _cards[i];
                 if (card.Root == null) continue;
 
-                bool has = idx < total;
+                bool has = i < _activeSlotCount && idx < total;
                 card.Root.SetActive(has);
                 if (!has) continue;
 

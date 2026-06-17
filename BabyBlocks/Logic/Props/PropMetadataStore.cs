@@ -767,6 +767,8 @@ namespace BabyBlocks
             foreach (var e in _materialConstructions)
                 if (e != null && e.id > maxId) maxId = e.id;
             _nextMaterialConstructionId = Math.Max(_nextMaterialConstructionId, maxId + 1);
+            _materialConstructions.Sort((a, b) =>
+                string.Compare(a?.name, b?.name, StringComparison.OrdinalIgnoreCase));
         }
 
         static void LoadFromEmbedded()

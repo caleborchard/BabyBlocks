@@ -92,18 +92,22 @@ namespace BabyBlocks
             BuildDisabledSets(extra, out var disabledSubPaths, out var disabledIndices);
 
             MaterialCatalog.EnsureMaterialList();
+            // Mirror what drag-out does: ensure MicroSplat layer materials are built before resolving
+            // overrides. This is a no-op once built (fast path); on first call it creates the layer
+            // material clones from the live terrain shader — same as ApplyMaterialOverridesToRoot.
+            MaterialCatalog.AddMicroSplatLayerMaterials();
             var effectiveMaterials = BuildEffectiveMaterials(info, extra, disabledSubPaths, disabledIndices);
 
             int drawLayer = MaterialBaker.FindUnusedLayer();
             if (drawLayer < 0) return null;
 
             var   bounds  = ComputeBounds(info, disabledSubPaths, disabledIndices);
-            var   center  = bounds.center;
             float maxDim  = Mathf.Max(bounds.extents.x, bounds.extents.y, bounds.extents.z) * 2f;
             if (maxDim < 0.001f) maxDim = 1f;
 
-
-            var   camDir  = new Vector3(-1f, -1f, -1f).normalized;
+            // Holds props face away from the default camera angle — flip 180° around Y to face them.
+            bool holdsCategory = string.Equals(PropMetadataStore.GetCategory(info.id), "Holds", StringComparison.OrdinalIgnoreCase);
+            var   camDir  = holdsCategory ? new Vector3(1f, -1f, 1f).normalized : new Vector3(-1f, -1f, -1f).normalized;
             float camDist = maxDim * 3f;
 
             var camGO = new GameObject("BB_PreviewCam");
@@ -113,10 +117,10 @@ namespace BabyBlocks
             cam.clearFlags    = CameraClearFlags.SolidColor;
             cam.backgroundColor = new Color(0.09f, 0.09f, 0.11f, 1f);
             cam.cullingMask   = 1 << drawLayer;
-            cam.nearClipPlane = 0.1f;
+            cam.nearClipPlane = Mathf.Min(0.01f, camDist * 0.05f);
             cam.farClipPlane  = camDist * 4f;
             cam.aspect        = 1f;
-            SetupCameraTransform(camGO, cam, center, camDir, camDist, bounds);
+            SetupCameraTransform(camGO, cam, bounds.center, camDir, camDist, bounds);
 
             var rt = new RenderTexture(ThumbSize, ThumbSize, 24, RenderTextureFormat.ARGB32);
             cam.targetTexture = rt;
@@ -366,7 +370,8 @@ namespace BabyBlocks
                 if (IsPartDisabled(pi, part, disabledSubPaths, disabledIndices)) continue;
 
                 var scale = part.localScale == Vector3.zero ? Vector3.one : part.localScale;
-                var mtx   = Matrix4x4.TRS(part.localPosition + RenderWorldOffset, part.localRotation, scale);
+                var pos   = part.localPosition + RenderWorldOffset;
+                var mtx   = Matrix4x4.TRS(pos, part.localRotation, scale);
                 var mats  = (effectiveMaterials != null && pi < effectiveMaterials.Length)
                     ? effectiveMaterials[pi] : part.materials;
 
@@ -421,6 +426,20 @@ namespace BabyBlocks
 
         // ---- Material overrides ----
 
+        // Resolves a material and evicts Standard/no-texture placeholders, retrying once so that
+        // the source-prop scan path can find the real material on the same call.
+        static Material ResolveNonPlaceholder(string matName, string sourcePropId)
+        {
+            var mat = MaterialCatalog.ResolveMaterial(matName, sourcePropId);
+            if (mat != null && mat.shader != null && mat.shader.name == "Standard" && mat.mainTexture == null)
+            {
+                MaterialCatalog.MaterialByName.Remove(matName);
+                MaterialCatalog.VerifiedSourceMaterials.Remove(matName);
+                mat = MaterialCatalog.ResolveMaterial(matName, sourcePropId);
+            }
+            return mat;
+        }
+
         static Material[][] BuildEffectiveMaterials(PropInfo info, PropExtraInfo extra,
             HashSet<string> disabledSubPaths, HashSet<int> disabledIndices)
         {
@@ -437,14 +456,17 @@ namespace BabyBlocks
                         string name = extra.perSlotMaterialOverrides[s];
                         if (!string.IsNullOrEmpty(name)
                             && !string.Equals(name, PropMetadataStore.NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
-                            perSlotOverrides[s] = MaterialCatalog.ResolveMaterial(name, extra.materialSourcePropId);
+                            perSlotOverrides[s] = ResolveNonPlaceholder(name, extra.materialSourcePropId);
                     }
                 }
                 else if (!string.IsNullOrEmpty(extra.overrideMaterialId)
                     && !string.Equals(extra.overrideMaterialId, PropMetadataStore.NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
                 {
-                    singleOverride = MaterialCatalog.ResolveMaterial(extra.overrideMaterialId, extra.materialSourcePropId);
-                    if (singleOverride == null)
+                    singleOverride = ResolveNonPlaceholder(extra.overrideMaterialId, extra.materialSourcePropId);
+                    // Suppress [MicroSplat] warnings — those materials require terrain to be loaded
+                    // and are retried automatically once the terrain shader becomes available.
+                    if (singleOverride == null
+                        && !extra.overrideMaterialId.StartsWith("[MicroSplat]", StringComparison.Ordinal))
                         MelonLogger.Warning($"[PropPreviews] ResolveMaterial(\"{extra.overrideMaterialId}\", \"{extra.materialSourcePropId}\") → null for \"{info.id}\"");
                 }
             }
@@ -642,16 +664,19 @@ namespace BabyBlocks
                     Mathf.Abs(mb.extents.y * scale.y),
                     Mathf.Abs(mb.extents.z * scale.z));
 
-                // Scaled extents > 50 m mean the mesh contains stray embedded geometry (cracked-rock
-                // fragment vertices baked alongside the intact-rock vertices in the same mesh).
-                // Read vertices directly and build tight bounds from only those within 15 m world-space
-                // of the mesh origin, which excludes the far-away fragment positions.
+                // Stray embedded geometry (cracked-rock fragment vertices baked into the same mesh)
+                // shows up as MESH-SPACE extents > 50 m.  Check in mesh space so large-scale props
+                // whose mesh itself is normal-sized are not incorrectly sent through tight filtering.
                 const float StrayThreshold = 50f;
-                if (Mathf.Max(he.x, he.y, he.z) > StrayThreshold)
+                bool hasMeshStray = Mathf.Max(Mathf.Abs(mb.extents.x),
+                                              Mathf.Abs(mb.extents.y),
+                                              Mathf.Abs(mb.extents.z)) > StrayThreshold;
+                if (hasMeshStray)
                 {
                     var tight = GetTightMeshBounds(part.mesh, scale);
                     if (tight.HasValue)
                     {
+                        // Compact prop with outlier stray vertices — use filtered tight bounds.
                         var tb  = tight.Value;
                         var wc2 = part.localPosition + part.localRotation * Vector3.Scale(tb.center, scale);
                         var he2 = new Vector3(
@@ -659,12 +684,9 @@ namespace BabyBlocks
                             Mathf.Abs(tb.extents.y * scale.y),
                             Mathf.Abs(tb.extents.z * scale.z));
                         partBounds.Add(new Bounds(wc2, he2 * 2f));
+                        continue;
                     }
-                    else
-                    {
-                        partBounds.Add(new Bounds(part.localPosition, Vector3.zero));
-                    }
-                    continue;
+                    // null = genuinely large mesh (most vertices far from origin); fall through to raw path.
                 }
 
                 var wc = part.localPosition + part.localRotation * Vector3.Scale(mb.center, scale);
@@ -678,8 +700,10 @@ namespace BabyBlocks
             return full;
         }
 
-        // Reads mesh vertices and returns tight bounds using only vertices within 15 m world-space
-        // of the mesh origin. Excludes stray fragment vertices baked into cracked-rock meshes.
+        // Returns tight bounds using only vertices within 15m/maxScale of the mesh origin,
+        // filtering out stray outlier vertices (e.g. cracked-rock fragment geometry baked into the mesh).
+        // Returns null when: the mesh is genuinely large (fewer than half of vertices are inside the
+        // filter radius — indicating real geometry, not outliers), or no vertices are found inside.
         static Bounds? GetTightMeshBounds(Mesh mesh, Vector3 scale)
         {
             float maxScale = Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z));
@@ -689,6 +713,7 @@ namespace BabyBlocks
             {
                 var verts = mesh.vertices;
                 if (verts == null || verts.Length == 0) return null;
+                int inside = 0;
                 bool any = false;
                 var mn = Vector3.zero; var mx = Vector3.zero;
                 for (int i = 0; i < verts.Length; i++)
@@ -696,12 +721,15 @@ namespace BabyBlocks
                     var v   = verts[i];
                     float d = v.x * v.x + v.y * v.y + v.z * v.z;
                     if (d > maxDistSq) continue;
+                    inside++;
                     if (!any) { mn = mx = v; any = true; continue; }
                     if (v.x < mn.x) mn.x = v.x; else if (v.x > mx.x) mx.x = v.x;
                     if (v.y < mn.y) mn.y = v.y; else if (v.y > mx.y) mx.y = v.y;
                     if (v.z < mn.z) mn.z = v.z; else if (v.z > mx.z) mx.z = v.z;
                 }
-                if (!any) return null;
+                // If fewer than half the vertices are near the origin, this is a genuinely large mesh
+                // (sand tunnels, large terrain pieces), not a compact prop with a few stray outliers.
+                if (!any || inside * 2 < verts.Length) return null;
                 return new Bounds((mn + mx) * 0.5f, mx - mn);
             }
             catch { return null; }

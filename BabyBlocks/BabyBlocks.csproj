@@ -712,6 +712,7 @@
 		<Compile Include="Props\PropExtraInfo.cs" />
 		<Compile Include="Props\PropLibrary.cs" />
 		<Compile Include="Props\PropMetadataPanel.cs" />
+		<Compile Include="Logic\Props\PropHistory.cs" />
 		<Compile Include="Logic\Props\PropMetadataStore.cs" />
 		<Compile Include="Logic\Props\PropMetadataEditor.cs" />
 		<Compile Include="Logic\Props\PropInstanceServices.cs" />

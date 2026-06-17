@@ -68,12 +68,6 @@ namespace BabyBlocks
         public static bool IsKeyboardCaptured =>
             IsMultiplayerChatOpen || (Menu.me != null && Menu.me.paused);
 
-        // TEMP DIAGNOSTIC: set every frame by FlyCamUpdatePatch.Prefix, read by
-        // FlyCamController's far-teleport overlay to confirm whether FlyCam.Update is
-        // actually running and what raw mouse deltas it's seeing.
-        public static int   DiagFlyCamUpdateCount;
-        public static float DiagMouseX, DiagMouseY;
-
         // BestRegionLoader.LoadProp/UnloadProp are async UniTaskVoid methods that set
         // somebodyLoading = true, await an Addressables handle (or UniTask.DelayFrame), then
         // clear it. If that await never resolves - e.g. its handle gets invalidated by a
@@ -148,16 +142,14 @@ namespace BabyBlocks
         internal static float PendingMicroSplatRefreshTime = -1f;
         internal const float MicroSplatRefreshSettleDelay = 1.5f;
 
-        // Tracks whether FarTeleportCo was active last frame, so OnUpdate can
+        // Tracks whether FlyCamTeleportCo was active last frame, so OnUpdate can
         // detect the true->false transition and start the post-teleport rescan
         // window (see OnUpdate).
         static bool _wasFarTeleportActive;
 
-        // After FarTeleportCo finishes, BRL keeps streaming in surrounding chunks
-        // for a bit as the restored chunkLoadDist/propLoadDists take effect (most
-        // were still "loading" — loadedChunk == null — at the single rescan done on
-        // the finish frame, so they were missed). Keep brl.off == false and rescan
-        // every frame for this many frames afterward, then flip brl.off = true once.
+        // After FlyCamTeleportCo finishes, BRL keeps streaming in surrounding chunks.
+        // Keep brl.off == false and rescan every frame for this many frames so newly
+        // loaded chunks get hidden, then flip brl.off = true once.
         const int PostTeleportRescanFrames = 90;
         static int _postTeleportRescanFramesRemaining;
 
@@ -194,21 +186,15 @@ namespace BabyBlocks
             // while the base map is hidden. Runs unconditionally so it works even
             // before the fly cam editor has been opened.
             //
-            // Skipped entirely while FarTeleportCo is running: that coroutine needs
-            // uncontested control of brl.off (it flips it false to stream the
-            // destination chunk — forcing it back to true here every frame stalls
-            // BestRegionLoader.fullyLoaded forever, leaving Menu.me.teleporting stuck
-            // true and the player permanently SetActive(false)/invisible) and of
-            // player.gameObject's active state during the ragdoll handoff.
+            // Skipped while FlyCamTeleportCo is running so the native TeleportCo has
+            // uncontested control of brl.off; forcing it back to true here every frame
+            // would stall fullyLoaded forever.
             if (!BaseMapController.BaseMapEnabled && !FlyCamController.FarTeleportActive)
             {
-                // FarTeleportCo just finished (this frame's the first one back with
-                // FarTeleportActive == false). brl.off is still false at this point
-                // (FarTeleportCo never restores it) and chunkLoadDist/propLoadDists
-                // were just restored to normal — BRL will stream in surrounding
-                // chunks over the next several frames. Start the rescan window so
-                // those chunks get hidden as they finish loading, instead of just
-                // the single chunk that's loaded on this exact frame.
+                // FlyCamTeleportCo just finished (first frame back with FarTeleportActive
+                // == false). brl.off is still false — BRL will stream surrounding chunks
+                // over the next several frames. Start the rescan window so those chunks
+                // get hidden as they load.
                 if (_wasFarTeleportActive)
                     _postTeleportRescanFramesRemaining = PostTeleportRescanFrames;
                 _wasFarTeleportActive = false;
@@ -265,10 +251,6 @@ namespace BabyBlocks
     {
         static bool Prefix(FlyCam __instance)
         {
-            Core.DiagFlyCamUpdateCount++;
-            Core.DiagMouseX = Input.GetAxis("Mouse X");
-            Core.DiagMouseY = Input.GetAxis("Mouse Y");
-
             if (FlyCam.locked) return false;
 
             bool uiTyping = FlyCamController.CursorMode && (LevelEditor.IsTypingInUI || Core.IsKeyboardCaptured);

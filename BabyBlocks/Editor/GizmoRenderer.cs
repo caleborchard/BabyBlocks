@@ -185,6 +185,7 @@ namespace BabyBlocks
                 _overlayCam.fieldOfView   = mainCam.fieldOfView;
                 _overlayCam.aspect        = mainCam.aspect;
                 _overlayCam.nearClipPlane = mainCam.nearClipPlane;
+                _overlayCam.rect          = mainCam.rect;
             }
         }
 

@@ -878,7 +878,28 @@ namespace BabyBlocks
                         continue;
 
                     var mat = ResolveMaterial(matName, info.materialSourcePropId);
-                    if (mat == null) continue;
+                    if (mat == null)
+                    {
+                        MelonLogger.Warning(
+                            $"[PropMaterial] FAIL \"{propId}\" slot={s}  override=\"{matName}\"  source=\"{info.materialSourcePropId}\"" +
+                            $"  inByName={MaterialByName.ContainsKey(matName)}  inVerified={VerifiedSourceMaterials.ContainsKey(matName)}");
+                        continue;
+                    }
+
+                    bool slotIsPlaceholder = mat.shader != null
+                        && mat.shader.name == "Standard"
+                        && mat.mainTexture == null;
+                    if (slotIsPlaceholder)
+                    {
+                        MelonLogger.Warning(
+                            $"[PropMaterial] SKIP \"{propId}\" slot={s}  override=\"{matName}\"  source=\"{info.materialSourcePropId}\"" +
+                            $" — Standard/no-texture placeholder, keeping native material");
+                        MaterialByName.Remove(matName);
+                        VerifiedSourceMaterials.Remove(matName);
+                        continue;
+                    }
+
+                    MelonLogger.Msg($"[PropMaterial] OK   \"{propId}\" slot={s}  mat=\"{mat.name}\"  shader=\"{mat.shader?.name}\"");
 
                     for (int i = 0; i < renderers.Length; i++)
                     {
@@ -910,7 +931,35 @@ namespace BabyBlocks
 
             {
                 var singleMat = ResolveMaterial(singleOverride, info.materialSourcePropId);
-                if (singleMat == null) return;
+                if (singleMat == null)
+                {
+                    bool inByName   = MaterialByName.ContainsKey(singleOverride);
+                    bool inVerified = VerifiedSourceMaterials.ContainsKey(singleOverride);
+                    MelonLogger.Warning(
+                        $"[PropMaterial] FAIL \"{propId}\"  override=\"{singleOverride}\"  source=\"{info.materialSourcePropId}\"" +
+                        $"  inByName={inByName}  inVerified={inVerified}");
+                    return;
+                }
+
+                // Standard shader with no mainTexture is a Unity placeholder produced when an
+                // asset bundle isn't fully initialised. Skip it so the prop keeps the correct
+                // material the visual prefab already put on its renderers.
+                bool isPlaceholder = singleMat.shader != null
+                    && singleMat.shader.name == "Standard"
+                    && singleMat.mainTexture == null;
+                if (isPlaceholder)
+                {
+                    MelonLogger.Warning(
+                        $"[PropMaterial] SKIP \"{propId}\"  override=\"{singleOverride}\"  source=\"{info.materialSourcePropId}\"" +
+                        $" — Standard/no-texture placeholder, keeping native material");
+                    MaterialByName.Remove(singleOverride);
+                    VerifiedSourceMaterials.Remove(singleOverride);
+                    return;
+                }
+
+                MelonLogger.Msg(
+                    $"[PropMaterial] OK   \"{propId}\"  override=\"{singleOverride}\"  source=\"{info.materialSourcePropId}\"" +
+                    $"  mat=\"{singleMat.name}\"  shader=\"{singleMat.shader?.name}\"  hasTex={singleMat.mainTexture != null}");
 
                 var renderers = root.GetComponentsInChildren<Renderer>(true);
                 if (renderers == null || renderers.Length == 0) return;

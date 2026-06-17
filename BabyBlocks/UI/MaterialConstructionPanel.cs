@@ -496,7 +496,7 @@ namespace BabyBlocks
                 BabyBlocks.Networking.ModNetworking.SendMaterialApplied(foundLeo.netId, entry.id);
         }
 
-        public static void ApplyToInstance(LevelEditorObject leo, MaterialConstructionEntry entry)
+        public static void ApplyToInstance(LevelEditorObject leo, MaterialConstructionEntry entry, bool pushHistory = true)
         {
             if (leo == null || entry == null) return;
 
@@ -538,7 +538,8 @@ namespace BabyBlocks
             PropInstanceServices.ApplySurfaceType(leo, entry.surfaceType);
             leo.materialConstructionId = entry.id;
 
-            LevelEditorHistory.PushMaterial(leo, renderers, matsBefore, tagObjs, tagsBefore, idBefore);
+            if (pushHistory)
+                LevelEditorHistory.PushMaterial(leo, renderers, matsBefore, tagObjs, tagsBefore, idBefore);
         }
 
         // ── Styles ───────────────────────────────────────────────────────────

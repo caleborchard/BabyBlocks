@@ -63,10 +63,13 @@ namespace BabyBlocks
 
         public static Rect PanelRect { get; internal set; }
 
-        public static bool     IsDragging     => _draggingIndex >= 0;
+        static PropInfo _overrideDragInfo;
+
+        public static bool     IsDragging     => _draggingIndex >= 0 || _overrideDragInfo != null;
         public static int      DragPropIndex  => _draggingIndex;
-        public static PropInfo DraggingProp   => IsDragging ? PropLibrary.FilteredProps[_draggingIndex] : null;
-        public static void     CancelDrag()   => _draggingIndex = -1;
+        public static PropInfo DraggingProp   => _overrideDragInfo != null ? _overrideDragInfo
+                                               : _draggingIndex >= 0 ? PropLibrary.FilteredProps[_draggingIndex] : null;
+        public static void     CancelDrag()   { _draggingIndex = -1; _overrideDragInfo = null; }
 
         // Start a prop drag from an external palette (e.g. the UniverseLib browser).
         // filteredIndex must be a valid index into PropLibrary.FilteredProps.
@@ -74,6 +77,16 @@ namespace BabyBlocks
         {
             if (!info.isLoaded) PropLibrary.LoadPropData(info);
             _draggingIndex  = filteredIndex;
+            _overrideDragInfo = null;
+            _dragStartFrame = Time.frameCount;
+        }
+
+        // Drag a prop that may not be in FilteredProps (e.g. from the History category).
+        public static void BeginDragDirect(PropInfo info)
+        {
+            if (!info.isLoaded) PropLibrary.LoadPropData(info);
+            _draggingIndex  = -1;
+            _overrideDragInfo = info;
             _dragStartFrame = Time.frameCount;
         }
 
@@ -81,7 +94,7 @@ namespace BabyBlocks
         // mouse-release can land on the same frame, which would otherwise read the
         // button as already-up and drop the prop immediately under the palette.
         // Skip the release check for the frame the drag started on.
-        public static bool JustStartedDrag => _draggingIndex >= 0 && Time.frameCount == _dragStartFrame;
+        public static bool JustStartedDrag => IsDragging && Time.frameCount == _dragStartFrame;
 
         // Call from LevelEditor.Update so - = work even while RMB-orbiting is blocked.
         public static void HandleScrollInput()
