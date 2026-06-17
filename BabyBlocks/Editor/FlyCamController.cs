@@ -210,7 +210,7 @@ namespace BabyBlocks
 
         public static void OnGUI()
         {
-            if (FlyCamActive && CursorMode)
+            if (FlyCamActive && CursorMode && !UI.PropBrowserUI.Ready)
                 LevelEditor.OnGUI();
 
             // TEMP DIAGNOSTIC: while a far teleport is in flight, dump the state that
@@ -244,17 +244,15 @@ namespace BabyBlocks
                     $"BRL.off={BestRegionLoader.me?.off} somebodyLoading={BestRegionLoader.somebodyLoading}\n" +
                     $"Phase={_teleportPhase} drainIters={_diagDrainIters} convergeIters={_diagConvergeIters}\n" +
                     $"forceClears={Core.DiagSomebodyLoadingForceClears} landingRetries={_diagLandingRetries}";
-                GUI.Label(new Rect(10, 10, 600, 220), text);
+                // GUI.Label(new Rect(10, 10, 600, 220), text); // disabled: blocks UI clicks
             }
             else
             {
                 _diagWasActive = false;
 
-                // TEMP DIAGNOSTIC: always-visible small counter so a stuck somebodyLoading
-                // outside of a far teleport (e.g. during normal fly-cam movement) is visible too.
-                if (FlyCamActive && Core.DiagSomebodyLoadingForceClears > 0)
-                    GUI.Label(new Rect(10, 10, 400, 20),
-                        $"somebodyLoading force-clears: {Core.DiagSomebodyLoadingForceClears}");
+                // if (FlyCamActive && Core.DiagSomebodyLoadingForceClears > 0)
+                //     GUI.Label(new Rect(10, 10, 400, 20),
+                //         $"somebodyLoading force-clears: {Core.DiagSomebodyLoadingForceClears}"); // disabled: blocks UI clicks
             }
         }
 

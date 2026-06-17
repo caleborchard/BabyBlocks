@@ -136,6 +136,7 @@ namespace BabyBlocks
             ClassInjector.RegisterTypeInIl2Cpp<SpawnPointMarker>();
 
             new HarmonyLib.Harmony("BabyBlocks.Patches").PatchAll();
+            UI.PropBrowserUI.Init();
         }
 
         // A "load a different save" triggers a burst of many additive scene loads/unloads in
@@ -187,6 +188,7 @@ namespace BabyBlocks
             }
 
             FlyCamController.OnUpdate();
+            UI.PropBrowserUI.UpdateVisibility();
 
             // Suppress any terrain chunks or prop containers that BRL streams in
             // while the base map is hidden. Runs unconditionally so it works even
@@ -244,6 +246,11 @@ namespace BabyBlocks
             {
                 _wasFarTeleportActive = true;
             }
+        }
+
+        public override void OnLateUpdate()
+        {
+            UI.PropBrowserUI.RestoreCursor();
         }
 
         public override void OnGUI()

@@ -675,6 +675,10 @@
 			<HintPath>$(MelonLoaderDir)\net6\Il2CppInterop.Common.dll</HintPath>
 			<Private>False</Private>
 		</Reference>
+		<Reference Include="UniverseLib.ML.IL2CPP.Interop">
+			<HintPath>$(RetailGameDir)\UserLibs\UniverseLib.ML.IL2CPP.Interop.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
 
 	</ItemGroup>
 
@@ -703,6 +707,8 @@
 		<Compile Include="Editor\MaterialBakeCache.cs" />
 		<Compile Include="Editor\LevelEditorHistory.cs" />
 		<Compile Include="Props\PropData.cs" />
+		<Compile Include="Props\PropPreviewCache.cs" />
+		<Compile Include="Props\PropPreviewRenderer.cs" />
 		<Compile Include="Props\PropExtraInfo.cs" />
 		<Compile Include="Props\PropLibrary.cs" />
 		<Compile Include="Props\PropMetadataPanel.cs" />
@@ -729,6 +735,8 @@
 		<Compile Include="Networking\RemoteFreecamManager.cs" />
 		<Compile Include="Networking\RemotePropHighlightManager.cs" />
 		<Compile Include="Networking\RemotePropGhostManager.cs" />
+		<Compile Include="UI\PropBrowserUI.cs" />
+		<!-- UI\UniverseLibDemo.cs kept on disk as legacy reference — not compiled -->
 	</ItemGroup>
 
 	<ItemGroup>

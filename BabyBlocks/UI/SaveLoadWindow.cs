@@ -418,6 +418,33 @@ namespace BabyBlocks
             DoSave();
         }
 
+        // Called from the UniverseLib file dropdown — opens a native save dialog then saves.
+        public static void TriggerSaveDialog()
+        {
+            EnsureInit();
+            string picked = NativeFileDialog.SaveDialog(_filePath);
+            if (string.IsNullOrEmpty(picked)) return;
+            _filePath = picked;
+            DoSave();
+        }
+
+        // Called from the UniverseLib file dropdown — opens a native open dialog then loads.
+        public static void TriggerLoadDialog()
+        {
+            EnsureInit();
+            string picked = NativeFileDialog.OpenDialog(_filePath);
+            if (string.IsNullOrEmpty(picked)) return;
+            _filePath = picked;
+            DoLoad();
+        }
+
+        // Called from the UniverseLib file dropdown — clears without the two-click guard
+        // (the dropdown button itself acts as the confirmation layer).
+        public static void TriggerClear() => DoClear();
+
+        public static bool HasObjects =>
+            LevelEditorManager.Instance != null && LevelEditorManager.Instance.Objects.Count > 0;
+
         static void SetStatus(string msg)
         {
             _status     = msg;

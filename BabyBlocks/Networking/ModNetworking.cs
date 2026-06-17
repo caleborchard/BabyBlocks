@@ -101,6 +101,7 @@ namespace BabyBlocks.Networking
         private static float _nextAnnounceTime;
         private static float _nextFreecamSendTime;
         private static bool _wasFlyCamActive;
+        private static bool _channelCreateFailed;
 
         public static void Update()
         {
@@ -123,7 +124,7 @@ namespace BabyBlocks.Networking
 
             if (connected)
             {
-                if (_channel == null)
+                if (_channel == null && !_channelCreateFailed)
                     TryCreateChannel(networkManager);
 
                 if (_channel != null && Time.unscaledTime >= _nextAnnounceTime)
@@ -206,7 +207,7 @@ namespace BabyBlocks.Networking
                     else
                     {
                         var networkClientType    = bsnAsm.GetType("BabyStepsNetworking.Client.NetworkClient");
-                        var modChannelType       = bsnAsm.GetType("BabyStepsNetworking.Client.IModChannel");
+                        var modChannelType       = bsnAsm.GetType("BabyStepsNetworking.Extensions.IModChannel");
                         var packetDeliveryType   = bsnAsm.GetType("BabyStepsNetworking.Transport.PacketDelivery");
 
                         _createModChannelMethod    = networkClientType?.GetMethod("CreateModChannel", new[] { typeof(string) });
@@ -293,7 +294,7 @@ namespace BabyBlocks.Networking
         {
             try
             {
-                if (_createModChannelMethod == null) return; // BabyStepsNetworking not available
+                if (_createModChannelMethod == null || _channelSendMethod == null || _channelDataReceivedEvent == null) return;
 
                 var networkClient = _networkClientField.GetValue(networkManager);
                 if (networkClient == null) return;
@@ -342,6 +343,7 @@ namespace BabyBlocks.Networking
             }
             catch (Exception ex)
             {
+                _channelCreateFailed = true;
                 MelonLogger.Warning($"[BabyBlocks][ModNetworking] Failed to create mod channel: {ex.Message}");
             }
         }
@@ -357,6 +359,7 @@ namespace BabyBlocks.Networking
 
             _dataReceivedHandler = null;
             _channel = null;
+            _channelCreateFailed = false;
             _pendingLevelSnapshot = null;
             _levelChunkStates.Clear();
             PeersWithBabyBlocks.Clear();

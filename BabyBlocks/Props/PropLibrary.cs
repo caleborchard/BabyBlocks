@@ -1288,8 +1288,23 @@ namespace BabyBlocks
                     rs.x != 0f ? ws.x / rs.x : 1f,
                     rs.y != 0f ? ws.y / rs.y : 1f,
                     rs.z != 0f ? ws.z / rs.z : 1f),
+                rendererSubPath = GetRendererSubPath(t, rootT),
             };
             info.parts.Add(part);
+        }
+
+        static string GetRendererSubPath(Transform t, Transform rootT)
+        {
+            if (t == null || t == rootT) return "";
+            var segments = new System.Collections.Generic.List<string>();
+            var cur = t;
+            while (cur != null && cur != rootT)
+            {
+                segments.Add(cur.name);
+                cur = cur.parent;
+            }
+            segments.Reverse();
+            return string.Join("/", segments);
         }
     }
 }

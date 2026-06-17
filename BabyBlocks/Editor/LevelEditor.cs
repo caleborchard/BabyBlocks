@@ -287,7 +287,7 @@ namespace BabyBlocks
 
             if (!blockShortcuts)
             {
-                PropPalette.HandleScrollInput();
+                // PropPalette.HandleScrollInput(); // legacy ImGui palette — see UI/UniverseLibDemo.cs
                 MaterialConstructionPanel.HandleScrollInput();
             }
 
@@ -421,7 +421,7 @@ namespace BabyBlocks
 
         public static void OnGUI()
         {
-            PropPalette.DrawGUI(Event.current);
+            // PropPalette.DrawGUI(Event.current); // legacy ImGui palette — see UI/UniverseLibDemo.cs
             PropMetadataPanel.DrawGUI(selectedObject);
             SaveLoadWindow.DrawGUI(Event.current);
             PhysicsWindow.DrawGUI(Event.current);

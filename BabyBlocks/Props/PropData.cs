@@ -10,6 +10,9 @@ namespace BabyBlocks
         public Vector3    localPosition;
         public Quaternion localRotation;
         public Vector3    localScale;
+        // Path from root to this renderer's transform (e.g. "Vis/Body"), no leading root name.
+        // Used to match against PropExtraInfo.disabledRenderers in preview rendering.
+        public string     rendererSubPath;
     }
 
     public class PropColliderPart

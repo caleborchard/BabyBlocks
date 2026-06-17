@@ -63,9 +63,19 @@ namespace BabyBlocks
 
         public static Rect PanelRect { get; internal set; }
 
-        public static bool     IsDragging   => _draggingIndex >= 0;
-        public static PropInfo DraggingProp => IsDragging ? PropLibrary.FilteredProps[_draggingIndex] : null;
-        public static void     CancelDrag() => _draggingIndex = -1;
+        public static bool     IsDragging     => _draggingIndex >= 0;
+        public static int      DragPropIndex  => _draggingIndex;
+        public static PropInfo DraggingProp   => IsDragging ? PropLibrary.FilteredProps[_draggingIndex] : null;
+        public static void     CancelDrag()   => _draggingIndex = -1;
+
+        // Start a prop drag from an external palette (e.g. the UniverseLib browser).
+        // filteredIndex must be a valid index into PropLibrary.FilteredProps.
+        public static void BeginDrag(int filteredIndex, PropInfo info)
+        {
+            if (!info.isLoaded) PropLibrary.LoadPropData(info);
+            _draggingIndex  = filteredIndex;
+            _dragStartFrame = Time.frameCount;
+        }
 
         // The OnGUI MouseDown that starts a drag and the Update() that checks for
         // mouse-release can land on the same frame, which would otherwise read the
