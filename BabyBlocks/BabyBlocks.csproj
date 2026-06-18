@@ -675,12 +675,27 @@
 			<HintPath>$(MelonLoaderDir)\net6\Il2CppInterop.Common.dll</HintPath>
 			<Private>False</Private>
 		</Reference>
-		<Reference Include="UniverseLib.ML.IL2CPP.Interop">
-			<HintPath>$(RetailGameDir)\UserLibs\UniverseLib.ML.IL2CPP.Interop.dll</HintPath>
-			<Private>False</Private>
-		</Reference>
-
 	</ItemGroup>
+
+	<!-- UniverseLib ships in UserLibs on some MelonLoader versions, Mods on others. -->
+	<Choose>
+		<When Condition="Exists('$(RetailGameDir)\UserLibs\UniverseLib.ML.IL2CPP.Interop.dll')">
+			<ItemGroup>
+				<Reference Include="UniverseLib.ML.IL2CPP.Interop">
+					<HintPath>$(RetailGameDir)\UserLibs\UniverseLib.ML.IL2CPP.Interop.dll</HintPath>
+					<Private>False</Private>
+				</Reference>
+			</ItemGroup>
+		</When>
+		<Otherwise>
+			<ItemGroup>
+				<Reference Include="UniverseLib.ML.IL2CPP.Interop">
+					<HintPath>$(RetailGameDir)\Mods\UniverseLib.ML.IL2CPP.Interop.dll</HintPath>
+					<Private>False</Private>
+				</Reference>
+			</ItemGroup>
+		</Otherwise>
+	</Choose>
 
 	<PropertyGroup>
 		<AllowUnsafeBlocks>True</AllowUnsafeBlocks>

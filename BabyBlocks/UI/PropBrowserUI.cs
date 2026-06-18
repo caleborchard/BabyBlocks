@@ -140,6 +140,23 @@ namespace BabyBlocks.UI
 
         internal static void Deselect() => UniversalUI.EventSys?.SetSelectedGameObject(null);
 
+        public static bool IsPointerOverPanel()
+        {
+            if (!Ready || _uiBase == null || !_uiBase.Enabled) return false;
+            var pos = Input.mousePosition;
+            if (_topBar?.Rect != null &&
+                RectTransformUtility.RectangleContainsScreenPoint(_topBar.Rect, pos, null))
+                return true;
+            if (_topBar?.IsPointerOverDropdown() == true) return true;
+            if (_panel?.Rect != null &&
+                RectTransformUtility.RectangleContainsScreenPoint(_panel.Rect, pos, null))
+                return true;
+            if (_fileBrowser?.UIRoot?.activeSelf == true && _fileBrowser.Rect != null &&
+                RectTransformUtility.RectangleContainsScreenPoint(_fileBrowser.Rect, pos, null))
+                return true;
+            return false;
+        }
+
         public static void RestoreCursor()
         {
             if (!Ready) return;
@@ -194,8 +211,23 @@ namespace BabyBlocks.UI
         GameObject   _catItemsContainer;
         bool         _catOpen;
 
+        // Mode/tool quick-buttons in the bar
+        ButtonRef _editorBtn;
+        ButtonRef _toolBtn;
+        ButtonRef _localBtn;
+        ButtonRef _smoothBtn;
+        ButtonRef _baseMapBtn;
+
         const float CatDropdownOffsetX = 4f;
-        const float CatDropdownGap     = 6f; // gap widget between cat and file buttons
+        const float BarSpacing          = 4f;
+
+        // Width for a "Current → Next" cycle button: "longest → longest" label at ~9 px/char + 8 padding.
+        static int CycleButtonWidth(params string[] opts)
+        {
+            int max = 0;
+            foreach (var s in opts) if (s.Length > max) max = s.Length;
+            return (2 * max + 3) * 9 + 8; // "max → max" with arrow
+        }
 
         public TopBarPanel(UIBase owner) : base(owner) { }
 
@@ -204,7 +236,7 @@ namespace BabyBlocks.UI
             TitleBar?.SetActive(false);
 
             var barRow = UIFactory.CreateHorizontalGroup(ContentRoot, "BarRow",
-                false, false, true, true, spacing: 0, padding: new Vector4(0, 2, 4, 2));
+                false, false, true, true, spacing: (int)BarSpacing, padding: new Vector4(0, 2, 4, 2));
             UIFactory.SetLayoutElement(barRow, flexibleWidth: 9999, minHeight: BarHeight - 4);
 
             // Category / mode selector — width sized to content in RebuildCatItems
@@ -215,15 +247,58 @@ namespace BabyBlocks.UI
             PropBrowserUI.ApplyButtonColors(_catBtn);
             _catBtn.OnClick += ToggleCat;
 
-            // Gap between cat button and file menu
-            var gap = UIFactory.CreateUIObject("Gap", barRow);
-            UIFactory.SetLayoutElement(gap, minWidth: (int)CatDropdownGap, flexibleWidth: 0);
-
             // File
             var fileBtn = UIFactory.CreateButton(barRow, "FileBtn", " File ");
-            UIFactory.SetLayoutElement(fileBtn.Component.gameObject, minWidth: 54, minHeight: 22);
+            UIFactory.SetLayoutElement(fileBtn.Component.gameObject, minWidth: 70, minHeight: 22);
             PropBrowserUI.ApplyButtonColors(fileBtn);
             fileBtn.OnClick += ToggleFile;
+
+            // Editor / Teleport toggle (R key)
+            _editorBtn = UIFactory.CreateButton(barRow, "EditorBtn", "Editor → Teleport");
+            UIFactory.SetLayoutElement(_editorBtn.Component.gameObject,
+                minWidth: CycleButtonWidth("Editor", "Teleport"), minHeight: 22);
+            PropBrowserUI.ApplyButtonColors(_editorBtn);
+            _editorBtn.OnClick += () => { PropBrowserUI.Deselect(); CloseFile(); CloseCat(); FlyCamController.InvokeRKeyAction(); };
+
+            // Gizmo tool cycle (Space key)
+            _toolBtn = UIFactory.CreateButton(barRow, "ToolBtn", "Translate → Scale");
+            UIFactory.SetLayoutElement(_toolBtn.Component.gameObject,
+                minWidth: CycleButtonWidth("Translate", "Scale", "Rotate"), minHeight: 22);
+            PropBrowserUI.ApplyButtonColors(_toolBtn);
+            _toolBtn.OnClick += () =>
+            {
+                PropBrowserUI.Deselect();
+                LevelEditor.currentTool = LevelEditor.currentTool == LevelEditor.ToolMode.Translate ? LevelEditor.ToolMode.Scale
+                                        : LevelEditor.currentTool == LevelEditor.ToolMode.Scale     ? LevelEditor.ToolMode.Rotate
+                                        : LevelEditor.ToolMode.Translate;
+            };
+
+            // Local / Global toggle (T key)
+            _localBtn = UIFactory.CreateButton(barRow, "LocalBtn", "Local → Global");
+            UIFactory.SetLayoutElement(_localBtn.Component.gameObject,
+                minWidth: CycleButtonWidth("Local", "Global"), minHeight: 22);
+            PropBrowserUI.ApplyButtonColors(_localBtn);
+            _localBtn.OnClick += () => { PropBrowserUI.Deselect(); LevelEditor.LocalMode = !LevelEditor.LocalMode; };
+
+            // Smooth / Snap toggle (Y key)
+            _smoothBtn = UIFactory.CreateButton(barRow, "SmoothBtn", "Smooth → Snap");
+            UIFactory.SetLayoutElement(_smoothBtn.Component.gameObject,
+                minWidth: CycleButtonWidth("Smooth", "Snap"), minHeight: 22);
+            PropBrowserUI.ApplyButtonColors(_smoothBtn);
+            _smoothBtn.OnClick += () => { PropBrowserUI.Deselect(); LevelEditor.SnapEnabled = !LevelEditor.SnapEnabled; };
+
+            // Base Map toggle
+            _baseMapBtn = UIFactory.CreateButton(barRow, "BaseMapBtn", "Base Map: On → Off");
+            UIFactory.SetLayoutElement(_baseMapBtn.Component.gameObject,
+                minWidth: "Base Map: Off → On".Length * 9 + 8, minHeight: 22);
+            PropBrowserUI.ApplyButtonColors(_baseMapBtn);
+            _baseMapBtn.OnClick += () =>
+            {
+                PropBrowserUI.Deselect();
+                bool next = !BaseMapController.BaseMapEnabled;
+                BaseMapController.SetBaseMapEnabled(next);
+                Networking.ModNetworking.SendBaseMapState(next);
+            };
 
             _fileDropdown = BuildFileDropdown();
             _fileDropdown.SetActive(false);
@@ -245,7 +320,7 @@ namespace BabyBlocks.UI
             rt.anchorMin        = new Vector2(0f, 1f);
             rt.anchorMax        = new Vector2(0f, 1f);
             rt.pivot            = new Vector2(0f, 1f);
-            rt.anchoredPosition = new Vector2(60f + CatDropdownGap, -(BarHeight + 1f)); // X updated in RebuildCatItems
+            rt.anchoredPosition = new Vector2(60f + BarSpacing, -(BarHeight + 1f)); // X updated in RebuildCatItems
             rt.sizeDelta        = new Vector2(150f, 10f); // height set by layout
 
             go.AddComponent<Image>().color = new Color(0.13f, 0.13f, 0.16f, 0.97f);
@@ -385,7 +460,7 @@ namespace BabyBlocks.UI
             if (_catBtnLE != null) _catBtnLE.minWidth = dropW;
             var fileDDRT = _fileDropdown?.GetComponent<RectTransform>();
             if (fileDDRT != null)
-                fileDDRT.anchoredPosition = new Vector2(dropW + CatDropdownGap, -(BarHeight + 1f));
+                fileDDRT.anchoredPosition = new Vector2(dropW + BarSpacing, -(BarHeight + 1f));
 
             AddFilterItem("All", null, showingMats: false);
             foreach (var cat in cats)
@@ -488,12 +563,72 @@ namespace BabyBlocks.UI
                 }
             }
 
+            // Editor / Teleport button
+            if (_editorBtn != null)
+            {
+                bool inEditor = FlyCamController.FlyCamActive && FlyCamController.CursorMode;
+                var txt = _editorBtn.Component.GetComponentInChildren<Text>();
+                if (txt != null) txt.text = inEditor ? "Editor → Teleport" : "Teleport → Editor";
+            }
+
+            // Gizmo tool button
+            if (_toolBtn != null)
+            {
+                string toolLabel = LevelEditor.currentTool switch
+                {
+                    LevelEditor.ToolMode.Scale  => "Scale → Rotate",
+                    LevelEditor.ToolMode.Rotate => "Rotate → Translate",
+                    _                           => "Translate → Scale",
+                };
+                var txt = _toolBtn.Component.GetComponentInChildren<Text>();
+                if (txt != null) txt.text = toolLabel;
+            }
+
+            // Local / Global button
+            if (_localBtn != null)
+            {
+                var txt = _localBtn.Component.GetComponentInChildren<Text>();
+                if (txt != null) txt.text = LevelEditor.LocalMode ? "Local → Global" : "Global → Local";
+            }
+
+            // Smooth / Snap button
+            if (_smoothBtn != null)
+            {
+                var txt = _smoothBtn.Component.GetComponentInChildren<Text>();
+                if (txt != null) txt.text = LevelEditor.SnapEnabled ? "Snap → Smooth" : "Smooth → Snap";
+            }
+
+            // Base Map button
+            if (_baseMapBtn != null)
+            {
+                var txt = _baseMapBtn.Component.GetComponentInChildren<Text>();
+                if (txt != null) txt.text = BaseMapController.BaseMapEnabled
+                    ? "Base Map: On → Off"
+                    : "Base Map: Off → On";
+            }
+
             // Expire the "Confirm clear?" state if the user doesn't act in time.
             if (_pendingClear && Time.realtimeSinceStartup - _pendingClearTime > ClearConfirmTimeout)
             {
                 _pendingClear = false;
                 if (_fileOpen) RebuildFileItems(); // revert button to "Clear"
             }
+        }
+
+        internal bool IsPointerOverDropdown()
+        {
+            var pos = Input.mousePosition;
+            if (_fileOpen && _fileDropdown != null)
+            {
+                var rt = _fileDropdown.GetComponent<RectTransform>();
+                if (rt != null && RectTransformUtility.RectangleContainsScreenPoint(rt, pos, null)) return true;
+            }
+            if (_catOpen && _catDropdown != null)
+            {
+                var rt = _catDropdown.GetComponent<RectTransform>();
+                if (rt != null && RectTransformUtility.RectangleContainsScreenPoint(rt, pos, null)) return true;
+            }
+            return false;
         }
     }
 

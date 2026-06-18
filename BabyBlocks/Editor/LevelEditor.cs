@@ -80,6 +80,7 @@ namespace BabyBlocks
         static bool _copyHasValue;
 
         static bool _snapEnabled = false;
+        public static bool SnapEnabled { get => _snapEnabled; set => _snapEnabled = value; }
         const float SnapStep = 0.1f;
         const float RotateSnapMultiplier = 100f;
 
@@ -482,6 +483,7 @@ namespace BabyBlocks
 
         static bool IsPointerOverUI()
         {
+            if (PropBrowserUI.IsPointerOverPanel()) return true;
             var mouse = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
             if (PropPalette.PanelRect.Contains(mouse)) return true;
             if (PropMetadataPanel.ContainsPoint(mouse)) return true;

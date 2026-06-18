@@ -215,7 +215,7 @@ namespace BabyBlocks.UI
                 var delBtn = UIFactory.CreateButton(row, "DelBtn", delTxt);
                 UIFactory.SetLayoutElement(delBtn.Component.gameObject, minWidth: 40, minHeight: 24);
                 PropBrowserUI.ApplyButtonColors(delBtn);
-                if (delArmed) TintButton(delBtn, new Color(0.8f, 0.18f, 0.18f));
+                TintButton(delBtn, delArmed ? new Color(1f, 0.28f, 0.28f) : new Color(0.8f, 0.18f, 0.18f));
                 delBtn.OnClick += () => OnDeleteClick(path);
             }
         }

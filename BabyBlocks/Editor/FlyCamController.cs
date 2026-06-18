@@ -223,6 +223,15 @@ namespace BabyBlocks
             }
         }
 
+        // Called by the top-bar button — same guards as the R key handler.
+        public static void InvokeRKeyAction()
+        {
+            if (PlayerMovement.me == null || Menu.me == null) return;
+            if (Menu.me.teleporting || _farTeleportActive) return;
+            if (PlayerMovement.me.inCutscene) return;
+            ToggleFlyEditorMode();
+        }
+
         // R key: game → fly, then cycles fly ↔ editor.
         static void ToggleFlyEditorMode()
         {
