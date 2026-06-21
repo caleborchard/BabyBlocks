@@ -16,6 +16,7 @@ namespace BabyBlocks.UI
             Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "levels");
 
         public static FileBrowserPanel Instance { get; private set; }
+        internal bool IsTypingInUI => _nameInput?.Component?.isFocused == true;
 
         public override string  Name             => "Level Files";
         public override int     MinWidth         => 360;

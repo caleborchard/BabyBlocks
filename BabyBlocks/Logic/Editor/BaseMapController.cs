@@ -33,6 +33,11 @@ namespace BabyBlocks
         public static int RestoreDayWeatherPlaylist;
         static bool _weatherPlaylistOverridden;
 
+        // Top-bar weather preset override. -1 = Default (game decides). When >= 0,
+        // TickWeatherPreset() re-asserts curChapter every frame, preventing the native
+        // game's campfire/chapter system from overwriting the selection.
+        public static int WeatherPreset = -1;
+
         static readonly List<GameObject> _hiddenAudioObjects = new();
         // Third-party rendering objects (TVE, GPUI) disabled by type-name search.
         static readonly List<GameObject> _hiddenRenderObjects = new();
@@ -853,6 +858,35 @@ namespace BabyBlocks
             DayWeatherPlaylist = index;
             if (!BaseMapEnabled && Menu.me != null && Menu.me.campfireDatas != null && Menu.me.campfireDatas.Length > 0)
                 SetCurChapter(index);
+        }
+
+        // Sets the top-bar weather preset. -1 = Default (restores the natural chapter).
+        // Works regardless of base map state.
+        public static void SetWeatherPreset(int preset)
+        {
+            WeatherPreset = preset;
+            if (Menu.me == null || Menu.me.campfireDatas == null || Menu.me.campfireDatas.Length == 0) return;
+            if (preset >= 0)
+                SetCurChapter(preset);
+            else
+            {
+                // Use the same source Menu.LoadSave() uses — the persisted chapter from
+                // the player's save file — so Default always reflects the local area's
+                // preset regardless of any base-map or override state.
+                int natural = SaveGod.theSave != null
+                    ? Mathf.Clamp(SaveGod.theSave.lastCampfire, 0, Menu.me.campfireDatas.Length - 1)
+                    : 0;
+                SetCurChapter(natural);
+            }
+        }
+
+        // Called every frame from Core.OnUpdate. When a preset is active, re-asserts
+        // curChapter so native campfire-progression/save-restore can't overwrite it.
+        public static void TickWeatherPreset()
+        {
+            if (WeatherPreset < 0) return;
+            if (Menu.me == null || Menu.me.campfireDatas == null || Menu.me.campfireDatas.Length == 0) return;
+            Menu.me.curChapter = Mathf.Clamp(WeatherPreset, 0, Menu.me.campfireDatas.Length - 1);
         }
 
         // Applies a loaded level's saved base-map/weather state. restoreChapter comes

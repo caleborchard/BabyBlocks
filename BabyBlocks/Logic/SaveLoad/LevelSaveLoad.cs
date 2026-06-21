@@ -66,10 +66,13 @@ namespace BabyBlocks
     // Version 8 adds, at the end of each per-object record:
     //   MaterialConstructionId : length-prefixed UTF8 string (empty if no per-instance
     //                            material/surface override — see MaterialConstructionPanel)
+    //
+    // Version 9 adds, after RestoreDayWeatherPlaylist:
+    //   WeatherPreset : int32 (-1 = Default, 0..N = locked preset index)
     static class LevelSaveLoad
     {
         static readonly byte[] Magic = { 0x42, 0x42, 0x42 };
-        const byte FormatVersion = 8;
+        const byte FormatVersion = 9;
 
         // Reserved MetaIndex value identifying the Spawn Point — it isn't registered in
         // PropMetadataPanel (no per-instance metadata needed), so a sentinel outside the
@@ -115,6 +118,7 @@ namespace BabyBlocks
                 w.Write(!BaseMapController.BaseMapEnabled);
                 w.Write(BaseMapController.DayWeatherPlaylist);
                 w.Write(BaseMapController.RestoreDayWeatherPlaylist);
+                w.Write(BaseMapController.WeatherPreset);
 
                 var records = BuildSortedRecords(mgr);
                 w.Write(records.Count);
@@ -197,6 +201,7 @@ namespace BabyBlocks
                 w.Write(!BaseMapController.BaseMapEnabled);
                 w.Write(BaseMapController.DayWeatherPlaylist);
                 w.Write(BaseMapController.RestoreDayWeatherPlaylist);
+                w.Write(BaseMapController.WeatherPreset);
                 w.Write(records.Count);
                 foreach (var rec in records)
                     WriteRecord(w, rec);
@@ -219,18 +224,21 @@ namespace BabyBlocks
                 return (false, 0, "Not a .bbb file.");
 
             byte version = r.ReadByte();
-            if (version > 8)
+            if (version > FormatVersion)
                 return (false, 0, $"Unsupported format version {version}.");
 
             bool baseMapOff = false;
             int dayWeatherPlaylist = 0;
             int restoreDayWeatherPlaylist = 0;
+            int weatherPreset = -1;
             if (version >= 7)
             {
                 baseMapOff = r.ReadBoolean();
                 dayWeatherPlaylist = r.ReadInt32();
                 restoreDayWeatherPlaylist = r.ReadInt32();
             }
+            if (version >= 9)
+                weatherPreset = r.ReadInt32();
 
             int count = r.ReadInt32();
             int spawned = 0;
@@ -403,6 +411,7 @@ namespace BabyBlocks
             if (version >= 7)
                 MelonCoroutines.Start(
                     BaseMapController.ApplyLoadedBaseMapStateDelayed(baseMapOff, dayWeatherPlaylist, restoreDayWeatherPlaylist));
+            BaseMapController.SetWeatherPreset(weatherPreset);
 
             MelonLogger.Msg($"[SaveLoad] Loaded {spawned}/{count} object(s) from {sourceName}");
             return (true, spawned, null);

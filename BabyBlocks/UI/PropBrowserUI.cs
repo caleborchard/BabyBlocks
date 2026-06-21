@@ -15,7 +15,8 @@ namespace BabyBlocks.UI
     static class PropBrowserUI
     {
         public static bool Ready { get; private set; }
-        public static bool IsTypingInUI => _panel != null && _panel.IsSearchFocused;
+        public static bool IsTypingInUI => (_panel != null && _panel.IsSearchFocused)
+                                        || (_fileBrowser != null && _fileBrowser.IsTypingInUI);
 
         static UIBase           _uiBase;
         static TopBarPanel      _topBar;
@@ -54,13 +55,13 @@ namespace BabyBlocks.UI
         }
 
         static bool _savedCenterDot;
-        static bool _lastFlyCamActive;
+        static bool _lastFreeCamActive;
 
         public static void UpdateVisibility()
         {
             if (!Ready) return;
-            bool inEditor   = FlyCamController.FlyCamActive && FlyCamController.CursorMode;
-            bool flyCamNow  = FlyCamController.FlyCamActive;
+            bool inEditor      = FlyCamController.FlyCamActive && FlyCamController.CursorMode;
+            bool freeCamNow    = FlyCamController.FlyCamActive && !FlyCamController.CursorMode;
 
             if (_uiBase.Enabled != inEditor)
             {
@@ -68,17 +69,17 @@ namespace BabyBlocks.UI
                 ApplyCameraViewport(inEditor);
             }
 
-            if (flyCamNow != _lastFlyCamActive)
+            if (freeCamNow != _lastFreeCamActive)
             {
-                _lastFlyCamActive = flyCamNow;
-                ApplyCrosshair(flyCamNow);
+                _lastFreeCamActive = freeCamNow;
+                ApplyCrosshair(freeCamNow);
             }
         }
 
-        static void ApplyCrosshair(bool flyCamActive)
+        static void ApplyCrosshair(bool freeCamActive)
         {
             if (Menu.me == null) return;
-            if (flyCamActive)
+            if (freeCamActive)
             {
                 _savedCenterDot = Menu.cfg.centerDot;
                 Menu.me.ToggleCenterDot(true);
@@ -217,6 +218,7 @@ namespace BabyBlocks.UI
         ButtonRef _localBtn;
         ButtonRef _smoothBtn;
         ButtonRef _baseMapBtn;
+        ButtonRef _weatherBtn;
 
         const float CatDropdownOffsetX = 4f;
         const float BarSpacing          = 4f;
@@ -300,6 +302,22 @@ namespace BabyBlocks.UI
                 Networking.ModNetworking.SendBaseMapState(next);
             };
 
+            // Weather preset cycle (Default → 0 → 1 → … → N-1 → Default)
+            _weatherBtn = UIFactory.CreateButton(barRow, "WeatherBtn", "Weather: Default → 0");
+            UIFactory.SetLayoutElement(_weatherBtn.Component.gameObject,
+                minWidth: "Weather: Default → 0".Length * 9 + 8, minHeight: 22);
+            PropBrowserUI.ApplyButtonColors(_weatherBtn);
+            _weatherBtn.OnClick += () =>
+            {
+                PropBrowserUI.Deselect();
+                int count = BaseMapController.DayWeatherPlaylistCount;
+                if (count == 0) return;
+                int next = BaseMapController.WeatherPreset < 0 ? 0
+                         : BaseMapController.WeatherPreset + 1 >= count ? -1
+                         : BaseMapController.WeatherPreset + 1;
+                BaseMapController.SetWeatherPreset(next);
+            };
+
             _fileDropdown = BuildFileDropdown();
             _fileDropdown.SetActive(false);
 
@@ -344,20 +362,15 @@ namespace BabyBlocks.UI
                 UnityEngine.Object.Destroy(_fileItemsContainer.transform.GetChild(i).gameObject);
 
             const int itemH = 26;
-            // Save, Load, Clear = 3 items
-            float totalH = 3 + 3 * itemH + 2 * 1 + 3; // pad + items + spacing + pad
+            // Files, Clear = 2 items
+            float totalH = 3 + 2 * itemH + 1 * 1 + 3; // pad + items + spacing + pad
             var rt = _fileDropdown.GetComponent<RectTransform>();
             rt.sizeDelta = new Vector2(rt.sizeDelta.x, totalH);
 
-            var saveBtn = UIFactory.CreateButton(_fileItemsContainer, "SaveBtn", "Save");
-            UIFactory.SetLayoutElement(saveBtn.Component.gameObject, minHeight: itemH, flexibleWidth: 9999);
-            PropBrowserUI.ApplyButtonColors(saveBtn);
-            saveBtn.OnClick += () => { PropBrowserUI.Deselect(); CloseFile(); FileBrowserPanel.OpenPanel(); };
-
-            var loadBtn = UIFactory.CreateButton(_fileItemsContainer, "LoadBtn", "Load");
-            UIFactory.SetLayoutElement(loadBtn.Component.gameObject, minHeight: itemH, flexibleWidth: 9999);
-            PropBrowserUI.ApplyButtonColors(loadBtn);
-            loadBtn.OnClick += () => { PropBrowserUI.Deselect(); CloseFile(); FileBrowserPanel.OpenPanel(); };
+            var filesBtn = UIFactory.CreateButton(_fileItemsContainer, "FilesBtn", "Save/Load");
+            UIFactory.SetLayoutElement(filesBtn.Component.gameObject, minHeight: itemH, flexibleWidth: 9999);
+            PropBrowserUI.ApplyButtonColors(filesBtn);
+            filesBtn.OnClick += () => { PropBrowserUI.Deselect(); CloseFile(); FileBrowserPanel.OpenPanel(); };
 
             string clearLabel = _pendingClear ? "Confirm clear?" : "Clear";
             _clearBtn = UIFactory.CreateButton(_fileItemsContainer, "ClearBtn", clearLabel);
@@ -378,6 +391,7 @@ namespace BabyBlocks.UI
                 _pendingClear = false;
                 CloseFile();
                 SaveLoadWindow.TriggerClear();
+                BaseMapController.SetWeatherPreset(-1);
             }
             else if (!SaveLoadWindow.HasObjects)
             {
@@ -605,6 +619,25 @@ namespace BabyBlocks.UI
                 if (txt != null) txt.text = BaseMapController.BaseMapEnabled
                     ? "Base Map: On → Off"
                     : "Base Map: Off → On";
+            }
+
+            // Weather preset button
+            if (_weatherBtn != null)
+            {
+                int count = BaseMapController.DayWeatherPlaylistCount;
+                int cur   = BaseMapController.WeatherPreset;
+                string label;
+                if (count == 0)
+                    label = "Weather: ...";
+                else if (cur < 0)
+                    label = "Weather: Default → 0";
+                else
+                {
+                    string nextStr = (cur + 1 >= count) ? "Default" : (cur + 1).ToString();
+                    label = $"Weather: {cur} → {nextStr}";
+                }
+                var txt = _weatherBtn.Component.GetComponentInChildren<Text>();
+                if (txt != null) txt.text = label;
             }
 
             // Expire the "Confirm clear?" state if the user doesn't act in time.

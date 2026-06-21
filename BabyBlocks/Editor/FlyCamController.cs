@@ -75,6 +75,22 @@ namespace BabyBlocks
         static float _noiseAmplitude = -1f;
         static bool  _editorScanDone;
 
+        static EnviroSkyRendering _enviroSkyRendering;
+        static Il2CppBeautifyEffect.Beautify _beautify;
+
+        static void SetEditorPostProcessing(bool enabled)
+        {
+            if (_enviroSkyRendering == null || _beautify == null)
+            {
+                var cam = GameObject.Find("BigManagerPrefab")?.transform.Find("Camera");
+                if (cam == null) return;
+                _enviroSkyRendering = cam.GetComponent<EnviroSkyRendering>();
+                _beautify           = cam.GetComponent<Il2CppBeautifyEffect.Beautify>();
+            }
+            if (_enviroSkyRendering != null) _enviroSkyRendering.enabled = enabled;
+            if (_beautify           != null) _beautify.enabled           = enabled;
+        }
+
         // True for the whole duration of FlyCamTeleportCo. While true, Core.OnUpdate's
         // Base-Map-off block skips touching brl.off so the native TeleportCo can drive
         // chunk loading uncontested.
@@ -144,6 +160,7 @@ namespace BabyBlocks
             // NREs, etc.) — block entry/exit entirely until the cutscene finishes.
             if (Input.GetKeyDown(KeyCode.R) && PlayerMovement.me != null
                 && !Menu.me.teleporting && !_farTeleportActive && !Core.IsKeyboardCaptured
+                && !LevelEditor.IsTypingInUI
                 && !PropPalette.IsDragging && !LevelEditor.IsSurfaceSnapDragging)
             {
                 if (!PlayerMovement.me.inCutscene)
@@ -301,6 +318,7 @@ namespace BabyBlocks
                 CursorMode       = false;
                 Cursor.lockState = CursorLockMode.Locked;
                 Cursor.visible   = false;
+                SetEditorPostProcessing(true);
                 FreezePlayer(player, false);
 
                 player.pm.SwitchToActiveMode();
@@ -349,6 +367,7 @@ namespace BabyBlocks
             Cursor.visible   = CursorMode;
             if (LevelEditorManager.Instance != null)
                 PhysicsObjectManager.SetEditorModeActive(CursorMode && FlyCamActive);
+            SetEditorPostProcessing(!CursorMode);
             if (!CursorMode)
             {
                 LevelEditor.HideGizmo();
