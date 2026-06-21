@@ -69,41 +69,79 @@ namespace BabyBlocks
             IsMultiplayerChatOpen || (Menu.me != null && Menu.me.paused);
 
         // BestRegionLoader.LoadProp/UnloadProp are async UniTaskVoid methods that set
-        // somebodyLoading = true, await an Addressables handle (or UniTask.DelayFrame), then
-        // clear it. If that await never resolves - e.g. its handle gets invalidated by a
-        // concurrent chunk/scene unload, which the fly cam's much-faster-than-walking
-        // movement provokes far more often than normal play - somebodyLoading is stuck true
-        // forever. That semaphore also gates UpdateChunkLoading/UpdatePropPrefabLoading in
-        // BestRegionLoader.Update and our own FarTeleportCo's first wait, so a stuck flag
-        // here reads as "the whole game locked up". Force-clear it if it's been stuck too
-        // long so whichever loaders are blocked on it can make forward progress again.
-        const float SomebodyLoadingStuckTimeout = 1.5f;
+        // somebodyLoading = true, await an Addressables handle, then clear it. If the
+        // handle gets invalidated mid-flight (e.g. concurrent chunk/scene unload),
+        // somebodyLoading stays true forever and no further chunk loads can start.
+        // Normal chunk loads take 3-4s; use 6s so we never interrupt a healthy load.
+        // Skipped during far teleports — FlyCamTeleportCo has its own scoped watchdog.
+        const float SomebodyLoadingStuckTimeout = 6f;
         static bool  _somebodyLoadingWasTrue;
         static float _somebodyLoadingSinceTime;
-        public static int DiagSomebodyLoadingForceClears;
 
         static void WatchSomebodyLoading()
         {
+            if (BestRegionLoader.me == null) return;
+            if (FlyCamController.FarTeleportActive) return;
+
             if (BestRegionLoader.somebodyLoading)
             {
                 if (!_somebodyLoadingWasTrue)
                 {
-                    _somebodyLoadingWasTrue = true;
+                    _somebodyLoadingWasTrue   = true;
                     _somebodyLoadingSinceTime = Time.realtimeSinceStartup;
                 }
                 else if (Time.realtimeSinceStartup - _somebodyLoadingSinceTime > SomebodyLoadingStuckTimeout)
                 {
-                    DiagSomebodyLoadingForceClears++;
                     MelonLogger.Warning(
-                        $"[BabyBlocks] BestRegionLoader.somebodyLoading stuck true for " +
-                        $"{SomebodyLoadingStuckTimeout}s, force-clearing (count={DiagSomebodyLoadingForceClears}).");
+                        $"[BabyBlocks] BestRegionLoader.somebodyLoading stuck for {SomebodyLoadingStuckTimeout}s, force-clearing.");
                     BestRegionLoader.somebodyLoading = false;
                     _somebodyLoadingWasTrue = false;
                 }
             }
+            else { _somebodyLoadingWasTrue = false; }
+        }
+
+        // Menu.me.teleporting can get stuck true (e.g. if a level-transfer load
+        // called Menu.me.Teleport in a context where the native TeleportCo never
+        // completes). While stuck, the R / BackQuote guards block editor exit,
+        // leaving the player permanently trapped. Force-clear after a generous timeout.
+        const float MenuTeleportingStuckTimeout = 8f;
+        static bool  _menuTeleportingWasTrue;
+        static float _menuTeleportingSinceTime;
+
+        static void WatchMenuTeleporting()
+        {
+            if (Menu.me == null) return;
+
+            // Never interfere while one of our own coroutines is managing the teleport —
+            // they deliberately loop on Menu.me.teleporting and must let it finish naturally.
+            // Only watch for unmanaged stuck states (e.g. from a peer-join side-effect).
+            if (FlyCamController.FarTeleportActive
+                || FlyCamController.LevelLoadTeleportActive
+                || FlyCamController.NetworkLevelTransferActive)
+            {
+                _menuTeleportingWasTrue = false;
+                return;
+            }
+
+            if (Menu.me.teleporting)
+            {
+                if (!_menuTeleportingWasTrue)
+                {
+                    _menuTeleportingWasTrue  = true;
+                    _menuTeleportingSinceTime = Time.realtimeSinceStartup;
+                }
+                else if (Time.realtimeSinceStartup - _menuTeleportingSinceTime > MenuTeleportingStuckTimeout)
+                {
+                    MelonLogger.Warning(
+                        $"[BabyBlocks] Menu.me.teleporting stuck true for {MenuTeleportingStuckTimeout}s, force-clearing.");
+                    Menu.me.teleporting  = false;
+                    _menuTeleportingWasTrue = false;
+                }
+            }
             else
             {
-                _somebodyLoadingWasTrue = false;
+                _menuTeleportingWasTrue = false;
             }
         }
 
@@ -168,6 +206,7 @@ namespace BabyBlocks
         public override void OnUpdate()
         {
             WatchSomebodyLoading();
+            WatchMenuTeleporting();
 
             if (!_networkingDisabled)
             {

@@ -157,7 +157,9 @@ namespace BabyBlocks
         }
 
         // Deserializes a level from a BBB byte buffer (e.g. received over the network).
-        // Behaves identically to Load() except baked render data is not expected/read.
+        // Behaves identically to Load() except baked render data is not expected/read,
+        // and the spawn-point teleport is skipped (we don't teleport on behalf of a
+        // peer's load — that would trigger Menu.me.Teleport for every connected player).
         public static (bool ok, int count, string error) LoadFromNetworkData(byte[] data)
         {
             if (data == null || data.Length == 0) return (false, 0, "No data.");
@@ -167,7 +169,7 @@ namespace BabyBlocks
             {
                 using var ms = new MemoryStream(data);
                 using var r  = new BinaryReader(ms, Encoding.UTF8, leaveOpen: false);
-                return LoadFromReader(r, mgr, "[network]");
+                return LoadFromReader(r, mgr, "[network]", teleportOnLoad: false);
             }
             catch (Exception e)
             {
@@ -208,7 +210,7 @@ namespace BabyBlocks
             }
         }
 
-        private static (bool ok, int count, string error) LoadFromReader(BinaryReader r, LevelEditorManager mgr, string sourceName)
+        private static (bool ok, int count, string error) LoadFromReader(BinaryReader r, LevelEditorManager mgr, string sourceName, bool teleportOnLoad = true)
         {
             LevelEditor.Select(null);
 
@@ -391,7 +393,10 @@ namespace BabyBlocks
             // final position, and Teleport itself needs BRL active to stream in
             // chunks at the destination — doing this after brl.off=true left the
             // player ungrounded with stale chunks and stuck Menu.me.teleporting.
-            TeleportToSpawnPoint(leos);
+            // Skipped for network loads: Menu.me.Teleport() would execute on every
+            // connected client, not just the joining one, teleporting everyone.
+            if (teleportOnLoad)
+                TeleportToSpawnPoint(leos);
 
             // Menu.Teleport's coroutine runs across many frames, so defer applying
             // the base-map state until it finishes (see ApplyLoadedBaseMapStateDelayed).
@@ -415,6 +420,10 @@ namespace BabyBlocks
                 var player = PlayerMovement.me;
                 if (player == null || Menu.me == null) return;
 
+                // Show the "Teleporting..." overlay and temporarily step out of cursor/editor
+                // mode (if active) so the editor UI stays out of the way during the teleport.
+                FlyCamController.BeginLevelLoadTeleport();
+
                 // Face the player the same way the spawn point's arrow points (local +Z)
                 // before handing off to Teleport — TeleportCo preserves whatever rotation
                 // is on player.anim.transform when it places the player.
@@ -430,7 +439,11 @@ namespace BabyBlocks
         // camera follows the player instead of staying at its pre-load position.
         static IEnumerator SnapFlyCamToPlayer(PlayerMovement player)
         {
+            // Wait one frame so Menu.me.Teleport's coroutine has had a chance to
+            // set Menu.me.teleporting = true before we start polling it.
+            yield return null;
             while (Menu.me != null && Menu.me.teleporting) yield return null;
+            FlyCamController.EndLevelLoadTeleport();
             if (player != null && player.flyCam != null && player.torsoRbs != null && player.torsoRbs.Length > 0)
                 player.flyCam.transform.position = player.torsoRbs[0].transform.position;
         }

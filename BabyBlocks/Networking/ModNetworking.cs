@@ -48,6 +48,18 @@ namespace BabyBlocks.Networking
         // Per-sender in-progress chunk assembly state, keyed by sender UUID.
         private static readonly Dictionary<byte, LevelChunkState> _levelChunkStates = new();
 
+        // While we're receiving a level transfer (chunks in flight → level loading), live
+        // prop-mutation events (place/delete/clear/material) are buffered so they aren't
+        // silently discarded by LoadFromNetworkData's RemoveAll(). After loading finishes
+        // the buffer is replayed so mid-connect edits appear correctly.
+        private static bool _levelTransferPending;
+        private static readonly List<(byte sender, byte[] payload)> _bufferedLivePackets = new();
+
+        // Time the level-transfer request was sent. If no data arrives within this window
+        // (e.g. no peers have a level) the pending flag is cleared automatically.
+        private const float LevelTransferTimeoutSeconds = 10f;
+        private static float _levelTransferRequestTime;
+
         private class LevelChunkState
         {
             public byte[][] Chunks;
@@ -126,6 +138,18 @@ namespace BabyBlocks.Networking
             {
                 if (_channel == null && !_channelCreateFailed)
                     TryCreateChannel(networkManager);
+
+                // If no peer responded to our level-transfer request within the timeout
+                // (empty server, or no peer has BabyBlocks), clear the pending state so
+                // the "Loading level..." overlay doesn't stay up forever.
+                if (_levelTransferPending
+                    && Time.unscaledTime - _levelTransferRequestTime > LevelTransferTimeoutSeconds)
+                {
+                    MelonLogger.Msg("[BabyBlocks][ModNetworking] Level transfer timed out — no response from peers");
+                    _levelTransferPending = false;
+                    _bufferedLivePackets.Clear();
+                    FlyCamController.EndNetworkLevelTransfer();
+                }
 
                 if (_channel != null && Time.unscaledTime >= _nextAnnounceTime)
                 {
@@ -337,7 +361,12 @@ namespace BabyBlocks.Networking
                 _nextAnnounceTime = 0f; // announce immediately on the next Update
 
                 // Ask peers for their current level. Whoever has one will respond with
-                // LevelTransferData so we can load it.
+                // LevelTransferData so we can load it. Start buffering live edits so
+                // props placed or deleted between now and when the transfer loads aren't lost.
+                _levelTransferPending = true;
+                _levelTransferRequestTime = Time.unscaledTime;
+                _bufferedLivePackets.Clear();
+                FlyCamController.BeginNetworkLevelTransfer();
                 SendLevelTransferRequest();
                 BBLog.Msg("[BabyBlocks][ModNetworking] Mod channel established");
             }
@@ -362,6 +391,9 @@ namespace BabyBlocks.Networking
             _channelCreateFailed = false;
             _pendingLevelSnapshot = null;
             _levelChunkStates.Clear();
+            _levelTransferPending = false;
+            _bufferedLivePackets.Clear();
+            FlyCamController.EndNetworkLevelTransfer();
             PeersWithBabyBlocks.Clear();
             _networkedObjects.Clear();
             RemoteFreecamManager.ClearAll();
@@ -545,6 +577,22 @@ namespace BabyBlocks.Networking
         private static void OnDataReceived(byte senderUuid, byte[] payload)
         {
             if (payload == null || payload.Length < 1) return;
+
+            // While a level transfer is in progress, buffer live prop mutations so they
+            // aren't silently destroyed when LoadFromNetworkData calls RemoveAll().
+            // LevelTransfer and freecam/ghost/selection packets are not buffered —
+            // they're either idempotent or don't depend on object existence.
+            if (_levelTransferPending)
+            {
+                byte marker = payload[0];
+                if (marker == PropPlacedMarker   || marker == PropDeletedMarker ||
+                    marker == LevelClearedMarker  || marker == MaterialAppliedMarker ||
+                    marker == GroupSyncMarker)
+                {
+                    _bufferedLivePackets.Add((senderUuid, payload));
+                    return;
+                }
+            }
 
             switch (payload[0])
             {
@@ -1085,6 +1133,23 @@ namespace BabyBlocks.Networking
                     MelonLogger.Msg($"[BabyBlocks] Received level from player {senderUuid}: {count} object(s)");
                 else
                     MelonLogger.Warning($"[BabyBlocks] Level transfer from player {senderUuid} failed: {error}");
+
+                // Level is loaded — stop buffering, hide the overlay, and replay any
+                // prop mutations that arrived while the transfer was in flight.
+                _levelTransferPending = false;
+                FlyCamController.EndNetworkLevelTransfer();
+                if (_bufferedLivePackets.Count > 0)
+                {
+                    var buffered = new List<(byte sender, byte[] payload)>(_bufferedLivePackets);
+                    _bufferedLivePackets.Clear();
+                    MelonLogger.Msg($"[BabyBlocks] Replaying {buffered.Count} buffered live event(s) after level transfer");
+                    foreach (var (sender, pkt) in buffered)
+                        OnDataReceived(sender, pkt);
+                }
+                else
+                {
+                    _bufferedLivePackets.Clear();
+                }
             }
             catch (Exception ex)
             {

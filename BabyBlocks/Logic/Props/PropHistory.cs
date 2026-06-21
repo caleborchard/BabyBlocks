@@ -41,7 +41,6 @@ namespace BabyBlocks
             _history.Insert(0, key);
             Trim();
             _resolvedDirty = true;
-            MelonLogger.Msg($"[PropHistory] RecordUse prop: {propId} (total: {_history.Count})");
             Save();
         }
 
@@ -53,7 +52,6 @@ namespace BabyBlocks
             _history.Insert(0, key);
             Trim();
             _resolvedDirty = true;
-            MelonLogger.Msg($"[PropHistory] RecordMaterialUse id={matId} (total: {_history.Count})");
             Save();
         }
 
@@ -101,7 +99,6 @@ namespace BabyBlocks
         {
             if (_loaded) return;
             _loaded = true;
-            MelonLogger.Msg($"[PropHistory] Loading from: {SavePath}");
             Load();
         }
 
@@ -109,11 +106,7 @@ namespace BabyBlocks
         {
             try
             {
-                if (!File.Exists(SavePath))
-                {
-                    MelonLogger.Msg("[PropHistory] No history file found, starting fresh.");
-                    return;
-                }
+                if (!File.Exists(SavePath)) return;
                 _history.Clear();
                 foreach (var rawLine in File.ReadAllLines(SavePath))
                 {
@@ -122,7 +115,6 @@ namespace BabyBlocks
                         _history.Add(line);
                 }
                 _resolvedDirty = true;
-                MelonLogger.Msg($"[PropHistory] Loaded {_history.Count} entries.");
             }
             catch (Exception e)
             {

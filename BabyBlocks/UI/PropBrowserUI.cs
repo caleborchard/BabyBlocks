@@ -1028,12 +1028,16 @@ namespace BabyBlocks.UI
             // Fixed overhead: navRow(56) + pageLabel(20) + searchBar(26) + padTop(2) + padBottom(2) + spacing(2).
             const int FixedBase   = 56 + 20 + 26 + 2 + 2 + 2; // 108
             const int TargetCardH = 80;
+            const int MinLabelW   = 100; // always leave this many px for the name label
             int available = Screen.height - TopBarPanel.BarHeight;
 
             int n = Mathf.Clamp(
                 Mathf.FloorToInt((available - FixedBase) / (float)(TargetCardH + 2)),
                 3, SlotCount);
             int cardH = Mathf.Max(50, (available - FixedBase - (n + 1) * 2) / n);
+
+            // Cap the preview square so the label area never collapses on large/4K screens.
+            int previewSize = Mathf.Min(cardH, PanelWidth - MinLabelW);
 
             _activeSlotCount = n;
             const float gap = 4f;
@@ -1044,12 +1048,12 @@ namespace BabyBlocks.UI
                 ref var card = ref _cards[i];
                 if (!active && card.Root != null) card.Root.SetActive(false);
                 if (!active) continue;
-                if (card.CardLE   != null) card.CardLE.minHeight             = cardH;
-                if (card.PreviewRT != null) card.PreviewRT.sizeDelta         = new Vector2(cardH, 0f);
+                if (card.CardLE    != null) card.CardLE.minHeight             = cardH;
+                if (card.PreviewRT != null) card.PreviewRT.sizeDelta          = new Vector2(previewSize, 0f);
                 if (card.LabelMask != null)
                 {
-                    card.LabelMask.anchoredPosition = new Vector2(cardH + gap, 0f);
-                    card.LabelMask.sizeDelta        = new Vector2(-(cardH + gap), 0f);
+                    card.LabelMask.anchoredPosition = new Vector2(previewSize + gap, 0f);
+                    card.LabelMask.sizeDelta        = new Vector2(-(previewSize + gap), 0f);
                 }
             }
         }

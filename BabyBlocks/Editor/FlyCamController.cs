@@ -13,6 +13,26 @@ namespace BabyBlocks
         public static bool FlyCamActive;
         public static bool CursorMode;
 
+        // True while TeleportToSpawnPoint's Menu.me.Teleport is running (file-load trigger).
+        // Shows the "Teleporting..." overlay without requiring _farTeleportActive.
+        public static bool LevelLoadTeleportActive;
+
+        // True while a network level transfer is in progress on this client.
+        // Shows "Loading level..." overlay.
+        public static bool NetworkLevelTransferActive;
+
+        // Called by LevelSaveLoad.TeleportToSpawnPoint before Menu.me.Teleport fires.
+        public static void BeginLevelLoadTeleport() => LevelLoadTeleportActive = true;
+
+        // Called by LevelSaveLoad.SnapFlyCamToPlayer once the teleport has settled.
+        public static void EndLevelLoadTeleport() => LevelLoadTeleportActive = false;
+
+        // Called by ModNetworking when a level transfer begins (joining server / peer-initiated load).
+        public static void BeginNetworkLevelTransfer() => NetworkLevelTransferActive = true;
+
+        // Called by ModNetworking once the transfer finishes loading, times out, or the channel tears down.
+        public static void EndNetworkLevelTransfer() => NetworkLevelTransferActive = false;
+
         // Grace period after leaving fly/editor mode during which cutscene triggers stay
         // suppressed. The player can be placed inside a BBConvoStarter trigger volume by the
         // exit teleport itself, but Unity's OnTriggerEnter for the newly-overlapping collider
@@ -185,7 +205,10 @@ namespace BabyBlocks
             if (FlyCamActive && CursorMode && !UI.PropBrowserUI.Ready)
                 LevelEditor.OnGUI();
 
-            if (_farTeleportActive)
+            bool isTeleporting   = _farTeleportActive || LevelLoadTeleportActive;
+            bool isLoadingLevel  = NetworkLevelTransferActive;
+
+            if (isTeleporting || isLoadingLevel)
             {
                 if (_teleportLabelStyle == null)
                 {
@@ -197,15 +220,17 @@ namespace BabyBlocks
                     _teleportLabelStyle.normal.textColor = Color.white;
                 }
 
+                string text = isLoadingLevel && !isTeleporting ? "Loading level..." : "Teleporting...";
+
                 const float w = 400f, h = 60f, margin = 12f;
                 var shadow = new Rect(margin + 1, Screen.height - margin - h + 1, w, h);
                 var front  = new Rect(margin,     Screen.height - margin - h,     w, h);
 
                 var prev = _teleportLabelStyle.normal.textColor;
                 _teleportLabelStyle.normal.textColor = Color.black;
-                GUI.Label(shadow, "Teleporting...", _teleportLabelStyle);
+                GUI.Label(shadow, text, _teleportLabelStyle);
                 _teleportLabelStyle.normal.textColor = prev;
-                GUI.Label(front, "Teleporting...", _teleportLabelStyle);
+                GUI.Label(front, text, _teleportLabelStyle);
             }
         }
 
@@ -418,17 +443,23 @@ namespace BabyBlocks
             var ray = Camera.main.ScreenPointToRay(new Vector3(Screen.width / 2f, Screen.height / 2f));
             if (!Physics.Raycast(ray, out var hit, 1000f, LayerCache.PropTerrainMask)) return;
 
+            MelonLogger.Msg($"[FarTeleport] Click → {hit.point}  collider={hit.collider?.name}");
             _farTeleportActive = true;
             MelonCoroutines.Start(FlyCamTeleportCo(player, hit.point));
         }
 
         static IEnumerator FlyCamTeleportCo(PlayerMovement player, Vector3 target)
         {
+            var brl = BestRegionLoader.me;
+            float startDist = player.torsoRbs != null && player.torsoRbs.Length > 0
+                ? Vector3.Distance(player.torsoRbs[0].transform.position, target) : 0f;
+            MelonLogger.Msg($"[FarTeleport] Start  dist={startDist:F0}m  target={target}" +
+                            $"  brl.off={brl?.off}  fullyLoaded={BestRegionLoader.fullyLoaded}");
+
             // When Base Map is off, Core.OnUpdate sets brl.off=true each frame to suppress
             // streaming. That would stall TeleportCo's fullyLoaded wait forever. Flip it
             // off here; Core.OnUpdate skips the block while FarTeleportActive is true, then
             // its post-teleport rescan window re-enables it once surrounding chunks settle.
-            var brl = BestRegionLoader.me;
             if (!BaseMapController.BaseMapEnabled && brl != null && brl.off)
                 brl.off = false;
 
@@ -466,22 +497,153 @@ namespace BabyBlocks
 
             SaveGod.me.stopSaving = true;
             SaveGod.theSave.continuePt = target;
-
             Menu.me.Teleport(target);
-            while (Menu.me.teleporting) yield return null;
+
+            // Wait for TeleportCo. The native wait is `while (!BestRegionLoader.fullyLoaded)`
+            // which requires EVERY chunk in the streaming radius to settle — for a far jump
+            // this means sequentially loading new chunks AND unloading old ones, potentially
+            // taking minutes. Instead, we poll with a downward raycast until the terrain at
+            // the target point is physically present, then override fullyLoaded each frame so
+            // TeleportCo breaks out of its wait and places the player. Our coroutine (yield
+            // null) runs after BRL.Update() in Unity's Update order but before TeleportCo's
+            // next WaitForFixedUpdate resume, so the override is visible on TeleportCo's next
+            // check. We do NOT force-clear Menu.me.teleporting — TeleportCo must run to
+            // completion so the player is actually moved to the target.
+            {
+                float waitStart      = Time.unscaledTime;
+                float lastLogSec     = -1f;
+                bool  slWasTrue      = false;
+                float slStuckSince   = 0f;
+                bool  targetLoaded   = false;
+
+                while (Menu.me.teleporting)
+                {
+                    float elapsed    = Time.unscaledTime - waitStart;
+                    int   elapsedSec = Mathf.FloorToInt(elapsed);
+
+                    if (elapsedSec != Mathf.FloorToInt(lastLogSec))
+                    {
+                        lastLogSec = elapsed;
+                        MelonLogger.Msg($"[FarTeleport] t={elapsedSec}s" +
+                                        $"  fullyLoaded={BestRegionLoader.fullyLoaded}" +
+                                        $"  somebodyLoading={BestRegionLoader.somebodyLoading}" +
+                                        $"  targetLoaded={targetLoaded}");
+                    }
+
+                    // somebodyLoading watchdog: if an async chunk op's Addressables handle
+                    // gets invalidated, somebodyLoading stays true forever and no further
+                    // chunks can load. Use a generous threshold (5s) so normal chunk loads
+                    // (~3-4s each) are never interrupted — only truly hung handles are cleared.
+                    if (BestRegionLoader.somebodyLoading)
+                    {
+                        if (!slWasTrue) { slWasTrue = true; slStuckSince = Time.unscaledTime; }
+                        else if (Time.unscaledTime - slStuckSince > 5f)
+                        {
+                            MelonLogger.Warning($"[FarTeleport] somebodyLoading stuck" +
+                                                $" {(Time.unscaledTime - slStuckSince):F1}s — force-clearing");
+                            BestRegionLoader.somebodyLoading = false;
+                            slWasTrue = false;
+                        }
+                    }
+                    else { slWasTrue = false; }
+
+                    // Once the chunk at the target is loaded (raycast confirms terrain is
+                    // present), or after a 60s hard fallback, override fullyLoaded so
+                    // TeleportCo can proceed to place the player. Do NOT touch somebodyLoading
+                    // here — BRL loads chunks sequentially using that flag, and interrupting
+                    // a normal in-flight load corrupts BRL's state and breaks post-teleport
+                    // terrain streaming. TeleportCo only gates on fullyLoaded, not somebodyLoading.
+                    if (!targetLoaded && elapsed >= 1f)
+                    {
+                        var origin = new Vector3(target.x, target.y + 100f, target.z);
+                        if (Physics.Raycast(origin, Vector3.down, 300f, LayerCache.PropTerrainMask))
+                        {
+                            targetLoaded = true;
+                            MelonLogger.Msg($"[FarTeleport] Target terrain visible at t={elapsed:F1}s — overriding fullyLoaded");
+                        }
+                    }
+
+                    if (targetLoaded || elapsed > 60f)
+                    {
+                        if (elapsed > 60f && !targetLoaded)
+                            MelonLogger.Warning("[FarTeleport] 60s with no terrain hit — forcing anyway");
+                        BestRegionLoader.fullyLoaded = true;
+                    }
+
+                    yield return null;
+                }
+
+                MelonLogger.Msg($"[FarTeleport] TeleportCo done in {(Time.unscaledTime - waitStart):F1}s");
+            }
 
             if (crestWater != null && !BaseMapController.BaseMapEnabled)
                 crestWater.SetActive(false);
 
             SaveGod.me.stopSaving = false;
 
-            // Snap fly cam to new body position so BRL streams terrain around
-            // the right area when the player walks after exiting fly-cam mode.
-            player.flyCam.transform.position = player.torsoRbs[0].transform.position;
-
+            // Fly cam stays at the pre-moved target position — the user is in control of
+            // the camera and doesn't want it snapping to the player after a click teleport.
             // Re-establish fly-cam streaming and freeze.
             if (brl != null) brl.loadingTransform = player.flyCam.transform;
             FreezePlayer(player, true);
+
+            // Second-pass landing check: the initial click raycast may have hit an unloaded
+            // LOD placeholder at the wrong height. TeleportCo does its own raycast too, but
+            // only searches 500m upward from the original target — if that target was deep
+            // inside unloaded geometry it can still land the player somewhere bad. Verify
+            // the landing now that terrain is fully loaded and re-teleport if needed.
+            if (player.gameObject.activeInHierarchy
+                && player.torsoRbs != null && player.torsoRbs.Length > 0)
+            {
+                float playerY     = player.torsoRbs[0].transform.position.y;
+                var   camPos      = player.flyCam.transform.position;
+                var   camToTarget = target - camPos;
+                float camDist     = camToTarget.magnitude;
+                if (camDist > 0.1f && Physics.Raycast(camPos, camToTarget / camDist, out var verifyHit, camDist + 100f, LayerCache.PropTerrainMask))
+                {
+                    float delta = Mathf.Abs(playerY - verifyHit.point.y);
+                    MelonLogger.Msg($"[FarTeleport] Landing check: playerY={playerY:F1}  hitY={verifyHit.point.y:F1}  delta={delta:F1}m  collider={verifyHit.collider?.name}");
+                    if (delta > 3f)
+                    {
+                        var corrected = verifyHit.point;
+                        MelonLogger.Msg($"[FarTeleport] Correcting landing → {corrected}");
+
+                        FreezePlayer(player, false);
+                        player.gameObject.SetActive(false);
+
+                        if (!BaseMapController.BaseMapEnabled && crestWater != null)
+                            crestWater.SetActive(true);
+
+                        SaveGod.theSave.continuePt = corrected;
+                        Menu.me.Teleport(corrected);
+
+                        // Terrain is already loaded — override fullyLoaded immediately so
+                        // TeleportCo places the player without waiting for surrounding chunks.
+                        float corrStart = Time.unscaledTime;
+                        while (Menu.me.teleporting)
+                        {
+                            BestRegionLoader.fullyLoaded = true;
+                            if (Time.unscaledTime - corrStart > 10f)
+                            {
+                                MelonLogger.Warning("[FarTeleport] Correction teleport stuck 10s — forcing");
+                                BestRegionLoader.fullyLoaded = true;
+                            }
+                            yield return null;
+                        }
+                        MelonLogger.Msg($"[FarTeleport] Correction done in {(Time.unscaledTime - corrStart):F1}s");
+
+                        if (!BaseMapController.BaseMapEnabled && crestWater != null)
+                            crestWater.SetActive(false);
+
+                        if (brl != null) brl.loadingTransform = player.flyCam.transform;
+                        FreezePlayer(player, true);
+                    }
+                }
+                else
+                {
+                    MelonLogger.Warning($"[FarTeleport] Landing check: camera-direction raycast missed, playerY={playerY:F1}");
+                }
+            }
 
             // Freshly loaded terrain can invalidate cached material instances —
             // repoint all placed props at the new resolved materials.

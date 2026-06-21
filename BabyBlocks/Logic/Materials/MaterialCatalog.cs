@@ -899,8 +899,6 @@ namespace BabyBlocks
                         continue;
                     }
 
-                    MelonLogger.Msg($"[PropMaterial] OK   \"{propId}\" slot={s}  mat=\"{mat.name}\"  shader=\"{mat.shader?.name}\"");
-
                     for (int i = 0; i < renderers.Length; i++)
                     {
                         var r = renderers[i];
@@ -956,10 +954,6 @@ namespace BabyBlocks
                     VerifiedSourceMaterials.Remove(singleOverride);
                     return;
                 }
-
-                MelonLogger.Msg(
-                    $"[PropMaterial] OK   \"{propId}\"  override=\"{singleOverride}\"  source=\"{info.materialSourcePropId}\"" +
-                    $"  mat=\"{singleMat.name}\"  shader=\"{singleMat.shader?.name}\"  hasTex={singleMat.mainTexture != null}");
 
                 var renderers = root.GetComponentsInChildren<Renderer>(true);
                 if (renderers == null || renderers.Length == 0) return;
