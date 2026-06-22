@@ -79,7 +79,22 @@ namespace BabyBlocks
                 if (mat != null)
                 {
                     var tex = RenderMaterialSphere(matId, mat);
-                    if (tex != null) _matReady[matId] = tex;
+                    if (tex != null)
+                    {
+                        _matReady[matId] = tex;
+                        _matFailures.Remove(matId);
+                        BBLog.Msg($"[BB:MatSphere] id={matId} '{mat.name}' rendered OK");
+                    }
+                    else
+                    {
+                        _matFailures.TryGetValue(matId, out int prev);
+                        int fails = prev + 1;
+                        _matFailures[matId] = fails;
+                        MelonLogger.Msg($"[BB:MatSphere] id={matId} '{mat.name}' render FAILED (attempt {fails})");
+                        if (fails < 5)
+                            _matSeen.Remove(matId); // allow retry until giving up
+                        // else: leave in _matSeen so it stops re-queuing
+                    }
                 }
             }
         }
@@ -505,9 +520,11 @@ namespace BabyBlocks
         // ---- Material sphere previews ----
 
         static Mesh _sphereMesh;
-        static readonly Queue<(int id, Material mat)>    _matQueue = new();
-        static readonly HashSet<int>                     _matSeen  = new();
-        static readonly Dictionary<int, Texture2D>       _matReady = new();
+        static readonly Queue<(int id, Material mat)>    _matQueue    = new();
+        static readonly HashSet<int>                     _matSeen     = new();
+        static readonly Dictionary<int, Texture2D>       _matReady    = new();
+        static readonly Dictionary<int, int>             _matFailures = new(); // per-id render failure count
+        static readonly Dictionary<int, string>          _matId2Name  = new(); // name lookup for invalidation
 
         public static void RequestMaterialSphere(int id, Material mat)
         {
@@ -515,16 +532,35 @@ namespace BabyBlocks
             if (_matReady.ContainsKey(id)) return;
             if (_matSeen.Contains(id)) return;
             _matSeen.Add(id);
+            _matId2Name[id] = mat.name;
             _matQueue.Enqueue((id, mat));
+            if (mat.name.StartsWith("[MicroSplat]", StringComparison.Ordinal))
+                MelonLogger.Msg($"[BB:MatSphere] Queued id={id} '{mat.name}' (queue depth now {_matQueue.Count})");
+        }
+
+        public static void InvalidateMicroSplatSpheres()
+        {
+            var toRemove = new System.Collections.Generic.List<int>();
+            foreach (var kv in _matId2Name)
+                if (kv.Value.StartsWith("[MicroSplat]", StringComparison.Ordinal))
+                    toRemove.Add(kv.Key);
+            foreach (var id in toRemove)
+                InvalidateMaterialSphere(id);
+            if (toRemove.Count > 0)
+                MelonLogger.Msg($"[BB:MatSphere] Invalidated {toRemove.Count} MicroSplat sphere cache entries.");
         }
 
         public static Texture2D GetMaterialSphere(int id) =>
             _matReady.TryGetValue(id, out var t) ? t : null;
 
+        public static bool IsMaterialSeen(int id) => _matSeen.Contains(id);
+        public static bool IsMaterialReady(int id) => _matReady.ContainsKey(id);
+
         public static void InvalidateMaterialSphere(int id)
         {
             _matReady.Remove(id);
             _matSeen.Remove(id);
+            _matFailures.Remove(id);
         }
 
         static Mesh GetSphereMesh()
@@ -539,10 +575,10 @@ namespace BabyBlocks
         static Texture2D RenderMaterialSphere(int matId, Material mat)
         {
             var mesh = GetSphereMesh();
-            if (mesh == null) return null;
+            if (mesh == null) { MelonLogger.Msg($"[BB:MatSphere] id={matId} GetSphereMesh returned null"); return null; }
 
             int drawLayer = MaterialBaker.FindUnusedLayer();
-            if (drawLayer < 0) return null;
+            if (drawLayer < 0) { MelonLogger.Msg($"[BB:MatSphere] id={matId} no unused render layer available"); return null; }
 
             var   camDir  = new Vector3(-1f, -1f, -1f).normalized;
             float camDist = 4f;

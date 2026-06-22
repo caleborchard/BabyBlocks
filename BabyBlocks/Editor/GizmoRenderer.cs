@@ -284,7 +284,6 @@ namespace BabyBlocks
             if (_maskMat == null || _ppMat == null)
                 LoadScreenSpaceShaders();
             // Re-create gizmo occluded materials if they were separately destroyed.
-            // The shader reference stays alive; only the material wrapper gets GC'd.
             if (_occMats == null && _maskMat != null)
             {
                 var occShader = Shader.Find("Hidden/BabyBlocks/GizmoOccluded");
@@ -640,6 +639,9 @@ namespace BabyBlocks
             _ppMat.SetFloat("_OccludedAlpha", OutlineOccludedAlpha);
             _ppMat.SetFloat("_OutlineWidth",  OutlineWidth);
             _ppMat.SetFloat("_DebugMode",     OutlineDebugMode);
+            // Eye-depth occlusion: shaders convert hw_depth → eye_dist via near/hwDepth.
+            // Set globally so GizmoOccluded materials (not managed by _ppMat) also get it.
+            Shader.SetGlobalFloat("_BabyBlocksCamNear", mainCam.nearClipPlane);
             // Mask and depth copy are both camera-pixel-sized (mainCam.pixelWidth × pixelHeight).
             // The HDR intermediate buffer that CameraTarget resolves to in deferred+HDR mode is
             // ALSO camera-pixel-sized, so the Blit maps 1:1 with no scale or offset shift.
@@ -1541,11 +1543,10 @@ namespace BabyBlocks
             m.color = color;
             if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", color);
             m.renderQueue = queue;
-            // LessEqual gives correct depth-testing among gizmo parts.  (_overlayCam clears its own
-            // depth buffer, so the whole gizmo still renders on top of the scene.)  Note: built-in
-            // Unlit/Color hardcodes ZTest LEqual and ignores this _ZTest set — it's the default we
-            // want anyway, and kept explicit in case the shader fallback (Standard) honors it.
-            m.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.LessEqual);
+            // Unlit/Color hardcodes ZTest LEqual and ZWrite On — correct for depth-testing among
+            // gizmo parts. GizmoOccluded (queue 4001) uses ZTest LessEqual against the depth
+            // written here, so only the frontmost gizmo part at each pixel can draw its checker.
+            m.SetInt("_ZTest", (int)CompareFunction.LessEqual);
             return m;
         }
 

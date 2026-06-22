@@ -1,7 +1,9 @@
 // Drawn for each gizmo handle as a SECOND pass (queue 4001, after the solid queue-4000 pass).
 // Shows a 4×4 checkerboard only where the handle is behind scene geometry.
-// Uses _BabyBlocksDepthCopy (captured from mainCam at AfterEverything) instead of GPU ZTest
-// so it never triggers on pixels where another gizmo part is in front — only scene geometry counts.
+// ZTest LessEqual against the gizmo cam's depth buffer (written by the solid pass at queue 4000)
+// ensures only the frontmost gizmo part at each pixel can draw — a part hidden behind another
+// gizmo part produces a smaller hw depth value and fails the test. Scene geometry occlusion is
+// then tested in the shader via _BabyBlocksDepthCopy.
 Shader "Hidden/BabyBlocks/GizmoOccluded"
 {
     Properties
@@ -15,12 +17,7 @@ Shader "Hidden/BabyBlocks/GizmoOccluded"
     {
         Tags { "Queue" = "Overlay" }
         ZWrite Off
-        // ZTest LessEqual: only draw where this fragment is the frontmost gizmo part at this pixel.
-        // The solid pass (queue 4000) already wrote gizmo depth; occluded (queue 4001) only passes
-        // where its depth equals the solid depth (same mesh/transform = bit-identical clip depth).
-        // Gizmo parts behind other gizmo parts fail ZTest and produce no checker — only scene
-        // geometry occlusion (tested in the shader via _BabyBlocksDepthCopy) triggers it.
-        ZTest LessEqual
+        ZTest LEqual
         Blend SrcAlpha OneMinusSrcAlpha
 
         Pass
@@ -32,6 +29,7 @@ Shader "Hidden/BabyBlocks/GizmoOccluded"
 
             fixed4    _Color;
             sampler2D _BabyBlocksDepthCopy;
+            float     _BabyBlocksCamNear; // mainCam.nearClipPlane, set globally each frame
 
             struct appdata { float4 vertex : POSITION; };
             struct v2f
@@ -63,13 +61,16 @@ Shader "Hidden/BabyBlocks/GizmoOccluded"
                 float sceneD = tex2D(_BabyBlocksDepthCopy, screenUV).r;
                 float fragD  = i.depth;
 
-                // Occluded = gizmo fragment is behind scene geometry.
-                // With reversed Z, larger value = closer to camera.
-                // sceneD > fragD + bias → scene is clearly in front of gizmo → gizmo occluded.
+                // Convert to approximate eye distance via eye ≈ near/hwDepth (reversed-Z).
+                // overlayCam.near == mainCam.near (synced in SyncCamToMain), so the
+                // conversion is consistent for both fragD (overlayCam) and sceneD (mainCam).
+                // 5 cm tolerance is distance-independent and absorbs sampling jitter.
                 #if defined(UNITY_REVERSED_Z)
-                    bool occluded = sceneD > fragD + 0.001;
+                    float sceneEye = _BabyBlocksCamNear / max(sceneD, 1e-7);
+                    float fragEye  = _BabyBlocksCamNear / max(fragD,  1e-7);
+                    bool occluded  = sceneEye < fragEye - 0.05;
                 #else
-                    bool occluded = sceneD < fragD - 0.001;
+                    bool occluded = sceneD < fragD - fragD * 0.01;
                 #endif
 
                 if (!occluded) discard;

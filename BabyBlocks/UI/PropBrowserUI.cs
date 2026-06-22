@@ -22,7 +22,6 @@ namespace BabyBlocks.UI
         static TopBarPanel         _topBar;
         static PropLibraryPanel    _panel;
         static FileBrowserPanel    _fileBrowser;
-        static GizmoSettingsPanel  _gizmoSettings;
 
         public static void Init()
         {
@@ -38,10 +37,9 @@ namespace BabyBlocks.UI
             _uiBase = UniversalUI.RegisterUI<PropBrowserUIBase>("BabyBlocks.PropBrowser", OnUpdate);
             try
             {
-                _topBar        = new TopBarPanel(_uiBase);
-                _panel         = new PropLibraryPanel(_uiBase);
-                _fileBrowser   = new FileBrowserPanel(_uiBase);
-                _gizmoSettings = new GizmoSettingsPanel(_uiBase);
+                _topBar      = new TopBarPanel(_uiBase);
+                _panel       = new PropLibraryPanel(_uiBase);
+                _fileBrowser = new FileBrowserPanel(_uiBase);
                 Ready = true;
                 MelonLogger.Msg("[BabyBlocks] Prop browser UI ready.");
             }
@@ -1372,6 +1370,8 @@ namespace BabyBlocks.UI
 
         // ---- Materials mode tick ----
 
+        static float _matDebugLogTime = float.MinValue;
+
         void TickMaterialsMode()
         {
             var mats = GetPanelMaterials();
@@ -1393,6 +1393,18 @@ namespace BabyBlocks.UI
                 Material mat = null;
                 if (!string.IsNullOrEmpty(entry.materialName))
                     mat = MaterialCatalog.ResolveMaterialByName(entry.materialName);
+
+                float now = Time.realtimeSinceStartup;
+                if (now - _matDebugLogTime > 2f &&
+                    !string.IsNullOrEmpty(entry.materialName) &&
+                    entry.materialName.StartsWith("[MicroSplat]", StringComparison.Ordinal))
+                {
+                    _matDebugLogTime = now;
+                    MelonLogger.Msg($"[BB:MatSphere] Tick: '{entry.materialName}' id={entry.id} " +
+                        $"mat={(mat == null ? "null" : mat.name)} " +
+                        $"inSeen={PropPreviewRenderer.IsMaterialSeen(entry.id)} " +
+                        $"hasReady={PropPreviewRenderer.IsMaterialReady(entry.id)}");
+                }
 
                 if (mat != null)
                     PropPreviewRenderer.RequestMaterialSphere(entry.id, mat);

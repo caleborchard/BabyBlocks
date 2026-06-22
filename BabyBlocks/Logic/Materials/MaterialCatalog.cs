@@ -84,14 +84,51 @@ namespace BabyBlocks
             }
         }
 
+        // Timestamp of the last AddMicroSplatLayerMaterials() retry attempt when MicroSplatLayerMats
+        // was empty (terrain not loaded at initial scan). Initialized to MinValue so the first call
+        // to EnsureMaterialList always triggers an immediate attempt.
+        static float _microSplatRetryTime = float.MinValue;
+        // Incremented each time AddMicroSplatLayerMaterials completes a full rebuild, so
+        // EnsureMaterialList can detect a rebuild happened and force a full list sort.
+        static int   _microSplatBuildGen  = 0;
+
         internal static void EnsureMaterialList()
         {
+            // If MicroSplat layer materials were never built (terrain wasn't loaded when
+            // EnsureMaterialList first ran), retry AddMicroSplatLayerMaterials on a timer.
+            // On success, force a full list rebuild so the new entries appear in MaterialNames.
+            if (MicroSplatLayerMats.Count == 0)
+            {
+                float now = Time.realtimeSinceStartup;
+                if (now - _microSplatRetryTime >= 1f)
+                {
+                    _microSplatRetryTime = now;
+                    MelonLogger.Msg($"[BB:MicroSplat] EnsureMaterialList retry at t={now:F1}s");
+                    AddMicroSplatLayerMaterials();
+                    MelonLogger.Msg($"[BB:MicroSplat] After retry: MicroSplatLayerMats.Count={MicroSplatLayerMats.Count}");
+                    if (MicroSplatLayerMats.Count > 0)
+                        MaterialVariantTracker.MaterialsLoaded = false;
+                }
+            }
+
             // Run the variant capture before the guard. CaptureSceneVariants is self-rate-limited
             // and on subsequent calls only iterates the small watched-materials set (not all memory).
             int variantsBefore = MaterialVariantTracker.SceneVariantMats.Count;
             MaterialVariantTracker.CaptureSceneVariants();
             if (MaterialVariantTracker.SceneVariantMats.Count != variantsBefore)
                 MaterialVariantTracker.MaterialsLoaded = false; // new variants found — force a list rebuild
+
+            // Even when no full rebuild is needed, check whether MicroSplat layer materials
+            // were GC'd by Unity/Addressables since the last build.  The fast path (all alive)
+            // is just 28 null-checks; the slow path (anyDestroyed) triggers at most once per
+            // destruction cycle and forces a full sort rebuild so entries stay ordered.
+            if (MicroSplatLayerMats.Count > 0)
+            {
+                int gen = _microSplatBuildGen;
+                AddMicroSplatLayerMaterials();
+                if (_microSplatBuildGen != gen)                  // a rebuild happened
+                    MaterialVariantTracker.MaterialsLoaded = false;
+            }
 
             if (MaterialVariantTracker.MaterialsLoaded) return;
             MaterialVariantTracker.MaterialsLoaded = true;
@@ -636,12 +673,14 @@ namespace BabyBlocks
             // Skip our own cached "[MicroSplat] Layer N" materials — refreshing from one of those would
             // just copy stale/destroyed texture references back onto themselves (and onto each other).
             Material baseMat = null;
+            int msCount = 0;
             for (int i = 0; i < allMats.Length && baseMat == null; i++)
             {
                 var m = allMats[i];
                 if (m == null || m.shader == null) continue;
                 if (m.name.StartsWith("[MicroSplat] Layer ", StringComparison.Ordinal)) continue;
                 if (!m.shader.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) continue;
+                msCount++;
                 if (m.HasProperty("_CustomControl0")) baseMat = m;
             }
             for (int i = 0; i < allMats.Length && baseMat == null; i++)
@@ -649,9 +688,14 @@ namespace BabyBlocks
                 var m = allMats[i];
                 if (m == null || m.shader == null) continue;
                 if (m.name.StartsWith("[MicroSplat] Layer ", StringComparison.Ordinal)) continue;
-                if (m.shader.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) baseMat = m;
+                if (m.shader.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) { msCount++; baseMat = m; }
             }
-            if (baseMat == null) return null;
+            if (baseMat == null)
+            {
+                MelonLogger.Msg($"[BB:MicroSplat] FindMicroSplatBaseMaterial: scanned {allMats?.Length ?? 0} materials, found {msCount} MicroSplat-shader mats, none usable as base");
+                return null;
+            }
+            MelonLogger.Msg($"[BB:MicroSplat] FindMicroSplatBaseMaterial: found '{baseMat.name}' (shader: '{baseMat.shader?.name}'), total MicroSplat mats: {msCount}");
 
             // All slots must be blanked per clone; leaving higher slots with original terrain data bleeds through.
             bool useCustom = baseMat.HasProperty("_CustomControl0");
@@ -688,6 +732,7 @@ namespace BabyBlocks
                     return;
                 }
 
+                MelonLogger.Msg($"[BB:MicroSplat] {MicroSplatLayerMats.Count} layer materials destroyed by Unity GC/Addressables — rebuilding.");
                 // One or more cached layer materials were destroyed (e.g. Addressables released
                 // their backing assets during a far-teleport chunk drain). Drop their stale
                 // "[MicroSplat] Layer N" entries — by index, since destroyed Materials can't
@@ -705,6 +750,7 @@ namespace BabyBlocks
                     MaterialByName.Remove(staleName);
                 }
                 MicroSplatLayerMats.Clear();
+                PropPreviewRenderer.InvalidateMicroSplatSpheres();
                 MsActiveControls.Clear();
                 MsBlankControl = null;
                 MsControlProps = null;
@@ -714,7 +760,7 @@ namespace BabyBlocks
                 var baseMat = FindMicroSplatBaseMaterial(out var controlProps);
                 if (baseMat == null)
                 {
-                    MelonLogger.Warning("[PropMetadata] MicroSplat material has no recognized control map properties.");
+                    BBLog.Msg("[PropMetadata] MicroSplat base material not found (terrain may not be loaded yet).");
                     return;
                 }
 
@@ -789,9 +835,12 @@ namespace BabyBlocks
                 }
 
                 if (MicroSplatLayerMats.Count > 0)
-                    BBLog.Msg($"[PropMetadata] Built {MicroSplatLayerMats.Count} MicroSplat layer materials.");
+                {
+                    MelonLogger.Msg($"[BB:MicroSplat] Built {MicroSplatLayerMats.Count} layer materials from '{baseMat.name}'.");
+                    _microSplatBuildGen++;
+                }
                 else
-                    MelonLogger.Warning("[PropMetadata] MicroSplat base material found but no layer materials could be created.");
+                    MelonLogger.Warning("[BB:MicroSplat] Base material found but no layer materials could be created.");
             }
             catch (Exception e)
             {

@@ -34,13 +34,14 @@ Shader "Hidden/BabyBlocks/SelectionOutline"
             #include "UnityCG.cginc"
 
             sampler2D _MainTex;
-            float4    _MainTex_TexelSize;   // set by Blit: (1/w, ±1/h, w, h); y<0 on DX when RT is flipped
-            sampler2D _BabyBlocksDepthCopy; // plain RFloat copy of scene depth
+            float4    _MainTex_TexelSize;    // set by Blit: (1/w, ±1/h, w, h); y<0 on DX when RT is flipped
+            sampler2D _BabyBlocksDepthCopy;  // plain RFloat copy of scene depth
             float4    _OutlineColor;
             float     _OccludedAlpha;
             float     _OutlineWidth;
             float4    _ViewportRect;
             float     _DebugMode;
+            float     _BabyBlocksCamNear;    // mainCam.nearClipPlane, set globally each frame
 
             float4 frag(v2f_img i) : SV_Target
             {
@@ -105,12 +106,21 @@ Shader "Hidden/BabyBlocks/SelectionOutline"
                     (selUV.y - _ViewportRect.y) / _ViewportRect.w
                 );
                 float sceneD = tex2D(_BabyBlocksDepthCopy, depthUV).r;
-                // Bias 0.001: large enough to absorb precision differences between
-                // the mask pass and the depth copy, avoiding false self-occlusion.
+                // Convert raw reversed-Z hardware depth to approximate eye distance
+                // (meters) via eye ≈ near / hwDepth.  This is exact for an infinite
+                // far-plane projection and accurate to <0.1% for any far >> eye_dist.
+                // Comparing in eye-space avoids the _ZBufferParams mismatch: this
+                // CommandBuffer runs on _overlayCam (far=500000) but selDepth/sceneD
+                // were computed against mainCam (different far), so Linear01Depth
+                // would use the wrong params and give a broken comparison.
+                // 5 cm tolerance absorbs depth-texture sampling jitter.
                 #if defined(UNITY_REVERSED_Z)
-                    bool occluded = sceneD > selDepth + 0.001;
+                    float sceneEye = _BabyBlocksCamNear / max(sceneD,    1e-7);
+                    float selEye   = _BabyBlocksCamNear / max(selDepth,  1e-7);
+                    bool occluded  = sceneEye < selEye - 0.05;
                 #else
-                    bool occluded = sceneD < selDepth - 0.001;
+                    // Non-reversed path (rare on DX11): fall back to a relative bias.
+                    bool occluded = sceneD < selDepth - selDepth * 0.01;
                 #endif
 
                 // ── Debug modes ─────────────────────────────────────────────────────

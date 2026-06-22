@@ -7,34 +7,44 @@ public static class BuildBundles
     // Called via: Unity.exe -batchmode -executeMethod BuildBundles.Build
     public static void Build()
     {
-        // Label both shaders into one bundle
         string[] shaderPaths = new[]
         {
             "Assets/Shaders/SelectionMask.shader",
             "Assets/Shaders/SelectionOutline.shader",
             "Assets/Shaders/DepthCapture.shader",
+            "Assets/Shaders/GizmoSolid.shader",
             "Assets/Shaders/GizmoOccluded.shader",
             "Assets/Shaders/GizmoOnTop.shader",
         };
+
+        // Verify every shader exists in the asset database before building.
         foreach (var path in shaderPaths)
         {
-            var importer = AssetImporter.GetAtPath(path);
-            if (importer == null)
+            var obj = AssetDatabase.LoadAssetAtPath<Shader>(path);
+            if (obj == null)
             {
-                Debug.LogError($"[BuildBundles] Could not find asset at {path}");
+                Debug.LogError($"[BuildBundles] Could not load shader at {path}");
                 EditorApplication.Exit(1);
                 return;
             }
-            importer.assetBundleName = "babyblocks_shaders";
-            Debug.Log($"[BuildBundles] Labeled {path} -> babyblocks_shaders");
+            Debug.Log($"[BuildBundles] Verified {path}");
         }
+
+        // Build explicitly via AssetBundleBuild[] so we don't depend on the asset
+        // database label state, which is unreliable across batchmode runs.
+        var build = new AssetBundleBuild
+        {
+            assetBundleName  = "babyblocks_shaders",
+            assetNames       = shaderPaths,
+        };
 
         string bundleOut = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "BundleOutput"));
         Directory.CreateDirectory(bundleOut);
-        Debug.Log($"[BuildBundles] Building bundles to {bundleOut}");
+        Debug.Log($"[BuildBundles] Building bundle to {bundleOut}");
 
         var manifest = BuildPipeline.BuildAssetBundles(
             bundleOut,
+            new[] { build },
             BuildAssetBundleOptions.None,
             BuildTarget.StandaloneWindows64);
 
@@ -49,14 +59,11 @@ public static class BuildBundles
         if (!File.Exists(src))
         {
             string[] files = Directory.GetFiles(bundleOut);
-            Debug.LogError($"[BuildBundles] Bundle file not found at {src}. Files in output: {string.Join(", ", files)}");
+            Debug.LogError($"[BuildBundles] Bundle file not found at {src}. Files: {string.Join(", ", files)}");
             EditorApplication.Exit(1);
             return;
         }
 
-        // Copy into the mod project
-        // Application.dataPath = ShaderProject/Assets → go up twice to reach the repo root,
-        // then into BabyBlocks/ (the mod subfolder) which is distinct from the ShaderProject.
         string dest = Path.GetFullPath(Path.Combine(
             Application.dataPath, "..", "..", "BabyBlocks", "Shaders", "babyblocks_shaders.bundle"));
         Directory.CreateDirectory(Path.GetDirectoryName(dest));
