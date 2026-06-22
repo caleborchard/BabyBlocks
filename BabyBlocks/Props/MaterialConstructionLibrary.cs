@@ -15,6 +15,7 @@ namespace BabyBlocks
         public string name = "New Material";
         public string materialName = "";
         public string surfaceType = "";
+        public bool sunglassesNeeded;
     }
 
     // Thin facade over PropMetadataPanel's material construction storage, kept so

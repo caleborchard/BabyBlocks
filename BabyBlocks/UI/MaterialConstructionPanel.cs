@@ -352,6 +352,14 @@ namespace BabyBlocks
                 GUILayout.EndScrollView();
             }
 
+            GUILayout.Space(8f);
+            bool newSunglasses = GUILayout.Toggle(entry.sunglassesNeeded, "Sunglasses Needed");
+            if (newSunglasses != entry.sunglassesNeeded)
+            {
+                entry.sunglassesNeeded = newSunglasses;
+                MarkDirty();
+            }
+
             GUILayout.Space(12f);
             if (GUILayout.Button("Delete this material"))
             {
@@ -537,6 +545,16 @@ namespace BabyBlocks
 
             PropInstanceServices.ApplySurfaceType(leo, entry.surfaceType);
             leo.materialConstructionId = entry.id;
+
+            var existingChecker = leo.GetComponent<BbSunglassesChecker>();
+            if (entry.sunglassesNeeded)
+            {
+                if (existingChecker == null) leo.gameObject.AddComponent<BbSunglassesChecker>();
+            }
+            else
+            {
+                if (existingChecker != null) UnityEngine.Object.DestroyImmediate(existingChecker);
+            }
 
             if (pushHistory)
             {

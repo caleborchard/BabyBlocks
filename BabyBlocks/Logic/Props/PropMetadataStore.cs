@@ -15,7 +15,7 @@ namespace BabyBlocks
     internal static class PropMetadataStore
     {
         public const string NoOverrideLabel = "(no override)";
-        const byte PmdVersion = 2;
+        const byte PmdVersion = 3;
 
         internal static readonly Dictionary<string, PropExtraInfo> _byId = new(StringComparer.Ordinal);
         internal static bool _loaded;
@@ -658,6 +658,9 @@ namespace BabyBlocks
                 w.Write(mc.name ?? "");
                 w.Write(mc.materialName ?? "");
                 w.Write(mc.surfaceType ?? "");
+                byte mcFlags = 0;
+                if (mc.sunglassesNeeded) mcFlags |= 0x01;
+                w.Write(mcFlags);
             }
         }
 
@@ -749,13 +752,19 @@ namespace BabyBlocks
                 int mcCount = r.ReadInt32();
                 for (int i = 0; i < mcCount; i++)
                 {
-                    _materialConstructions.Add(new MaterialConstructionEntry
+                    var mc = new MaterialConstructionEntry
                     {
                         id = r.ReadInt32(),
                         name = r.ReadString(),
                         materialName = r.ReadString(),
                         surfaceType = r.ReadString()
-                    });
+                    };
+                    if (version >= 3)
+                    {
+                        byte mcFlags = r.ReadByte();
+                        mc.sunglassesNeeded = (mcFlags & 0x01) != 0;
+                    }
+                    _materialConstructions.Add(mc);
                 }
             }
             ReconcileMaterialConstructionIds();
@@ -862,7 +871,9 @@ namespace BabyBlocks
                 sb.Append("      \"id\": ").Append(mc.id).Append(",\n");
                 AppendJsonField(sb, "name", mc.name, 6).Append(",\n");
                 AppendJsonField(sb, "materialName", mc.materialName, 6).Append(",\n");
-                AppendJsonField(sb, "surfaceType", mc.surfaceType, 6).Append("\n");
+                AppendJsonField(sb, "surfaceType", mc.surfaceType, 6);
+                if (mc.sunglassesNeeded) sb.Append(",\n      \"sunglassesNeeded\": true");
+                sb.Append("\n");
                 sb.Append("    }");
                 if (i < data.materialConstructions.Count - 1) sb.Append(",");
                 sb.Append("\n");
@@ -994,7 +1005,8 @@ namespace BabyBlocks
                                 id = ExtractInt(mcObj, "id", -1),
                                 name = ExtractString(mcObj, "name"),
                                 materialName = ExtractString(mcObj, "materialName"),
-                                surfaceType = ExtractString(mcObj, "surfaceType")
+                                surfaceType = ExtractString(mcObj, "surfaceType"),
+                                sunglassesNeeded = ExtractBool(mcObj, "sunglassesNeeded")
                             });
                             j = mcObjEnd + 1;
                         }

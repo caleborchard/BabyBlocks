@@ -167,6 +167,7 @@ namespace BabyBlocks
             ClassInjector.RegisterTypeInIl2Cpp<GhostCollisionCutter>();
             ClassInjector.RegisterTypeInIl2Cpp<SpawnPointMarker>();
             ClassInjector.RegisterTypeInIl2Cpp<OverlayCamPreRenderHook>();
+            ClassInjector.RegisterTypeInIl2Cpp<BbSunglassesChecker>();
 
             new HarmonyLib.Harmony("BabyBlocks.Patches").PatchAll();
             UI.PropBrowserUI.Init();
@@ -421,6 +422,56 @@ namespace BabyBlocks
                 -25f + leo.hatOffsetRot.x, leo.hatOffsetRot.y, leo.hatOffsetRot.z);
             if (!__instance.inCutscene) hatTrans.parent = null;
             return false;
+        }
+    }
+
+    // Force native SunglassesChecker props visible while in editor cursor mode.
+    // The native type controls visibility via a Renderer[] field named "rends" and uses
+    // change-detection, so it won't re-hide on its own when we exit editor mode — we
+    // must actively reset it on the first frame after leaving editor.
+    [HarmonyPatch(typeof(SunglassesChecker), "Update")]
+    class SunglassesCheckerUpdatePatch
+    {
+        static readonly System.Collections.Generic.HashSet<int> _forcedVisible = new();
+
+        static void Postfix(SunglassesChecker __instance)
+        {
+            bool editorMode = FlyCamController.FlyCamActive && FlyCamController.CursorMode;
+            int iid = __instance.GetInstanceID();
+
+            if (editorMode)
+            {
+                _forcedVisible.Add(iid);
+                SetRends(__instance, true);
+            }
+            else if (_forcedVisible.Remove(iid))
+            {
+                // First frame back in game — native's cached state is stale; force-correct it.
+                bool sunglasses = BbSunglassesChecker.IsWearingSunglasses();
+                SetRends(__instance, sunglasses);
+            }
+        }
+
+        static void SetRends(SunglassesChecker instance, bool enabled)
+        {
+            try
+            {
+                var field = instance.GetIl2CppType().GetField("rends");
+                if (field != null)
+                {
+                    var arr = field.GetValue(instance.Cast<Il2CppSystem.Object>())
+                                  ?.TryCast<Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray<Renderer>>();
+                    if (arr != null)
+                    {
+                        foreach (var r in arr)
+                            if (r != null) r.enabled = enabled;
+                        return;
+                    }
+                }
+            }
+            catch { }
+            foreach (var r in instance.GetComponentsInChildren<Renderer>(true))
+                if (r != null) r.enabled = enabled;
         }
     }
 }
