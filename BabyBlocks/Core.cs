@@ -166,6 +166,7 @@ namespace BabyBlocks
             ClassInjector.RegisterTypeInIl2Cpp<GizmoHandle>();
             ClassInjector.RegisterTypeInIl2Cpp<GhostCollisionCutter>();
             ClassInjector.RegisterTypeInIl2Cpp<SpawnPointMarker>();
+            ClassInjector.RegisterTypeInIl2Cpp<OverlayCamPreRenderHook>();
 
             new HarmonyLib.Harmony("BabyBlocks.Patches").PatchAll();
             UI.PropBrowserUI.Init();
@@ -340,8 +341,15 @@ namespace BabyBlocks
     {
         static void Postfix(CinemachineBrain __instance)
         {
-            if (BaseMapController.BaseMapEnabled) return;
-            __instance.ManualUpdate();
+            // In base-map-disabled mode LateUpdate alone doesn't drive Camera.main;
+            // ManualUpdate finishes the job. Either way, by the time we reach here
+            // the camera transform for this frame is final.
+            if (!BaseMapController.BaseMapEnabled)
+                __instance.ManualUpdate();
+
+            // Re-record the screen-space outline CommandBuffer with the now-current
+            // Camera.main matrices so the mask aligns with the scene render.
+            GizmoRenderer.RefreshSSBufferMatrices();
         }
     }
 

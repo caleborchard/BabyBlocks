@@ -211,6 +211,16 @@ namespace BabyBlocks
                 && Input.GetKeyDown(KeyCode.M))
                 MaterialInspectorPanel.Toggle();
 
+            if (Input.GetKeyDown(KeyCode.F5))
+                GizmoRenderer.LogDepthDiag();
+
+            if (Input.GetKeyDown(KeyCode.F6))
+            {
+                GizmoRenderer.OutlineDebugMode = (GizmoRenderer.OutlineDebugMode + 1) % 3;
+                MelonLoader.MelonLogger.Msg($"[SS-Debug] OutlineDebugMode={GizmoRenderer.OutlineDebugMode} " +
+                    $"(0=normal  1=force-dark  2=sceneD-grayscale)");
+            }
+
             if (FlyCamActive && CursorMode)
                 LevelEditor.Update();
         }

@@ -704,12 +704,14 @@
 
 	<ItemGroup>
 		<EmbeddedResource Include="Props\prop_metadata.bin" Condition="Exists('Props\prop_metadata.bin')" />
+		<EmbeddedResource Include="Shaders\babyblocks_shaders.bundle" Condition="Exists('Shaders\babyblocks_shaders.bundle')" />
 	</ItemGroup>
 
 	<ItemGroup>
 		<Compile Include="Core.cs" />
 		<Compile Include="Components\LevelEditorObject.cs" />
 		<Compile Include="Components\GizmoHandle.cs" />
+		<Compile Include="Components\OverlayCamPreRenderHook.cs" />
 		<Compile Include="Editor\FlyCamController.cs" />
 		<Compile Include="Editor\GhostCube.cs" />
 		<Compile Include="Editor\SpawnPoint.cs" />
@@ -742,6 +744,7 @@
 		<Compile Include="Props\MaterialConstructionLibrary.cs" />
 		<Compile Include="Logic\SaveLoad\LevelSaveLoad.cs" />
 		<Compile Include="UI\FileBrowserPanel.cs" />
+		<Compile Include="UI\GizmoSettingsPanel.cs" />
 		<Compile Include="UI\SaveLoadWindow.cs" />
 		<Compile Include="UI\GuiStyleHelpers.cs" />
 		<Compile Include="UI\PropPalette.cs" />

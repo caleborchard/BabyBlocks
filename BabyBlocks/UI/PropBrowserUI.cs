@@ -18,10 +18,11 @@ namespace BabyBlocks.UI
         public static bool IsTypingInUI => (_panel != null && _panel.IsSearchFocused)
                                         || (_fileBrowser != null && _fileBrowser.IsTypingInUI);
 
-        static UIBase           _uiBase;
-        static TopBarPanel      _topBar;
-        static PropLibraryPanel _panel;
-        static FileBrowserPanel _fileBrowser;
+        static UIBase              _uiBase;
+        static TopBarPanel         _topBar;
+        static PropLibraryPanel    _panel;
+        static FileBrowserPanel    _fileBrowser;
+        static GizmoSettingsPanel  _gizmoSettings;
 
         public static void Init()
         {
@@ -37,9 +38,10 @@ namespace BabyBlocks.UI
             _uiBase = UniversalUI.RegisterUI<PropBrowserUIBase>("BabyBlocks.PropBrowser", OnUpdate);
             try
             {
-                _topBar      = new TopBarPanel(_uiBase);
-                _panel       = new PropLibraryPanel(_uiBase);
-                _fileBrowser = new FileBrowserPanel(_uiBase);
+                _topBar        = new TopBarPanel(_uiBase);
+                _panel         = new PropLibraryPanel(_uiBase);
+                _fileBrowser   = new FileBrowserPanel(_uiBase);
+                _gizmoSettings = new GizmoSettingsPanel(_uiBase);
                 Ready = true;
                 MelonLogger.Msg("[BabyBlocks] Prop browser UI ready.");
             }

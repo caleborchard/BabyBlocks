@@ -48,15 +48,46 @@ namespace BabyBlocks
         static Material[] _planeMats, _planeHoverMats;
         static Material _freeMat, _freeHoverMat;
         static Material _freeRotMat, _freeRotHoverMat;
+        // Occluded (checker) pass for each gizmo handle — drawn at queue 4001, after the solid
+        // queue-4000 pass. Created in LoadScreenSpaceShaders() once the bundle is available.
+        static Material[] _occMats, _planeOccMats;
+        static Material   _freeOccMat;
 
-        // Stencil outline: shell cleared to 0, prop footprint marked 1 (ZTest=Always so occluded
-        // props still mark), then shell drawn only where stencil=0 — giving a ring, always on top.
-        const float OutlineThickness = 0.03f;
+        // Stencil outline: shell cleared to 0, prop footprint marked 1, then shell drawn in two
+        // depth passes — LessEqual (solid visible ring) and Greater (semi-transparent through-wall
+        // ring) — by toggling unity_GUIZTestMode between draws. No custom shader needed.
+        public static float OutlineThickness    = 0.03f;
+        public static float OutlineOccludedAlpha = 0.35f; // 0 = invisible through walls, 1 = full color
+        public static float OutlineWidth         = 2.0f;  // pixels; controls SS outline border thickness
+        public static int   OutlineDebugMode     = 0;     // 0=normal  1=force-dark  2=sceneD grayscale
         static Material _stencilClearMat;
         static Material _stencilMarkMat;
-        static Material _outlineMat;
+        static Material _outlineMat;     // visible ring (ZTest LessEqual)
+        static Material _outlineOccMat;  // through-wall ring (ZTest Greater, low alpha)
         static CommandBuffer _outlineBuffer;
         static Camera _outlineCameraTarget;
+        static CommandBuffer _gizmoZTestBuffer; // sets unity_GUIZTestMode=Always before overlay cam geometry pass
+
+        // Screen-space outline: 1px post-process edge, UE4-style checker for occluded regions.
+        // Requires babyblocks_shaders.bundle embedded in the assembly (built via ShaderProject).
+        // Falls back to the 3D stencil shell above if the bundle is missing or fails to load.
+        static Material _maskMat;         // Hidden/BabyBlocks/SelectionMask  — renders objects into mask RT
+        static Material _ppMat;           // Hidden/BabyBlocks/SelectionOutline — post-process composite
+        static Material _depthCaptureMat; // Hidden/BabyBlocks/DepthCapture — copies depth to plain RFloat RT
+        static RenderTexture _depthCopyRT; // plain RFloat copy of scene depth; set on _ppMat once created
+        static CommandBuffer _depthCaptureBuffer; // attached to mainCam at AfterEverything
+        static Camera _depthCaptureCameraTarget;
+        static readonly int _maskRTId         = Shader.PropertyToID("_BabyBlocks_SelectionMaskRT");
+        static readonly int _depthCopyTexId   = Shader.PropertyToID("_BabyBlocksDepthCopy");
+        static CommandBuffer _ssBuffer;
+        static Camera _ssCameraTarget;
+        // Cached selection — RefreshSSBufferMatrices() re-records _ssBuffer with
+        // fresh Camera.main matrices after Cinemachine LateUpdate has run.
+        static IReadOnlyList<LevelEditorObject> _ssLastSelection;
+
+        static bool  _depthDiagPending;
+
+        public static bool ScreenSpaceShadersLoaded => _maskMat != null && _ppMat != null;
 
         static bool    _outlineTranslateDrag;
         static Vector3 _outlineTranslateDelta;
@@ -76,6 +107,7 @@ namespace BabyBlocks
             public Vector3 position;
             public Quaternion rotation;
             public Vector3 scale;      // world (lossy) scale — invalidates when parent scales
+            public float thickness;
             public Vector3[] worldVerts;
             public int[] tris;
             public Mesh mesh;
@@ -89,6 +121,11 @@ namespace BabyBlocks
         static readonly List<Mesh> _remoteOutlineShells = new();
         static readonly List<(Mesh mesh, Matrix4x4 matrix, int subMeshCount)> _remoteOutlineMarks = new();
         static GameObject _root, _arrowHandles, _ringHandles;
+        // Single overlay camera (depth=100, ClearFlags.Depth). It is the final camera, so it
+        // writes to the real backbuffer. ClearFlags.Depth clears only depth (keeps mainCam's
+        // composited scene color), giving the gizmo its own fresh depth buffer: the whole gizmo
+        // renders on top of the scene while still depth-testing among its own parts. The SS
+        // outline blits at BeforeForwardOpaque (over the scene, under the gizmo geometry pass).
         static Camera _overlayCam;
         static Vector3 _pivotPos;
         static bool _pivotOverrideActive;
@@ -125,7 +162,13 @@ namespace BabyBlocks
             InitMeshes();
             InitMaterials();
             BuildColliders();
+            // Render order (top → bottom): gizmo, outline, props — all on the one overlay camera.
+            // ClearFlags.Depth: keep mainCam's composited color, clear depth so the gizmo sits on
+            // top of the scene with correct internal depth. The SS outline blit (BeforeForwardOpaque)
+            // draws over the scene color before the gizmo geometry pass draws on top of it.
             _overlayCam = BuildCam(100f, 500000f, CameraClearFlags.Depth);
+            AttachGizmoZTestBuffer(_overlayCam);
+            LoadScreenSpaceShaders();
         }
 
         public static void Sync(IReadOnlyList<LevelEditorObject> selection, LevelEditorObject primary,
@@ -179,14 +222,17 @@ namespace BabyBlocks
                 _planeHandles[pi].localPosition = (dirA + dirB) * PlaneSizeMove * 0.5f;
             }
 
-            if (_overlayCam != null)
-            {
-                _overlayCam.transform.SetPositionAndRotation(mainCam.transform.position, mainCam.transform.rotation);
-                _overlayCam.fieldOfView   = mainCam.fieldOfView;
-                _overlayCam.aspect        = mainCam.aspect;
-                _overlayCam.nearClipPlane = mainCam.nearClipPlane;
-                _overlayCam.rect          = mainCam.rect;
-            }
+            SyncCamToMain(_overlayCam, mainCam);
+        }
+
+        static void SyncCamToMain(Camera cam, Camera mainCam)
+        {
+            if (cam == null) return;
+            cam.transform.SetPositionAndRotation(mainCam.transform.position, mainCam.transform.rotation);
+            cam.fieldOfView   = mainCam.fieldOfView;
+            cam.aspect        = mainCam.aspect;
+            cam.nearClipPlane = mainCam.nearClipPlane;
+            cam.rect          = mainCam.rect;
         }
 
         // WARNING: Camera recovery — modify with caution.
@@ -201,7 +247,24 @@ namespace BabyBlocks
         public static void EnsureCamera()
         {
             if (_root != null && _overlayCam == null)
+            {
                 _overlayCam = BuildCam(100f, 500000f, CameraClearFlags.Depth);
+                _gizmoZTestBuffer = null; // old buffer was on the destroyed cam; rebuild below
+                AttachGizmoZTestBuffer(_overlayCam);
+            }
+        }
+
+        static void AttachGizmoZTestBuffer(Camera cam)
+        {
+            if (cam == null || _gizmoZTestBuffer != null) return;
+            _gizmoZTestBuffer = new CommandBuffer { name = "BabyBlocks_GizmoZTest" };
+            // UI/Default shaders (the freeRot sphere) use ZTest [unity_GUIZTestMode], which is
+            // otherwise uninitialized on a custom camera.  The gizmo cam clears its depth buffer,
+            // so LessEqual gives correct depth-testing among gizmo parts while the whole gizmo
+            // still sits on top of the scene (its depth starts fresh).
+            _gizmoZTestBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
+            cam.AddCommandBuffer(CameraEvent.BeforeForwardOpaque, _gizmoZTestBuffer);
+            MelonLoader.MelonLogger.Msg($"[GizmoRenderer] Attached GizmoZTest buffer to {cam.name}");
         }
 
         // Some cached gizmo meshes/materials (_mats, _freeMat, _coneTipMesh, the outline
@@ -216,13 +279,28 @@ namespace BabyBlocks
         {
             InitMeshes();
             InitMaterials();
+            // Re-create screen-space materials if they were destroyed by asset cleanup.
+            // The shaders survive (Unload(false)), so just recreate the materials.
+            if (_maskMat == null || _ppMat == null)
+                LoadScreenSpaceShaders();
+            // Re-create gizmo occluded materials if they were separately destroyed.
+            // The shader reference stays alive; only the material wrapper gets GC'd.
+            if (_occMats == null && _maskMat != null)
+            {
+                var occShader = Shader.Find("Hidden/BabyBlocks/GizmoOccluded");
+                if (occShader != null) BuildGizmoOccMats(occShader);
+            }
         }
 
         public static void SetActive(bool on)
         {
             if (_root       != null) _root.SetActive(on);
             if (_overlayCam != null) _overlayCam.enabled = on;
-            if (!on) DetachOutlineBuffer();
+            if (!on)
+            {
+                DetachOutlineBuffer();
+                DetachSSBuffer();
+            }
         }
 
         static void DetachOutlineBuffer()
@@ -232,6 +310,393 @@ namespace BabyBlocks
                 _outlineCameraTarget.RemoveCommandBuffer(CameraEvent.AfterEverything, _outlineBuffer);
                 _outlineCameraTarget = null;
             }
+        }
+
+        static void DetachSSBuffer()
+        {
+            if (_ssCameraTarget != null && _ssBuffer != null)
+            {
+                _ssCameraTarget.RemoveCommandBuffer(CameraEvent.BeforeForwardAlpha, _ssBuffer);
+                _ssCameraTarget = null;
+            }
+            _ssLastSelection = null;
+        }
+
+
+        static void LoadScreenSpaceShaders()
+        {
+            try
+            {
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                // Resource name: RootNamespace + "." + path with backslashes replaced by dots
+                using var stream = asm.GetManifestResourceStream("BabyBlocks.Shaders.babyblocks_shaders.bundle");
+                if (stream == null)
+                {
+                    // Log all available resources so we can diagnose naming mismatches
+                    var names = asm.GetManifestResourceNames();
+                    MelonLoader.MelonLogger.Warning(
+                        $"[BabyBlocks] babyblocks_shaders.bundle not in embedded resources. Found: {string.Join(", ", names)}");
+                    return;
+                }
+
+                var bytes = new byte[stream.Length];
+                stream.Read(bytes, 0, bytes.Length);
+                var bundle = AssetBundle.LoadFromMemory(bytes);
+                if (bundle == null)
+                {
+                    MelonLoader.MelonLogger.Warning("[BabyBlocks] AssetBundle.LoadFromMemory returned null.");
+                    return;
+                }
+
+                Shader maskShader = null, ppShader = null, depthCaptureShader = null;
+                Shader gizmoOccShader = null;
+                var allAssets = bundle.LoadAllAssets();
+                if (allAssets != null)
+                {
+                    foreach (var asset in allAssets)
+                    {
+                        if (asset == null) continue;
+                        var s = asset.TryCast<Shader>();
+                        if (s == null) continue;
+                        if (s.name.Contains("SelectionMask"))    maskShader         = s;
+                        if (s.name.Contains("SelectionOutline")) ppShader           = s;
+                        if (s.name.Contains("DepthCapture"))     depthCaptureShader = s;
+                        if (s.name.Contains("GizmoOccluded"))    gizmoOccShader     = s;
+                    }
+                }
+                bundle.Unload(false);
+
+                if (maskShader == null || ppShader == null || depthCaptureShader == null)
+                {
+                    MelonLoader.MelonLogger.Warning(
+                        $"[BabyBlocks] Could not find shaders in bundle. " +
+                        $"mask={maskShader?.name ?? "null"} pp={ppShader?.name ?? "null"} " +
+                        $"depthCapture={depthCaptureShader?.name ?? "null"}");
+                    return;
+                }
+
+                _maskMat         = new Material(maskShader)         { name = "BabyBlocks_SelectionMask" };
+                _ppMat           = new Material(ppShader)           { name = "BabyBlocks_SelectionOutline" };
+                _depthCaptureMat = new Material(depthCaptureShader) { name = "BabyBlocks_DepthCapture" };
+                _ppMat.SetColor("_OutlineColor",  new Color(1f, 0.85f, 0.1f, 1f));
+                _ppMat.SetFloat("_OccludedAlpha", OutlineOccludedAlpha);
+
+                // Create the plain RFloat depth copy RT (viewport-sized; recreated in
+                // AttachDepthCaptureBuffer if the camera pixel size differs).
+                _depthCopyRT = new RenderTexture(1630, 1080, 0, RenderTextureFormat.RFloat)
+                {
+                    name = "BabyBlocks_DepthCopy",
+                    filterMode = FilterMode.Point,
+                };
+                _depthCopyRT.Create();
+                _ppMat.SetTexture(_depthCopyTexId, _depthCopyRT);
+                // Expose depth copy globally so GizmoOccluded materials can all sample it
+                // without needing SetTexture on each one individually.
+                Shader.SetGlobalTexture("_BabyBlocksDepthCopy", _depthCopyRT);
+
+                if (gizmoOccShader != null)
+                    BuildGizmoOccMats(gizmoOccShader);
+                else
+                    MelonLoader.MelonLogger.Warning("[BabyBlocks] GizmoOccluded shader not found in bundle.");
+
+                MelonLoader.MelonLogger.Msg($"[BabyBlocks] Screen-space outline shaders loaded. " +
+                    $"maskMat={_maskMat != null} ppMat={_ppMat != null} " +
+                    $"depthCaptureMat={_depthCaptureMat != null} gizmoOccMats={_occMats != null}");
+            }
+            catch (Exception ex)
+            {
+                MelonLoader.MelonLogger.Warning($"[BabyBlocks] Failed to load screen-space shaders: {ex}");
+            }
+        }
+
+        static void BuildGizmoOccMats(Shader shader)
+        {
+            const int OccQueue = 4001; // one above the solid gizmo pass (4000)
+
+            var axisColors = new Color[]
+            {
+                new Color(0.90f, 0.20f, 0.20f),
+                new Color(0.20f, 0.80f, 0.20f),
+                new Color(0.20f, 0.45f, 1.00f),
+            };
+            var planeColors = new Color[]
+            {
+                axisColors[2], // XY
+                axisColors[0], // YZ
+                axisColors[1], // XZ
+            };
+
+            _occMats = new Material[3];
+            for (int i = 0; i < 3; i++)
+                _occMats[i] = MakeOccMat(shader, axisColors[i], OccQueue);
+
+            _freeOccMat = MakeOccMat(shader, new Color(0.72f, 0.72f, 0.72f), OccQueue);
+
+            _planeOccMats = new Material[3];
+            for (int i = 0; i < 3; i++)
+                _planeOccMats[i] = MakeOccMat(shader, planeColors[i], OccQueue);
+        }
+
+        static Material MakeOccMat(Shader shader, Color color, int queue)
+        {
+            var m = new Material(shader) { renderQueue = queue };
+            m.SetColor("_Color", color);
+            return m;
+        }
+
+        // Call from input handler (F5) to dump the full gizmo/outline pipeline snapshot to the log
+        // on the next recorded SS frame (see DumpDiagnostics). Requires an active selection.
+        internal static void LogDepthDiag() => _depthDiagPending = true;
+
+        static void DetachDepthCaptureBuffer()
+        {
+            if (_depthCaptureCameraTarget != null && _depthCaptureBuffer != null)
+            {
+                _depthCaptureCameraTarget.RemoveCommandBuffer(CameraEvent.AfterEverything, _depthCaptureBuffer);
+                _depthCaptureCameraTarget = null;
+            }
+        }
+
+        // Attaches a CommandBuffer to mainCam that copies the scene depth into _depthCopyRT.
+        // Runs at AfterEverything so _CameraDepthTexture is correctly bound by Unity's pipeline.
+        // The capture mat uses UNITY_DECLARE_DEPTH_TEXTURE which resolves the right DX11 sampler
+        // type — this is why we can't just do Material.SetTexture with the deferred depth directly.
+        static void AttachDepthCaptureBuffer(Camera mainCam)
+        {
+            DetachDepthCaptureBuffer();
+            if (_depthCaptureMat == null || _depthCopyRT == null) return;
+
+            // Recreate RT if camera pixel size changed
+            if (_depthCopyRT.width != mainCam.pixelWidth || _depthCopyRT.height != mainCam.pixelHeight)
+            {
+                _depthCopyRT.Release();
+                _depthCopyRT.width  = mainCam.pixelWidth;
+                _depthCopyRT.height = mainCam.pixelHeight;
+                _depthCopyRT.Create();
+                _ppMat.SetTexture(_depthCopyTexId, _depthCopyRT);
+                Shader.SetGlobalTexture("_BabyBlocksDepthCopy", _depthCopyRT);
+            }
+
+            if (_depthCaptureBuffer == null)
+                _depthCaptureBuffer = new CommandBuffer { name = "BabyBlocks_DepthCapture" };
+            else
+                _depthCaptureBuffer.Clear();
+
+            _depthCaptureBuffer.Blit(BuiltinRenderTextureType.None, _depthCopyRT, _depthCaptureMat);
+
+            mainCam.AddCommandBuffer(CameraEvent.AfterEverything, _depthCaptureBuffer);
+            _depthCaptureCameraTarget = mainCam;
+        }
+
+        static void DrawOutlineScreenSpace(IReadOnlyList<LevelEditorObject> selection, Camera mainCam)
+        {
+            DetachSSBuffer();
+
+            if (selection == null || selection.Count == 0 || mainCam == null) return;
+            if (!ScreenSpaceShadersLoaded) return;
+            if (_overlayCam == null) return;
+
+            // Request depth texture from main camera so _CameraDepthTexture is populated.
+            mainCam.depthTextureMode |= DepthTextureMode.Depth;
+
+            // Depth capture buffer: runs at AfterEverything on mainCam, copies scene depth into
+            // _depthCopyRT (plain RFloat) via the DepthCapture shader.  Must run before the SS
+            // outline buffer (which runs on _overlayCam, depth=100, after mainCam).
+            AttachDepthCaptureBuffer(mainCam);
+
+            _ssLastSelection = selection;
+
+            if (_ssBuffer == null)
+                _ssBuffer = new CommandBuffer { name = "BabyBlocks_SSOutline" };
+
+            RecordSSBuffer(selection, mainCam);
+
+            // Attach at BeforeForwardAlpha on _overlayCam (deferred pipeline).
+            // The gizmo handle materials are renderQueue 4000 (transparent), so they render in the
+            // camera's forward-alpha pass. BeforeForwardAlpha runs right before that pass but AFTER
+            // the deferred opaque+skybox composite — so the blit lands on a valid composited color
+            // buffer (unlike BeforeForwardOpaque, which in deferred is too early / off-target), and
+            // the gizmo's forward-alpha draws land on top of the outline. Top→bottom: gizmo,
+            // outline, props. RecordSSBuffer restores camera matrices at its end so the gizmo pass
+            // isn't left with Blit's fullscreen-ortho state.
+            _overlayCam.AddCommandBuffer(CameraEvent.BeforeForwardAlpha, _ssBuffer);
+            _ssCameraTarget = _overlayCam;
+
+            if (_depthDiagPending)
+            {
+                _depthDiagPending = false;
+                DumpDiagnostics(mainCam, selection);
+            }
+        }
+
+        // Called by OverlayCamPreRenderHook right before _overlayCam renders.
+        // Called from CinemachineBrainLateUpdatePatch after Cinemachine LateUpdate completes,
+        // so Camera.main.worldToCameraMatrix is current for this frame.
+        // Re-recording here eliminates the 1-frame stale drift seen when recording in Update().
+        internal static void RefreshSSBufferMatrices()
+        {
+            if (_ssBuffer == null || _ssCameraTarget == null) return;
+            if (!ScreenSpaceShadersLoaded) return;
+            if (_ssLastSelection == null || _ssLastSelection.Count == 0) return;
+
+            var mainCam = Camera.main;
+            if (mainCam == null) return;
+
+            RecordSSBuffer(_ssLastSelection, mainCam);
+        }
+
+        // One-shot pipeline dump (triggered by F5 → LogDepthDiag). Prints a compact, copy-pasteable
+        // snapshot of the gizmo/outline render setup: cameras, clear flags, render path, attached
+        // command buffers, and a scene-depth readback. Designed to diagnose outline visibility and
+        // gizmo layering without per-frame log spam.
+        static void DumpDiagnostics(Camera mainCam, IReadOnlyList<LevelEditorObject> selection)
+        {
+            void L(string s) => MelonLoader.MelonLogger.Msg("[GIZMO-DIAG] " + s);
+
+            L("================ Gizmo / Outline pipeline ================");
+            L($"shaders: mask={_maskMat != null} pp={_ppMat != null} depthCapture={_depthCaptureMat != null}  " +
+              $"selection={selection?.Count ?? 0}");
+
+            // Cameras, sorted by render order (depth ascending = renders first).
+            try
+            {
+                var cams = Camera.allCameras;
+                var list = new List<Camera>();
+                if (cams != null) foreach (var c in cams) if (c != null) list.Add(c);
+                list.Sort((a, b) => a.depth.CompareTo(b.depth));
+                L($"camera render order ({list.Count} enabled), first→last:");
+                foreach (var c in list)
+                {
+                    bool isMain    = c == mainCam;
+                    bool isOverlay = c == _overlayCam;
+                    string tag = isOverlay ? " <-- OVERLAY" : isMain ? " <-- MAIN" : "";
+                    L($"  depth={c.depth,6:0.#}  '{c.name}'  clear={c.clearFlags}  " +
+                      $"path={c.actualRenderingPath}  HDR={c.allowHDR}  " +
+                      $"target={(c.targetTexture != null ? c.targetTexture.name : "backbuffer")}{tag}");
+                }
+            }
+            catch (Exception ex) { L($"camera enumerate failed: {ex.Message}"); }
+
+            // Command buffers attached to the overlay cam (where outline + gizmo ztest live).
+            DumpCamBuffers(L, _overlayCam, "overlayCam", CameraEvent.BeforeForwardOpaque);
+            DumpCamBuffers(L, _overlayCam, "overlayCam", CameraEvent.BeforeForwardAlpha);
+            DumpCamBuffers(L, _overlayCam, "overlayCam", CameraEvent.AfterEverything);
+            // Depth capture lives on mainCam.
+            DumpCamBuffers(L, mainCam, "mainCam", CameraEvent.AfterEverything);
+
+            L($"ssTarget={(_ssCameraTarget != null ? _ssCameraTarget.name : "null")}  " +
+              $"depthCaptureTarget={(_depthCaptureCameraTarget != null ? _depthCaptureCameraTarget.name : "null")}");
+            L($"depthCopyRT={(_depthCopyRT != null ? $"{_depthCopyRT.width}x{_depthCopyRT.height} created={_depthCopyRT.IsCreated()}" : "null")}  " +
+              $"mainCam.depthMode={mainCam.depthTextureMode}");
+
+            var globalDepth = Shader.GetGlobalTexture("_CameraDepthTexture");
+            L($"_CameraDepthTexture global={(globalDepth != null ? $"{globalDepth.width}x{globalDepth.height}" : "null")}");
+
+            // Scene-depth readback at the first selected object (verifies depth capture works).
+            if (selection != null && selection.Count > 0 && selection[0] != null && _depthCopyRT != null && _depthCopyRT.IsCreated())
+            {
+                try
+                {
+                    var r = mainCam.rect;
+                    var sp = mainCam.WorldToScreenPoint(selection[0].transform.position);
+                    float depUvX = (sp.x / Screen.width  - r.x) / r.width;
+                    float depUvY = (sp.y / Screen.height - r.y) / r.height;
+                    int px = Mathf.Clamp(Mathf.RoundToInt(depUvX * _depthCopyRT.width),  0, _depthCopyRT.width  - 1);
+                    int py = Mathf.Clamp(Mathf.RoundToInt(depUvY * _depthCopyRT.height), 0, _depthCopyRT.height - 1);
+                    var prev = RenderTexture.active;
+                    RenderTexture.active = _depthCopyRT;
+                    var t2d = new Texture2D(1, 1, TextureFormat.RFloat, false);
+                    t2d.ReadPixels(new Rect(px, py, 1, 1), 0, 0);
+                    t2d.Apply();
+                    RenderTexture.active = prev;
+                    float d = t2d.GetPixel(0, 0).r;
+                    UnityEngine.Object.Destroy(t2d);
+                    L($"sel[0] depthCopyRT[{px},{py}]={d:F4} (reversed-Z: near=1 far=0; 0=capture broken)");
+                }
+                catch (Exception ex) { L($"depth readback failed: {ex.Message}"); }
+            }
+            L("=========================================================");
+        }
+
+        static void DumpCamBuffers(Action<string> L, Camera cam, string label, CameraEvent evt)
+        {
+            if (cam == null) { L($"{label}.{evt}: <cam null>"); return; }
+            try
+            {
+                var bufs = cam.GetCommandBuffers(evt);
+                int n = bufs?.Length ?? 0;
+                string names = "";
+                if (n > 0) foreach (var b in bufs) names += (names.Length > 0 ? ", " : "") + b.name;
+                L($"{label}.{evt}: {n} buffer(s){(n > 0 ? " [" + names + "]" : "")}");
+            }
+            catch (Exception ex) { L($"{label}.{evt}: query failed: {ex.Message}"); }
+        }
+
+        // Records (or re-records) _ssBuffer with the given camera's matrices.
+        // Caller must ensure _ssBuffer is not null.
+        static void RecordSSBuffer(IReadOnlyList<LevelEditorObject> selection, Camera mainCam)
+        {
+            _ssBuffer.Clear();
+            _ppMat.SetFloat("_OccludedAlpha", OutlineOccludedAlpha);
+            _ppMat.SetFloat("_OutlineWidth",  OutlineWidth);
+            _ppMat.SetFloat("_DebugMode",     OutlineDebugMode);
+            // Mask and depth copy are both camera-pixel-sized (mainCam.pixelWidth × pixelHeight).
+            // The HDR intermediate buffer that CameraTarget resolves to in deferred+HDR mode is
+            // ALSO camera-pixel-sized, so the Blit maps 1:1 with no scale or offset shift.
+            // Using Screen.width/Height would create a larger RT that gets scaled down by the
+            // Blit, causing an alignment shift proportional to (1 - pixelWidth/Screen.width).
+            // Since mask UV and depth UV are now in the same camera-pixel coordinate space,
+            // _ViewportRect is identity — no remapping needed.
+            _ppMat.SetVector("_ViewportRect", new Vector4(0f, 0f, 1f, 1f));
+            // Scene depth is read via _depthCopyRT (plain RFloat), populated by
+            // _depthCaptureBuffer running at AfterEverything on mainCam before us.
+            // No per-frame snapshot needed here.
+
+            // Pass 1: render selected objects into a camera-sized mask RT.
+            // Using mainCam.pixelWidth/Height so the RT matches the camera HDR buffer exactly.
+            // SetViewport covers the full RT (no screen-offset) because the camera projection
+            // matrix already maps the viewport frustum to NDC [-1,1]; the GPU viewport then
+            // maps that to mask pixels 0→pixelWidth/Height with no left-margin offset.
+            // Using mainCam.projectionMatrix (not GL.GetGPUProjectionMatrix) lets DX render
+            // Y-flipped into the RT; the SelectionOutline shader corrects via TexelSize.y < 0.
+            _ssBuffer.GetTemporaryRT(_maskRTId, mainCam.pixelWidth, mainCam.pixelHeight, 24, FilterMode.Bilinear, RenderTextureFormat.ARGBFloat);
+            _ssBuffer.SetRenderTarget(_maskRTId);
+            _ssBuffer.ClearRenderTarget(true, true, Color.clear);
+            _ssBuffer.SetViewport(new Rect(0, 0, mainCam.pixelWidth, mainCam.pixelHeight));
+            _ssBuffer.SetViewProjectionMatrices(mainCam.worldToCameraMatrix, mainCam.projectionMatrix);
+
+            _maskMat.SetColor("_Color", new Color(1f, 0.85f, 0.1f, 1f));
+            for (int s = 0; s < selection.Count; s++)
+            {
+                var sel = selection[s];
+                if (sel == null) continue;
+                var mfs = sel.GetComponentsInChildren<MeshFilter>();
+                if (mfs == null) continue;
+                for (int i = 0; i < mfs.Length; i++)
+                {
+                    var mf = mfs[i];
+                    if (mf == null || mf.sharedMesh == null) continue;
+                    var mr = mf.GetComponent<MeshRenderer>();
+                    if (mr == null || !mr.enabled) continue;
+                    var mesh   = mf.sharedMesh;
+                    var matrix = mf.transform.localToWorldMatrix;
+                    for (int sub = 0; sub < mesh.subMeshCount; sub++)
+                        _ssBuffer.DrawMesh(mesh, matrix, _maskMat, sub);
+                }
+            }
+
+            // Pass 2: Blit mask onto CameraTarget.
+            // Blit maps the source RT dimensions 1:1 to screen (ignores camera viewport rect),
+            // so the mask must be full-screen-sized (Screen.width × Screen.height) for the Blit
+            // UV to map correctly to screen pixels without any scale or offset shift.
+            _ssBuffer.Blit(_maskRTId, BuiltinRenderTextureType.CameraTarget, _ppMat);
+            _ssBuffer.ReleaseTemporaryRT(_maskRTId);
+
+            // Restore the camera's view/projection (Blit leaves a fullscreen-ortho matrix in the
+            // command-buffer state). The gizmo geometry pass (queue 4000, forward-alpha) renders
+            // right after BeforeForwardAlpha — without this it would draw with the leftover ortho
+            // matrix. _overlayCam mirrors mainCam, so mainCam's matrices are the correct ones.
+            _ssBuffer.SetViewProjectionMatrices(mainCam.worldToCameraMatrix, mainCam.projectionMatrix);
         }
 
         public static GizmoHandle RaycastHandle(Ray ray)
@@ -302,6 +767,7 @@ namespace BabyBlocks
             return true;
         }
 
+
         public static void Draw(int hoveredAxis, LevelEditor.ToolMode tool)
         {
             if (_root == null || !_root.activeSelf || _overlayCam == null) return;
@@ -326,9 +792,10 @@ namespace BabyBlocks
                 for (int i = 0; i < 3; i++)
                 {
                     var mat = (hoveredAxis == i && _hoverMats != null) ? _hoverMats[i] : _mats[i];
-                    Graphics.DrawMesh(_ringMesh,
-                        Matrix4x4.TRS(origin, ringBaseRot * RingPivotRots[i], Vector3.one * s),
-                        mat, Layer, _overlayCam);
+                    var ringMatrix = Matrix4x4.TRS(origin, ringBaseRot * RingPivotRots[i], Vector3.one * s);
+                    Graphics.DrawMesh(_ringMesh, ringMatrix, mat, Layer, _overlayCam);
+                    if (_occMats != null)
+                        Graphics.DrawMesh(_ringMesh, ringMatrix, _occMats[i], Layer, _overlayCam);
                 }
                 return;
             }
@@ -347,23 +814,30 @@ namespace BabyBlocks
             {
                 var rot = rootRot * GetEffectivePivotRot(i);   // flips toward camera when needed
                 var mat = (hoveredAxis == i && _hoverMats != null) ? _hoverMats[i] : _mats[i];
+                var shaftMatrix = Matrix4x4.TRS(origin + rot * (ShaftPos * s), rot, ShaftScale * s);
+                var tipMatrix   = Matrix4x4.TRS(origin + rot * (tipPos   * s), rot, tipScale   * s);
 
-                Graphics.DrawMesh(_shaftMesh,
-                    Matrix4x4.TRS(origin + rot * (ShaftPos * s), rot, ShaftScale * s),
-                    mat, Layer, _overlayCam);
-
-                Graphics.DrawMesh(tipMesh,
-                    Matrix4x4.TRS(origin + rot * (tipPos * s), rot, tipScale * s),
-                    mat, Layer, _overlayCam);
+                Graphics.DrawMesh(_shaftMesh, shaftMatrix, mat, Layer, _overlayCam);
+                Graphics.DrawMesh(tipMesh,   tipMatrix,   mat, Layer, _overlayCam);
+                if (_occMats != null)
+                {
+                    Graphics.DrawMesh(_shaftMesh, shaftMatrix, _occMats[i], Layer, _overlayCam);
+                    Graphics.DrawMesh(tipMesh,   tipMatrix,   _occMats[i], Layer, _overlayCam);
+                }
             }
 
+            // Center free handle drawn after the axes so it depth-tests against them (an axis
+            // passing in front correctly occludes the sphere/cube).  queue 4000, same as axes.
             var freeMat = (hoveredAxis == 3 && _freeHoverMat != null) ? _freeHoverMat : _freeMat;
             var freeMesh = scaleMode ? _cubeTipMesh : _sphereMesh;
             var freeRot = scaleMode ? rootRot : Quaternion.identity;
+            var freeMatrix = Matrix4x4.TRS(origin, freeRot, Vector3.one * 0.22f * s);
             if (freeMat != null)
-                Graphics.DrawMesh(freeMesh,
-                    Matrix4x4.TRS(origin, freeRot, Vector3.one * 0.22f * s),
-                    freeMat, Layer, _overlayCam);
+            {
+                Graphics.DrawMesh(freeMesh, freeMatrix, freeMat, Layer, _overlayCam);
+                if (_freeOccMat != null)
+                    Graphics.DrawMesh(freeMesh, freeMatrix, _freeOccMat, Layer, _overlayCam);
+            }
 
             if (_planeMats != null && _planeHoverMats != null)
             {
@@ -376,20 +850,22 @@ namespace BabyBlocks
                     // Compute plane handle position as the diagonal of its two (possibly flipped) axes.
                     int aIdx = i == 0 ? 0 : i == 1 ? 1 : 0;
                     int bIdx = i == 0 ? 1 : i == 1 ? 2 : 2;
-                    var dirA     = GetEffectivePivotRot(aIdx) * Vector3.up;
-                    var dirB     = GetEffectivePivotRot(bIdx) * Vector3.up;
+                    var dirA      = GetEffectivePivotRot(aIdx) * Vector3.up;
+                    var dirB      = GetEffectivePivotRot(bIdx) * Vector3.up;
                     Vector3 localPos  = (dirA + dirB) * planeSize * 0.5f;
                     Vector3 localSize = i == 0 ? planeScaleXY : i == 1 ? planeScaleYZ : planeScaleXZ;
-                    var pos = origin + rootRot * (localPos * s);
+                    var planeMatrix = Matrix4x4.TRS(origin + rootRot * (localPos * s), rootRot, localSize * s);
 
-                    Graphics.DrawMesh(_cubeTipMesh,
-                        Matrix4x4.TRS(pos, rootRot, localSize * s),
-                        mat, Layer, _overlayCam);
+                    Graphics.DrawMesh(_cubeTipMesh, planeMatrix, mat, Layer, _overlayCam);
+                    if (_planeOccMats != null)
+                        Graphics.DrawMesh(_cubeTipMesh, planeMatrix, _planeOccMats[i], Layer, _overlayCam);
                 }
             }
         }
 
-        public static void DrawOutline(IReadOnlyList<LevelEditorObject> selection, Camera mainCam)
+        // Legacy 3D-shell outline: single ZTest=Always pass, no through-wall distinction.
+        // Kept as fallback reference; active path is DrawOutline below.
+        public static void DrawOutline_Legacy(IReadOnlyList<LevelEditorObject> selection, Camera mainCam)
         {
             DetachOutlineBuffer();
 
@@ -530,6 +1006,174 @@ namespace BabyBlocks
             _outlineCameraTarget = mainCam;
         }
 
+        // Two-pass outline: solid ring where visible, semi-transparent ring through occluding
+        // geometry. Stencil ops still use ZTest=Always so the interior is correctly excluded
+        // even for occluded objects; the outline shell draws switch to LessEqual/Greater.
+        // When screen-space shaders are loaded (babyblocks_shaders.bundle present), delegates
+        // to DrawOutlineScreenSpace for a 1px UE4-style post-process outline instead.
+        public static void DrawOutline(IReadOnlyList<LevelEditorObject> selection, Camera mainCam)
+        {
+            if (ScreenSpaceShadersLoaded)
+            {
+                DetachOutlineBuffer();
+                DrawOutlineScreenSpace(selection, mainCam);
+                return;
+            }
+
+            DetachOutlineBuffer();
+
+            if (selection == null || selection.Count == 0 || mainCam == null) return;
+            if (_stencilClearMat == null || _stencilMarkMat == null || _outlineMat == null) return;
+
+            if (_outlineBuffer == null)
+                _outlineBuffer = new CommandBuffer { name = "PropOutline" };
+            else
+                _outlineBuffer.Clear();
+
+            SyncOccludedColor();
+            bool drawOcc = OutlineOccludedAlpha > 0.01f && _outlineOccMat != null;
+
+            // ── Translate-drag fast path ─────────────────────────────────────────────
+            if (_outlineTranslateDrag
+                && _combinedOutlineShell != null && _combinedOutlineShell.vertexCount > 0)
+            {
+                _outlineMarks.Clear();
+                CollectOutlineMarks(selection);
+                if (_outlineMarks.Count > 0)
+                {
+                    var tMat = Matrix4x4.Translate(_outlineTranslateDelta);
+                    _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.Always);
+                    _outlineBuffer.DrawMesh(_combinedOutlineShell, tMat, _stencilClearMat);
+                    for (int i = 0; i < _outlineMarks.Count; i++)
+                    {
+                        var mark = _outlineMarks[i];
+                        for (int sub = 0; sub < mark.subMeshCount; sub++)
+                            _outlineBuffer.DrawMesh(mark.mesh, mark.matrix, _stencilMarkMat, sub);
+                    }
+                    _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
+                    _outlineBuffer.DrawMesh(_combinedOutlineShell, tMat, _outlineMat);
+                    if (drawOcc)
+                    {
+                        _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.Greater);
+                        _outlineBuffer.DrawMesh(_combinedOutlineShell, tMat, _outlineOccMat);
+                    }
+                }
+                _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
+                mainCam.AddCommandBuffer(CameraEvent.AfterEverything, _outlineBuffer);
+                _outlineCameraTarget = mainCam;
+                return;
+            }
+
+            // ── Normal path ──────────────────────────────────────────────────────────
+            _combinedOutlineCombines.Clear();
+            _outlineMarks.Clear();
+            int outlineSignature = 17;
+
+            for (int s = 0; s < selection.Count; s++)
+            {
+                var sel = selection[s];
+                if (sel == null) continue;
+
+                var mfs = sel.GetComponentsInChildren<MeshFilter>();
+                if (mfs == null) continue;
+
+                outlineSignature = unchecked(outlineSignature * 31 + sel.GetInstanceID());
+
+                for (int i = 0; i < mfs.Length; i++)
+                {
+                    var mf = mfs[i];
+                    if (mf == null || mf.sharedMesh == null) continue;
+                    var mr = mf.GetComponent<MeshRenderer>();
+                    if (mr == null || !mr.enabled) continue;
+
+                    var mesh = mf.sharedMesh;
+                    var t    = mf.transform;
+                    var shell = GetOrBuildOutlineShell(mesh, t);
+                    if (shell.mesh == null) continue;
+
+                    outlineSignature = unchecked(outlineSignature * 31 + mf.GetInstanceID());
+                    outlineSignature = unchecked(outlineSignature * 31 + mesh.GetInstanceID());
+                    outlineSignature = unchecked(outlineSignature * 31 + t.position.GetHashCode());
+                    outlineSignature = unchecked(outlineSignature * 31 + t.rotation.GetHashCode());
+                    outlineSignature = unchecked(outlineSignature * 31 + t.lossyScale.GetHashCode());
+
+                    _combinedOutlineCombines.Add(new CombineInstance
+                    {
+                        mesh      = shell.mesh,
+                        transform = Matrix4x4.identity,
+                    });
+
+                    _outlineMarks.Add((mesh, t.localToWorldMatrix, mesh.subMeshCount));
+                }
+            }
+
+            if (_combinedOutlineCombines.Count == 0)
+            {
+                _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
+                return;
+            }
+
+            bool isDragging = LevelEditor.IsDragging;
+
+            // Stencil ops need ZTest=Always so the interior is marked even for occluded objects.
+            _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.Always);
+
+            if (!isDragging)
+            {
+                if (_combinedOutlineShell == null)
+                    _combinedOutlineShell = new Mesh { name = "PropOutlineCombinedShell" };
+
+                if (_combinedOutlineSignature != outlineSignature || _combinedOutlineShell.vertexCount == 0)
+                {
+                    _combinedOutlineSignature = outlineSignature;
+                    _combinedOutlineShell.Clear(false);
+                    _combinedOutlineShell.indexFormat = IndexFormat.UInt32;
+                    _combinedOutlineShell.CombineMeshes(_combinedOutlineCombines.ToArray(), true, false, false);
+                    _combinedOutlineShell.RecalculateBounds();
+                }
+
+                _outlineBuffer.DrawMesh(_combinedOutlineShell, Matrix4x4.identity, _stencilClearMat);
+                for (int i = 0; i < _outlineMarks.Count; i++)
+                {
+                    var mark = _outlineMarks[i];
+                    for (int sub = 0; sub < mark.subMeshCount; sub++)
+                        _outlineBuffer.DrawMesh(mark.mesh, mark.matrix, _stencilMarkMat, sub);
+                }
+                _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
+                _outlineBuffer.DrawMesh(_combinedOutlineShell, Matrix4x4.identity, _outlineMat);
+                if (drawOcc)
+                {
+                    _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.Greater);
+                    _outlineBuffer.DrawMesh(_combinedOutlineShell, Matrix4x4.identity, _outlineOccMat);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < _combinedOutlineCombines.Count; i++)
+                    _outlineBuffer.DrawMesh(_combinedOutlineCombines[i].mesh, Matrix4x4.identity, _stencilClearMat);
+                for (int i = 0; i < _outlineMarks.Count; i++)
+                {
+                    var mark = _outlineMarks[i];
+                    for (int sub = 0; sub < mark.subMeshCount; sub++)
+                        _outlineBuffer.DrawMesh(mark.mesh, mark.matrix, _stencilMarkMat, sub);
+                }
+                _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
+                for (int i = 0; i < _combinedOutlineCombines.Count; i++)
+                    _outlineBuffer.DrawMesh(_combinedOutlineCombines[i].mesh, Matrix4x4.identity, _outlineMat);
+                if (drawOcc)
+                {
+                    _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.Greater);
+                    for (int i = 0; i < _combinedOutlineCombines.Count; i++)
+                        _outlineBuffer.DrawMesh(_combinedOutlineCombines[i].mesh, Matrix4x4.identity, _outlineOccMat);
+                }
+            }
+
+            _outlineBuffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
+
+            mainCam.AddCommandBuffer(CameraEvent.AfterEverything, _outlineBuffer);
+            _outlineCameraTarget = mainCam;
+        }
+
         // True once the stencil clear/mark materials (built by InitMaterials) are available.
         public static bool StencilMaterialsReady => _stencilClearMat != null && _stencilMarkMat != null;
 
@@ -538,6 +1182,15 @@ namespace BabyBlocks
         public static void EnsureStencilMaterials()
         {
             if (!StencilMaterialsReady) InitMaterials();
+        }
+
+        // Keeps _outlineOccMat in sync with the current visible color at the current occluded alpha.
+        static void SyncOccludedColor()
+        {
+            if (_outlineMat == null || _outlineOccMat == null) return;
+            var c = _outlineMat.GetColor("_Color");
+            c.a = OutlineOccludedAlpha;
+            _outlineOccMat.SetColor("_Color", c);
         }
 
         // Builds an outline material matching _outlineMat's stencil setup but with a custom
@@ -559,6 +1212,12 @@ namespace BabyBlocks
             return mat;
         }
 
+        // Creates the matching through-wall (Greater ZTest) material for a remote player color.
+        public static Material CreateOccludedOutlineMaterial(Color color)
+        {
+            return CreateOutlineMaterial(new Color(color.r, color.g, color.b, OutlineOccludedAlpha));
+        }
+
         // Draws a single combined stencil-based outline around all of targets using outlineMat
         // instead of the local selection's hardcoded yellow, into a caller-owned CommandBuffer.
         // Mirrors DrawOutline's per-mesh "active drag" path (no combined-mesh caching) since the
@@ -566,10 +1225,19 @@ namespace BabyBlocks
         // marks before all outline draws, so a multi-object selection renders as ONE outline
         // around the combined silhouette rather than separate outlines per object. Used by
         // RemotePropHighlightManager to show a peer's current selection in their suit color.
-        public static void DrawRemoteOutline(IReadOnlyList<LevelEditorObject> targets, Material outlineMat, CommandBuffer buffer)
+        public static void DrawRemoteOutline(IReadOnlyList<LevelEditorObject> targets, Material outlineMat, Material outlineOccMat, CommandBuffer buffer)
         {
             if (targets == null || targets.Count == 0 || outlineMat == null || buffer == null) return;
             if (!StencilMaterialsReady) return;
+
+            // Keep occ mat alpha in sync with the global setting each frame.
+            if (outlineOccMat != null)
+            {
+                var c = outlineMat.GetColor("_Color");
+                c.a = OutlineOccludedAlpha;
+                outlineOccMat.SetColor("_Color", c);
+            }
+            bool drawOcc = OutlineOccludedAlpha > 0.01f && outlineOccMat != null;
 
             _remoteOutlineShells.Clear();
             _remoteOutlineMarks.Clear();
@@ -608,8 +1276,15 @@ namespace BabyBlocks
                 for (int sub = 0; sub < mark.subMeshCount; sub++)
                     buffer.DrawMesh(mark.mesh, mark.matrix, _stencilMarkMat, sub);
             }
+            buffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
             for (int i = 0; i < _remoteOutlineShells.Count; i++)
                 buffer.DrawMesh(_remoteOutlineShells[i], Matrix4x4.identity, outlineMat);
+            if (drawOcc)
+            {
+                buffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.Greater);
+                for (int i = 0; i < _remoteOutlineShells.Count; i++)
+                    buffer.DrawMesh(_remoteOutlineShells[i], Matrix4x4.identity, outlineOccMat);
+            }
             buffer.SetGlobalFloat("unity_GUIZTestMode", (float)CompareFunction.LessEqual);
         }
 
@@ -670,7 +1345,8 @@ namespace BabyBlocks
                 && cached.meshId == sourceId
                 && cached.position == t.position
                 && cached.rotation == t.rotation
-                && cached.scale == t.lossyScale)
+                && cached.scale == t.lossyScale
+                && cached.thickness == OutlineThickness)
             {
                 return cached;
             }
@@ -703,6 +1379,7 @@ namespace BabyBlocks
             cached.position = t.position;
             cached.rotation = t.rotation;
             cached.scale = t.lossyScale;
+            cached.thickness = OutlineThickness;
             cached.worldVerts = worldVerts;
             cached.tris = data.tris;
             _outlineShellCache[key] = cached;
@@ -779,6 +1456,10 @@ namespace BabyBlocks
                 _hoverMats[i] = MakeGizmoMat(shader, Color.Lerp(axisColors[i], Color.white, 0.45f), GizmoQueue);
             }
 
+            // Free handle sphere/cube: plain depth-tested material like the axes.  The gizmo cam
+            // clears its own depth buffer, so the whole gizmo sits on top of the scene while the
+            // axes (drawn first, queue 4000) correctly occlude the center handle where they pass
+            // in front of it.  queue 4000 keeps it in the same depth-tested batch as the axes.
             _freeMat      = MakeGizmoMat(shader, new Color(0.72f, 0.72f, 0.72f), GizmoQueue);
             _freeHoverMat = MakeGizmoMat(shader, Color.white, GizmoQueue);
 
@@ -840,6 +1521,17 @@ namespace BabyBlocks
                 _outlineMat.SetInt("_StencilReadMask",       255);
                 _outlineMat.SetInt("_ColorMask",             15);
                 _outlineMat.renderQueue = 3000;
+
+                var yellowOcc = new Color(yellow.r, yellow.g, yellow.b, OutlineOccludedAlpha);
+                _outlineOccMat = new Material(uiShader);
+                _outlineOccMat.SetColor("_Color",            yellowOcc);
+                _outlineOccMat.SetInt("_Stencil",            1);
+                _outlineOccMat.SetInt("_StencilComp",        (int)CompareFunction.NotEqual);
+                _outlineOccMat.SetInt("_StencilOp",          (int)StencilOp.Keep);
+                _outlineOccMat.SetInt("_StencilWriteMask",   255);
+                _outlineOccMat.SetInt("_StencilReadMask",    255);
+                _outlineOccMat.SetInt("_ColorMask",          15);
+                _outlineOccMat.renderQueue = 3000;
             }
         }
 
@@ -849,7 +1541,11 @@ namespace BabyBlocks
             m.color = color;
             if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", color);
             m.renderQueue = queue;
-            m.SetInt("_ZTest", 8); // Always — depth is handled by the overlay camera
+            // LessEqual gives correct depth-testing among gizmo parts.  (_overlayCam clears its own
+            // depth buffer, so the whole gizmo still renders on top of the scene.)  Note: built-in
+            // Unlit/Color hardcodes ZTest LEqual and ignores this _ZTest set — it's the default we
+            // want anyway, and kept explicit in case the shader fallback (Standard) honors it.
+            m.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.LessEqual);
             return m;
         }
 
@@ -865,6 +1561,9 @@ namespace BabyBlocks
             cam.nearClipPlane = 0.01f;
             cam.farClipPlane  = farClip;
             cam.enabled       = false;
+            // OnPreRender hook re-records the SS buffer with the freshest Camera.main
+            // matrices, after Cinemachine LateUpdate has run.
+            go.AddComponent<OverlayCamPreRenderHook>();
             return cam;
         }
 

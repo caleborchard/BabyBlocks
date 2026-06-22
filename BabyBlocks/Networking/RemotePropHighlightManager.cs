@@ -15,6 +15,7 @@ namespace BabyBlocks.Networking
             public readonly List<LevelEditorObject> targets = new();
             public Color color;
             public Material outlineMat;
+            public Material outlineOccMat;
             public CommandBuffer buffer;
             public Camera attachedCam;
         }
@@ -45,7 +46,7 @@ namespace BabyBlocks.Networking
                 if (cam == null || !GizmoRenderer.StencilMaterialsReady) continue;
 
                 h.buffer.Clear();
-                GizmoRenderer.DrawRemoteOutline(h.targets, h.outlineMat, h.buffer);
+                GizmoRenderer.DrawRemoteOutline(h.targets, h.outlineMat, h.outlineOccMat, h.buffer);
                 cam.AddCommandBuffer(CameraEvent.AfterEverything, h.buffer);
                 h.attachedCam = cam;
             }
@@ -61,9 +62,10 @@ namespace BabyBlocks.Networking
             {
                 h = new Highlight
                 {
-                    buffer = new CommandBuffer { name = "BabyBlocks_RemotePropHighlight" },
-                    outlineMat = GizmoRenderer.CreateOutlineMaterial(color),
-                    color = color,
+                    buffer       = new CommandBuffer { name = "BabyBlocks_RemotePropHighlight" },
+                    outlineMat   = GizmoRenderer.CreateOutlineMaterial(color),
+                    outlineOccMat = GizmoRenderer.CreateOccludedOutlineMaterial(color),
+                    color        = color,
                 };
                 _highlights[uuid] = h;
             }
@@ -73,7 +75,9 @@ namespace BabyBlocks.Networking
             if (h.color != color)
             {
                 h.color = color;
-                if (h.outlineMat != null) h.outlineMat.SetColor("_Color", color);
+                if (h.outlineMat    != null) h.outlineMat.SetColor("_Color", color);
+                if (h.outlineOccMat != null) h.outlineOccMat.SetColor("_Color",
+                    new Color(color.r, color.g, color.b, GizmoRenderer.OutlineOccludedAlpha));
             }
         }
 
