@@ -60,7 +60,8 @@ namespace BabyBlocks.UI
         public static void UpdateVisibility()
         {
             if (!Ready) return;
-            bool inEditor      = FlyCamController.FlyCamActive && FlyCamController.CursorMode;
+            // In DebugMode the old ImGui palette takes over; hide the UniverseLib UI entirely.
+            bool inEditor      = FlyCamController.FlyCamActive && FlyCamController.CursorMode && !Core.DebugMode;
             bool freeCamNow    = FlyCamController.FlyCamActive && !FlyCamController.CursorMode;
 
             if (_uiBase.Enabled != inEditor)

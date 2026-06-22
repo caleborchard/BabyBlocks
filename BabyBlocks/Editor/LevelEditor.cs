@@ -424,7 +424,7 @@ namespace BabyBlocks
 
         public static void OnGUI()
         {
-            // PropPalette.DrawGUI(Event.current); // legacy ImGui palette — see UI/UniverseLibDemo.cs
+            if (Core.DebugMode) PropPalette.DrawGUI(Event.current);
             PropMetadataPanel.DrawGUI(selectedObject);
             SaveLoadWindow.DrawGUI(Event.current);
             PhysicsWindow.DrawGUI(Event.current);

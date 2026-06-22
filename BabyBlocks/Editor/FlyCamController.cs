@@ -229,7 +229,7 @@ namespace BabyBlocks
 
         public static void OnGUI()
         {
-            if (FlyCamActive && CursorMode && !UI.PropBrowserUI.Ready)
+            if (FlyCamActive && CursorMode && (!UI.PropBrowserUI.Ready || Core.DebugMode))
                 LevelEditor.OnGUI();
 
             bool isTeleporting   = _farTeleportActive || LevelLoadTeleportActive;
