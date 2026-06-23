@@ -140,6 +140,23 @@ namespace BabyBlocks
 
                 ib.Release();
 
+                // When submeshes were filtered out, strip unreferenced vertices so the convex
+                // hull (used in Rigidbody mode) doesn't include geometry from ignored submeshes.
+                if (filteredTris != tris)
+                {
+                    var used   = new HashSet<int>(filteredTris);
+                    var newPos = new Vector3[used.Count];
+                    var remap  = new int[vCount];
+                    int ni = 0;
+                    for (int i = 0; i < vCount; i++)
+                    {
+                        if (used.Contains(i)) { remap[i] = ni; newPos[ni++] = positions[i]; }
+                    }
+                    positions = newPos;
+                    for (int i = 0; i < filteredTris.Length; i++)
+                        filteredTris[i] = remap[filteredTris[i]];
+                }
+
                 result = new Mesh { name = source.name + "_phys" };
                 result.vertices  = positions;
                 result.triangles = filteredTris;
@@ -502,8 +519,44 @@ namespace BabyBlocks
             if (obj.hasLoopBaseScale)    obj.transform.localScale = obj.loopBaseScale;
         }
 
+        // Destroys PropCollider_* direct children and rebuilds them from prop metadata.
+        // Called before physics activation to ensure collider meshes are fresh (so the
+        // convex hull in Rigidbody mode only covers geometry from non-ignored submeshes),
+        // and after clearing physics back to Static to restore non-convex colliders.
+        static void RebuildPropColliders(LevelEditorObject leo)
+        {
+            if (leo == null || string.IsNullOrEmpty(leo.addressableKey)) return;
+            var info = PropLibrary.FindById(leo.addressableKey);
+            if (info == null) return;
+
+            // Evict submesh-filtered cache entries so BuildPhysicsMesh produces fresh
+            // vertex-stripped meshes (needed for correct convex hulls in Rigidbody mode).
+            var ignoredSubs = PropMetadataStore.GetColliderIgnoredSubmeshes(info.id);
+            if (ignoredSubs != null && ignoredSubs.Count > 0)
+            {
+                string cacheKey = string.Join(",", ignoredSubs.OrderBy(v => v));
+                foreach (var mf in leo.GetComponentsInChildren<MeshFilter>(true))
+                {
+                    if (mf?.sharedMesh == null) continue;
+                    int meshId = mf.sharedMesh.GetInstanceID();
+                    if (_physicsMeshCache.TryGetValue(meshId, out var physMap) && physMap != null)
+                        physMap.Remove(cacheKey);
+                }
+            }
+
+            var go = leo.gameObject;
+            for (int i = go.transform.childCount - 1; i >= 0; i--)
+            {
+                var child = go.transform.GetChild(i);
+                if (child != null && child.name != null && child.name.StartsWith("PropCollider_"))
+                    UnityEngine.Object.DestroyImmediate(child.gameObject);
+            }
+            ApplyColliderParts(go, info, PropMetadataStore.GetUseRenderMeshCollider(info.id));
+        }
+
         public static void ActivatePhysics(LevelEditorObject leo)
         {
+            RebuildPropColliders(leo);
             var colls = leo.gameObject.GetComponentsInChildren<Collider>(true);
             if (leo.physicsMode == PhysicsMode.Rigidbody)
             {
@@ -597,6 +650,7 @@ namespace BabyBlocks
             {
                 if (restoreMaterial) MaterialBaker.RestoreOriginal(leo.gameObject);
                 RemoveGrabableComponents(leo.gameObject);
+                if (restoreMaterial) RebuildPropColliders(leo);
                 leo.isPhysicsManaged = false;
                 leo.physicsMode      = PhysicsMode.Static;
                 leo.physicsGroupId   = 0;
@@ -611,6 +665,7 @@ namespace BabyBlocks
                 {
                     if (obj == null || obj.physicsGroupId != gid) continue;
                     if (restoreMaterial) MaterialBaker.RestoreOriginal(obj.gameObject);
+                    if (restoreMaterial) RebuildPropColliders(obj);
                     obj.physicsMode      = PhysicsMode.Static;
                     obj.physicsGroupId   = 0;
                     obj.isPhysicsManaged = false;
