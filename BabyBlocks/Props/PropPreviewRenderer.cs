@@ -83,14 +83,13 @@ namespace BabyBlocks
                     {
                         _matReady[matId] = tex;
                         _matFailures.Remove(matId);
-                        BBLog.Msg($"[BB:MatSphere] id={matId} '{mat.name}' rendered OK");
                     }
                     else
                     {
                         _matFailures.TryGetValue(matId, out int prev);
                         int fails = prev + 1;
                         _matFailures[matId] = fails;
-                        MelonLogger.Msg($"[BB:MatSphere] id={matId} '{mat.name}' render FAILED (attempt {fails})");
+                        BBLog.Msg($"[BB:MatSphere] id={matId} '{mat.name}' render FAILED (attempt {fails})");
                         if (fails < 5)
                             _matSeen.Remove(matId); // allow retry until giving up
                         // else: leave in _matSeen so it stops re-queuing
@@ -534,8 +533,6 @@ namespace BabyBlocks
             _matSeen.Add(id);
             _matId2Name[id] = mat.name;
             _matQueue.Enqueue((id, mat));
-            if (mat.name.StartsWith("[MicroSplat]", StringComparison.Ordinal))
-                MelonLogger.Msg($"[BB:MatSphere] Queued id={id} '{mat.name}' (queue depth now {_matQueue.Count})");
         }
 
         public static void InvalidateMicroSplatSpheres()
@@ -546,8 +543,6 @@ namespace BabyBlocks
                     toRemove.Add(kv.Key);
             foreach (var id in toRemove)
                 InvalidateMaterialSphere(id);
-            if (toRemove.Count > 0)
-                MelonLogger.Msg($"[BB:MatSphere] Invalidated {toRemove.Count} MicroSplat sphere cache entries.");
         }
 
         public static Texture2D GetMaterialSphere(int id) =>
@@ -575,10 +570,10 @@ namespace BabyBlocks
         static Texture2D RenderMaterialSphere(int matId, Material mat)
         {
             var mesh = GetSphereMesh();
-            if (mesh == null) { MelonLogger.Msg($"[BB:MatSphere] id={matId} GetSphereMesh returned null"); return null; }
+            if (mesh == null) { BBLog.Msg($"[BB:MatSphere] id={matId} GetSphereMesh returned null"); return null; }
 
             int drawLayer = MaterialBaker.FindUnusedLayer();
-            if (drawLayer < 0) { MelonLogger.Msg($"[BB:MatSphere] id={matId} no unused render layer available"); return null; }
+            if (drawLayer < 0) { BBLog.Msg($"[BB:MatSphere] id={matId} no unused render layer available"); return null; }
 
             var   camDir  = new Vector3(-1f, -1f, -1f).normalized;
             float camDist = 4f;

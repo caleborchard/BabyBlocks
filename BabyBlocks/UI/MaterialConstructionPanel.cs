@@ -50,6 +50,11 @@ namespace BabyBlocks
             }
         }
 
+        // Original materials cached per LEO (instanceId → per-renderer sharedMaterials snapshot)
+        // captured the first time ApplyToInstance touches a pristine prop (materialConstructionId < 0).
+        // Keyed by leo.gameObject.GetInstanceID().
+        static readonly Dictionary<int, Material[][]> _origCache = new();
+
         static MaterialConstructionEntry _editing;
         static int _draggingIndex = -1;
         static int _dragStartFrame = -1;
@@ -530,6 +535,23 @@ namespace BabyBlocks
 
             int idBefore = leo.materialConstructionId;
 
+            // Snapshot original materials before any modification so Reset to Default can restore them.
+            if (leo.materialConstructionId < 0)
+            {
+                int leoKey = leo.gameObject.GetInstanceID();
+                if (!_origCache.ContainsKey(leoKey))
+                {
+                    var snap = new Material[renderers.Length][];
+                    for (int i = 0; i < renderers.Length; i++)
+                    {
+                        var sm = renderers[i]?.sharedMaterials;
+                        if (sm == null || sm.Length == 0) continue;
+                        snap[i] = sm; // sharedMaterials getter already returns a copy
+                    }
+                    _origCache[leoKey] = snap;
+                }
+            }
+
             if (!string.IsNullOrEmpty(entry.materialName))
             {
                 MaterialCatalog.EnsureMaterialListLoaded();
@@ -589,15 +611,34 @@ namespace BabyBlocks
 
             int idBefore = leo.materialConstructionId;
 
-            // Restore original prefab materials from the loaded addressable
-            var info = PropLibrary.FindById(leo.addressableKey);
-            if (info?.sourcePrefab != null)
+            // Restore original materials — cache takes priority (works for all prop types including
+            // GPUI trees where sourcePrefab is null). Falls back to sourcePrefab index-match.
+            int leoKey = leo.gameObject.GetInstanceID();
+            if (_origCache.TryGetValue(leoKey, out var snap) && snap != null)
             {
-                var srcRenderers = info.sourcePrefab.GetComponentsInChildren<Renderer>(true);
-                for (int i = 0; i < renderers.Length && i < srcRenderers.Length; i++)
+                for (int i = 0; i < renderers.Length && i < snap.Length; i++)
                 {
-                    if (renderers[i] == null || srcRenderers[i] == null) continue;
-                    renderers[i].sharedMaterials = srcRenderers[i].sharedMaterials;
+                    if (renderers[i] == null || snap[i] == null) continue;
+                    renderers[i].sharedMaterials = snap[i];
+                }
+            }
+            else
+            {
+                var info = PropLibrary.FindById(leo.addressableKey);
+                if (info?.sourcePrefab != null)
+                {
+                    var srcRenderers = info.sourcePrefab.GetComponentsInChildren<Renderer>(true);
+                    for (int i = 0; i < renderers.Length && i < srcRenderers.Length; i++)
+                    {
+                        if (renderers[i] == null || srcRenderers[i] == null) continue;
+                        renderers[i].sharedMaterials = srcRenderers[i].sharedMaterials;
+                    }
+                }
+                else
+                {
+                    MelonLoader.MelonLogger.Warning(
+                        $"[BabyBlocks] Reset to Default: no cached originals and no sourcePrefab for '{leo.addressableKey}'" +
+                        $" — apply a material first so originals can be captured.");
                 }
             }
 

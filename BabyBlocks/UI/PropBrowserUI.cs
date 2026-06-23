@@ -823,9 +823,9 @@ namespace BabyBlocks.UI
             var dragBgGO = UIFactory.CreateUIObject("DragLabelBg", Owner.RootObject);
             dragBgGO.AddComponent<Image>().color = new Color(0.1f, 0.1f, 0.15f, 0.85f);
             _dragLabelRT           = dragBgGO.GetComponent<RectTransform>();
-            _dragLabelRT.anchorMin = new Vector2(0f, 1f);
-            _dragLabelRT.anchorMax = new Vector2(0f, 1f);
-            _dragLabelRT.pivot     = new Vector2(0f, 1f);
+            _dragLabelRT.anchorMin = new Vector2(0.5f, 0.5f);
+            _dragLabelRT.anchorMax = new Vector2(0.5f, 0.5f);
+            _dragLabelRT.pivot     = new Vector2(0f, 1f); // top-left of card anchored to canvas center
             _dragLabelRT.sizeDelta = new Vector2(200f, 28f);
 
             _dragLabel = UIFactory.CreateLabel(dragBgGO, "DragLabelText", "",
@@ -1234,7 +1234,7 @@ namespace BabyBlocks.UI
                 {
                     RectTransformUtility.ScreenPointToLocalPointInRectangle(
                         _canvasRT, Input.mousePosition, null, out Vector2 lp);
-                    _dragLabelRT.anchoredPosition = lp + new Vector2(12f, 12f);
+                    _dragLabelRT.anchoredPosition = lp + new Vector2(12f, -4f);
                 }
             }
             else
@@ -1394,7 +1394,6 @@ namespace BabyBlocks.UI
 
         // ---- Materials mode tick ----
 
-        static float _matDebugLogTime = float.MinValue;
 
         void TickMaterialsMode()
         {
@@ -1429,18 +1428,6 @@ namespace BabyBlocks.UI
                 Material mat = null;
                 if (!string.IsNullOrEmpty(entry.materialName))
                     mat = MaterialCatalog.ResolveMaterialByName(entry.materialName);
-
-                float now = Time.realtimeSinceStartup;
-                if (now - _matDebugLogTime > 2f &&
-                    !string.IsNullOrEmpty(entry.materialName) &&
-                    entry.materialName.StartsWith("[MicroSplat]", StringComparison.Ordinal))
-                {
-                    _matDebugLogTime = now;
-                    MelonLogger.Msg($"[BB:MatSphere] Tick: '{entry.materialName}' id={entry.id} " +
-                        $"mat={(mat == null ? "null" : mat.name)} " +
-                        $"inSeen={PropPreviewRenderer.IsMaterialSeen(entry.id)} " +
-                        $"hasReady={PropPreviewRenderer.IsMaterialReady(entry.id)}");
-                }
 
                 if (mat != null)
                     PropPreviewRenderer.RequestMaterialSphere(entry.id, mat);

@@ -103,9 +103,7 @@ namespace BabyBlocks
                 if (now - _microSplatRetryTime >= 1f)
                 {
                     _microSplatRetryTime = now;
-                    MelonLogger.Msg($"[BB:MicroSplat] EnsureMaterialList retry at t={now:F1}s");
                     AddMicroSplatLayerMaterials();
-                    MelonLogger.Msg($"[BB:MicroSplat] After retry: MicroSplatLayerMats.Count={MicroSplatLayerMats.Count}");
                     if (MicroSplatLayerMats.Count > 0)
                         MaterialVariantTracker.MaterialsLoaded = false;
                 }
@@ -691,11 +689,7 @@ namespace BabyBlocks
                 if (m.shader.name.StartsWith("MicroSplat", StringComparison.OrdinalIgnoreCase)) { msCount++; baseMat = m; }
             }
             if (baseMat == null)
-            {
-                MelonLogger.Msg($"[BB:MicroSplat] FindMicroSplatBaseMaterial: scanned {allMats?.Length ?? 0} materials, found {msCount} MicroSplat-shader mats, none usable as base");
                 return null;
-            }
-            MelonLogger.Msg($"[BB:MicroSplat] FindMicroSplatBaseMaterial: found '{baseMat.name}' (shader: '{baseMat.shader?.name}'), total MicroSplat mats: {msCount}");
 
             // All slots must be blanked per clone; leaving higher slots with original terrain data bleeds through.
             bool useCustom = baseMat.HasProperty("_CustomControl0");
@@ -835,10 +829,7 @@ namespace BabyBlocks
                 }
 
                 if (MicroSplatLayerMats.Count > 0)
-                {
-                    MelonLogger.Msg($"[BB:MicroSplat] Built {MicroSplatLayerMats.Count} layer materials from '{baseMat.name}'.");
                     _microSplatBuildGen++;
-                }
                 else
                     MelonLogger.Warning("[BB:MicroSplat] Base material found but no layer materials could be created.");
             }
