@@ -128,6 +128,13 @@ namespace BabyBlocks
             if (!string.Equals(newSearch, PropLibrary.SearchText, StringComparison.Ordinal))
                 PropLibrary.SetSearch(newSearch);
 
+            bool newMetaMode = GUILayout.Toggle(PropLibrary.DebugSearchMetaNames, "Search metadata names");
+            if (newMetaMode != PropLibrary.DebugSearchMetaNames)
+            {
+                PropLibrary.DebugSearchMetaNames = newMetaMode;
+                PropLibrary.RebuildFiltered();
+            }
+
             GUILayout.Space(4f);
 
             GUI.enabled = !string.IsNullOrEmpty(PropMetadataEditor.PropId);

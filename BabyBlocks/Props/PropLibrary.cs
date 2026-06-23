@@ -128,6 +128,8 @@ namespace BabyBlocks
 
         public static bool   IsInitialized { get; private set; }
         public static string SearchText    { get; private set; } = "";
+        // When true, debug-mode search also matches against PropMetadataStore display names.
+        public static bool   DebugSearchMetaNames { get; set; } = false;
 
         public static void SetSearch(string text)
         {
@@ -197,10 +199,21 @@ namespace BabyBlocks
             {
                 foreach (var p in _all)
                 {
-                    if (hasSearch
-                        && p.displayName.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0
-                        && p.id.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) < 0)
-                        continue;
+                    if (hasSearch)
+                    {
+                        bool match;
+                        if (DebugSearchMetaNames)
+                        {
+                            string meta = PropMetadataStore.GetDisplayName(p.id) ?? "";
+                            match = meta.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0;
+                        }
+                        else
+                        {
+                            match = p.displayName.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0
+                                 || p.id.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0;
+                        }
+                        if (!match) continue;
+                    }
                     _filtered.Add(p);
                 }
             }
