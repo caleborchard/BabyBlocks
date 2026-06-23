@@ -256,6 +256,18 @@ namespace BabyBlocks.UI
             PropBrowserUI.ApplyButtonColors(fileBtn);
             fileBtn.OnClick += ToggleFile;
 
+            // Undo
+            var undoBtn = UIFactory.CreateButton(barRow, "UndoBtn", "↩ Undo");
+            UIFactory.SetLayoutElement(undoBtn.Component.gameObject, minWidth: 72, minHeight: 22);
+            PropBrowserUI.ApplyButtonColors(undoBtn);
+            undoBtn.OnClick += () => { PropBrowserUI.Deselect(); CloseFile(); CloseCat(); LevelEditorHistory.Undo(); };
+
+            // Redo
+            var redoBtn = UIFactory.CreateButton(barRow, "RedoBtn", "↪ Redo");
+            UIFactory.SetLayoutElement(redoBtn.Component.gameObject, minWidth: 72, minHeight: 22);
+            PropBrowserUI.ApplyButtonColors(redoBtn);
+            redoBtn.OnClick += () => { PropBrowserUI.Deselect(); CloseFile(); CloseCat(); LevelEditorHistory.Redo(); };
+
             // Editor / Teleport toggle (R key)
             _editorBtn = UIFactory.CreateButton(barRow, "EditorBtn", "Editor → Teleport");
             UIFactory.SetLayoutElement(_editorBtn.Component.gameObject,
@@ -721,6 +733,13 @@ namespace BabyBlocks.UI
         ButtonRef           _prevBtn, _nextBtn;
         int                 _offset;
         static Texture2D    _debugTex;
+        static Texture2D    _undoIconTex;
+        static readonly MaterialConstructionEntry _resetEntry = new MaterialConstructionEntry
+        {
+            id           = int.MinValue,
+            name         = "Reset to Default",
+            materialName = PropMetadataStore.NoOverrideLabel,
+        };
 
         int  _lastPropCount    = -1;
         int  _lastMatCount     = -1;
@@ -926,23 +945,20 @@ namespace BabyBlocks.UI
         {
             PropMetadataStore.EnsureLoaded();
             var mats = MaterialConstructionLibrary.Entries;
-            IReadOnlyList<MaterialConstructionEntry> result = mats;
-            if (!string.IsNullOrEmpty(_searchText))
+            _matSearchResults.Clear();
+            _matSearchResults.Add(_resetEntry); // always first, ignoring search filter
+            foreach (var m in mats)
             {
-                _matSearchResults.Clear();
-                foreach (var m in mats)
-                {
-                    if ((m.name ?? "").IndexOf(_searchText, StringComparison.OrdinalIgnoreCase) >= 0)
-                        _matSearchResults.Add(m);
-                }
-                result = _matSearchResults;
+                if (string.IsNullOrEmpty(_searchText) ||
+                    (m.name ?? "").IndexOf(_searchText, StringComparison.OrdinalIgnoreCase) >= 0)
+                    _matSearchResults.Add(m);
             }
-            if (_lastMatCount != result.Count)
+            if (_lastMatCount != _matSearchResults.Count)
             {
-                _lastMatCount = result.Count;
-                _offset = Math.Clamp(_offset, 0, Math.Max(0, result.Count - _activeSlotCount));
+                _lastMatCount = _matSearchResults.Count;
+                _offset = Math.Clamp(_offset, 0, Math.Max(0, _matSearchResults.Count - _activeSlotCount));
             }
-            return result;
+            return _matSearchResults;
         }
 
         // ---- Wrap-around navigation (same logic as PropPalette.StepPageOffset) ----
@@ -1380,6 +1396,8 @@ namespace BabyBlocks.UI
 
             MaterialCatalog.EnsureMaterialList();
 
+            if (_undoIconTex == null) _undoIconTex = BuildUndoIconTexture();
+
             for (int i = 0; i < SlotCount; i++)
             {
                 ref var card = ref _cards[i];
@@ -1389,6 +1407,16 @@ namespace BabyBlocks.UI
                 if (idx >= mats.Count) continue;
 
                 var entry = mats[idx];
+
+                if (entry.id == int.MinValue)
+                {
+                    // Reset-to-default sentinel: show undo icon instead of a sphere
+                    if (card.Preview != null)
+                    { card.Preview.texture = _undoIconTex; card.Preview.uvRect = new Rect(0f, 0f, 1f, 1f); }
+                    TickMarquee(i);
+                    continue;
+                }
+
                 // Use ResolveMaterialByName so hash-suffixed materials and
                 // verified-source materials are found, not just in-scene byName lookup.
                 Material mat = null;
@@ -1421,6 +1449,158 @@ namespace BabyBlocks.UI
 
                 TickMarquee(i);
             }
+        }
+
+        // ---- Undo icon texture ----
+
+        // Matches the background PropPreviewRenderer uses for sphere icons
+        static readonly Color IconBgColor = new Color(0.09f, 0.09f, 0.11f, 1f);
+
+        static Texture2D BuildUndoIconTexture()
+        {
+            // Try to render the actual ↺ symbol using an OS font via GL
+            try
+            {
+                var t = TryBakeGlyph('↺', 128, IconBgColor);
+                if (t != null) return t;
+            }
+            catch { }
+
+            // Fallback: hand-drawn arc + arrowhead
+            return BuildUndoArrowFallback();
+        }
+
+        static Texture2D TryBakeGlyph(char sym, int size, Color bg)
+        {
+            const int fontSize = 92;
+            // Windows: Segoe UI Symbol; Linux: Noto Sans Symbols / DejaVu Sans
+            var font = Font.CreateDynamicFontFromOSFont(new[]
+            {
+                "Segoe UI Symbol", "Arial Unicode MS",
+                "Noto Sans Symbols", "Noto Sans Symbols 2", "DejaVu Sans",
+            }, fontSize);
+            if (font == null) return null;
+
+            font.RequestCharactersInTexture(sym.ToString(), fontSize, FontStyle.Normal);
+            CharacterInfo ci;
+            if (!font.GetCharacterInfo(sym, out ci, fontSize)) return null;
+
+            int charW = ci.maxX - ci.minX;
+            int charH = ci.maxY - ci.minY;
+            if (charW < 4 || charH < 4) return null;
+
+            float scale = Mathf.Min(size * 0.82f / charW, size * 0.82f / charH);
+            float drawW = charW * scale, drawH = charH * scale;
+            float x0 = (size - drawW) * 0.5f, y0 = (size - drawH) * 0.5f;
+
+            var rt = new RenderTexture(size, size, 0, RenderTextureFormat.ARGB32);
+            var prevRT = RenderTexture.active;
+            RenderTexture.active = rt;
+
+            // Clear to black — 0 is 0 in any color space, so this is reliable.
+            // We composite onto the correct bg color afterwards in software.
+            GL.Clear(true, true, Color.black);
+            GL.PushMatrix();
+            GL.LoadPixelMatrix(0, size, 0, size);
+            font.material.SetPass(0);
+            GL.Begin(GL.QUADS);
+            GL.Color(Color.white);
+            GL.TexCoord2(ci.uvBottomLeft.x,  ci.uvBottomLeft.y);  GL.Vertex3(x0,       y0,       0);
+            GL.TexCoord2(ci.uvBottomRight.x, ci.uvBottomRight.y); GL.Vertex3(x0+drawW, y0,       0);
+            GL.TexCoord2(ci.uvTopRight.x,    ci.uvTopRight.y);    GL.Vertex3(x0+drawW, y0+drawH, 0);
+            GL.TexCoord2(ci.uvTopLeft.x,     ci.uvTopLeft.y);     GL.Vertex3(x0,       y0+drawH, 0);
+            GL.End();
+            GL.PopMatrix();
+
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+            tex.ReadPixels(new Rect(0, 0, size, size), 0, 0);
+            tex.Apply();
+            RenderTexture.active = prevRT;
+            UnityEngine.Object.Destroy(rt);
+
+            // The RT now holds white-glyph-on-black: pixel.r == glyph coverage.
+            // Re-composite onto the correct bg so the background matches sphere icons.
+            var bgc = new Color32(
+                (byte)Mathf.RoundToInt(bg.r * 255f),
+                (byte)Mathf.RoundToInt(bg.g * 255f),
+                (byte)Mathf.RoundToInt(bg.b * 255f), 255);
+            var pixels32 = tex.GetPixels32();
+            for (int i = 0; i < pixels32.Length; i++)
+            {
+                float a = pixels32[i].r / 255f; // glyph alpha (white-on-black)
+                pixels32[i] = new Color32(
+                    (byte)Mathf.RoundToInt(bgc.r + (255 - bgc.r) * a),
+                    (byte)Mathf.RoundToInt(bgc.g + (255 - bgc.g) * a),
+                    (byte)Mathf.RoundToInt(bgc.b + (255 - bgc.b) * a), 255);
+            }
+            tex.SetPixels32(pixels32);
+            tex.Apply();
+
+            tex.filterMode = FilterMode.Bilinear;
+            tex.hideFlags  = HideFlags.DontUnloadUnusedAsset;
+            return tex;
+        }
+
+        static Texture2D BuildUndoArrowFallback()
+        {
+            const int S = 128;
+            float cx = 64f, cy = 64f;
+            float outerR = 45f, innerR = 28f, midR = (outerR + innerR) * 0.5f;
+            float halfThick = (outerR - innerR) * 0.5f;
+
+            var bg32 = new Color32(23, 23, 28, 255);
+            var pixels = new Color32[S * S];
+            for (int i = 0; i < pixels.Length; i++) pixels[i] = bg32;
+
+            // Anti-aliased arc from 85° to 300° CCW
+            for (int y = 0; y < S; y++)
+            for (int x = 0; x < S; x++)
+            {
+                float dx = x - cx, dy = y - cy;
+                float r = Mathf.Sqrt(dx * dx + dy * dy);
+                float dist = Mathf.Abs(r - midR);
+                float alpha = Mathf.Clamp01(1f - (dist - halfThick) / 1.5f);
+                if (alpha <= 0f) continue;
+                float a = Mathf.Atan2(dy, dx) * Mathf.Rad2Deg;
+                if (a < 0) a += 360f;
+                if (a < 85f || a > 300f) continue;
+                byte av = (byte)Mathf.RoundToInt(alpha * 255f);
+                pixels[y * S + x] = new Color32(av, av, av, 255);
+            }
+
+            // Arrowhead: base spans full arc thickness at 60°, tip 28 px along CCW tangent (150°)
+            float rad60  = 60f * Mathf.Deg2Rad;
+            float ibx = cx + innerR * Mathf.Cos(rad60), iby = cy + innerR * Mathf.Sin(rad60);
+            float obx = cx + outerR * Mathf.Cos(rad60), oby = cy + outerR * Mathf.Sin(rad60);
+            float tmx = (ibx + obx) * 0.5f, tmy = (iby + oby) * 0.5f;
+            float tanRad = 150f * Mathf.Deg2Rad;
+            float ptX = tmx + Mathf.Cos(tanRad) * 28f, ptY = tmy + Mathf.Sin(tanRad) * 28f;
+
+            int ax0 = Mathf.Max(0,   (int)Mathf.Floor(Mathf.Min(ptX, Mathf.Min(ibx, obx))) - 2);
+            int ax1 = Mathf.Min(S-1, (int)Mathf.Ceil(Mathf.Max(ptX, Mathf.Max(ibx, obx))) + 2);
+            int ay0 = Mathf.Max(0,   (int)Mathf.Floor(Mathf.Min(ptY, Mathf.Min(iby, oby))) - 2);
+            int ay1 = Mathf.Min(S-1, (int)Mathf.Ceil(Mathf.Max(ptY, Mathf.Max(iby, oby))) + 2);
+            for (int y = ay0; y <= ay1; y++)
+            for (int x = ax0; x <= ax1; x++)
+                if (PtInTri(x + 0.5f, y + 0.5f, ptX, ptY, ibx, iby, obx, oby))
+                    pixels[y * S + x] = new Color32(255, 255, 255, 255);
+
+            var tex = new Texture2D(S, S, TextureFormat.RGBA32, false);
+            tex.filterMode = FilterMode.Bilinear;
+            tex.hideFlags  = HideFlags.DontUnloadUnusedAsset;
+            tex.SetPixels32(pixels);
+            tex.Apply();
+            return tex;
+        }
+
+        static bool PtInTri(float px, float py, float ax, float ay, float bx, float by, float cx, float cy)
+        {
+            float d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
+            float d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
+            float d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
+            bool hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
+            bool hasPos = d1 > 0 || d2 > 0 || d3 > 0;
+            return !(hasNeg && hasPos);
         }
 
         // ---- Card refresh ----

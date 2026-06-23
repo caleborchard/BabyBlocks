@@ -508,6 +508,12 @@ namespace BabyBlocks
         {
             if (leo == null || entry == null) return;
 
+            if (entry.id == int.MinValue)
+            {
+                ResetToDefaultMaterials(leo, pushHistory);
+                return;
+            }
+
             var renderers = leo.GetComponentsInChildren<Renderer>(true);
             var matsBefore = new Material[renderers.Length][];
             for (int i = 0; i < renderers.Length; i++)
@@ -561,6 +567,48 @@ namespace BabyBlocks
                 LevelEditorHistory.PushMaterial(leo, renderers, matsBefore, tagObjs, tagsBefore, idBefore);
                 PropHistory.RecordMaterialUse(entry.id);
             }
+        }
+
+        // ── Reset to default ─────────────────────────────────────────────────
+
+        static void ResetToDefaultMaterials(LevelEditorObject leo, bool pushHistory)
+        {
+            var renderers  = leo.GetComponentsInChildren<Renderer>(true);
+            var matsBefore = new Material[renderers.Length][];
+            for (int i = 0; i < renderers.Length; i++)
+                matsBefore[i] = renderers[i] != null ? renderers[i].sharedMaterials : null;
+
+            var colliders = leo.GetComponentsInChildren<Collider>(true);
+            var tagObjs   = new GameObject[1 + colliders.Length];
+            tagObjs[0] = leo.gameObject;
+            for (int i = 0; i < colliders.Length; i++)
+                tagObjs[1 + i] = colliders[i] != null ? colliders[i].gameObject : null;
+            var tagsBefore = new string[tagObjs.Length];
+            for (int i = 0; i < tagObjs.Length; i++)
+                tagsBefore[i] = tagObjs[i] != null ? tagObjs[i].tag : null;
+
+            int idBefore = leo.materialConstructionId;
+
+            // Restore original prefab materials from the loaded addressable
+            var info = PropLibrary.FindById(leo.addressableKey);
+            if (info?.sourcePrefab != null)
+            {
+                var srcRenderers = info.sourcePrefab.GetComponentsInChildren<Renderer>(true);
+                for (int i = 0; i < renderers.Length && i < srcRenderers.Length; i++)
+                {
+                    if (renderers[i] == null || srcRenderers[i] == null) continue;
+                    renderers[i].sharedMaterials = srcRenderers[i].sharedMaterials;
+                }
+            }
+
+            PropInstanceServices.ApplySurfaceType(leo, "");
+            var existingChecker = leo.GetComponent<BbSunglassesChecker>();
+            if (existingChecker != null) UnityEngine.Object.DestroyImmediate(existingChecker);
+
+            leo.materialConstructionId = -1;
+
+            if (pushHistory)
+                LevelEditorHistory.PushMaterial(leo, renderers, matsBefore, tagObjs, tagsBefore, idBefore);
         }
 
         // ── Styles ───────────────────────────────────────────────────────────
