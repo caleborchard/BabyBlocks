@@ -79,6 +79,16 @@ namespace BabyBlocks.UI
         HatPreviewRenderer _preview;
         GameObject         _offsetRoot;
         Text               _offsetHdrText;
+        GameObject         _hatModeRow;
+        ButtonRef          _hatModeBtn;
+        Text               _hatModeLabel;
+        bool               _hatModeIsHead = true;
+        GameObject         _hairSection;
+        Text               _hairLabel;
+        Slider             _hairSlider;
+        GameObject         _hatSunglassesRow;
+        ButtonRef          _hatSunglassesBtn;
+        Text               _hatSunglassesLabel;
 
         // Connector line (sibling of panel in canvas root)
         RectTransform _lineRT;
@@ -90,9 +100,10 @@ namespace BabyBlocks.UI
         static readonly Dictionary<int, string> _rawMatNames = new();
 
         // Horizontal drag sensitivity per field group
-        const float SensPos   = 0.05f;
-        const float SensScale = 0.005f;
-        const float SensRot   = 0.5f;
+        const float SensPos       = 0.05f;
+        const float SensOffsetPos = 0.003f;
+        const float SensScale     = 0.005f;
+        const float SensRot       = 0.5f;
 
         // Used by PropBrowserUI.IsTypingInUI
         public bool IsMatSearchFocused => _matOpen && (_matSearch?.Component?.isFocused == true);
@@ -108,7 +119,7 @@ namespace BabyBlocks.UI
             Rect.pivot            = new Vector2(0.5f, 0.5f);
             Rect.anchorMin        = new Vector2(0.5f, 0.5f);
             Rect.anchorMax        = new Vector2(0.5f, 0.5f);
-            Rect.sizeDelta        = new Vector2(300f, 600f);
+            Rect.sizeDelta        = new Vector2(300f, 860f);
             Rect.anchoredPosition = new Vector2(250f, 0f);
         }
 
@@ -194,8 +205,107 @@ namespace BabyBlocks.UI
             UIFactory.SetLayoutElement(offsetHdrGO.gameObject, minHeight: 16, flexibleWidth: 9999);
             _offsetHdrText = offsetHdrGO;
 
+            // Head / Hand mode toggle (Hat-mode only).
+            _hatModeRow = UIFactory.CreateHorizontalGroup(_offsetRoot, "HatModeRow",
+                false, false, true, true, spacing: 4);
+            UIFactory.SetLayoutElement(_hatModeRow, minHeight: 24, flexibleWidth: 9999);
+            var modeLbl = UIFactory.CreateLabel(_hatModeRow, "ModeLbl", "Mode",
+                TextAnchor.MiddleLeft, Color.white, fontSize: 13);
+            UIFactory.SetLayoutElement(modeLbl.gameObject, minWidth: 64, preferredWidth: 64, flexibleWidth: 0);
+            _hatModeBtn = UIFactory.CreateButton(_hatModeRow, "HatModeBtn", "Head");
+            UIFactory.SetLayoutElement(_hatModeBtn.Component.gameObject, minHeight: 22, flexibleWidth: 9999);
+            PropBrowserUI.ApplyButtonColors(_hatModeBtn);
+            _hatModeLabel = _hatModeBtn.Component.GetComponentInChildren<Text>();
+            _hatModeBtn.OnClick += () =>
+            {
+                _hatModeIsHead = !_hatModeIsHead;
+                RefreshHatModeLabel();
+                RefreshTransform();
+            };
+
+            // Act As Sunglasses toggle (Hat mode only) — direct child of _offsetRoot so it
+            // stretches to the same width as Pos/Rot rows.
+            _hatSunglassesBtn = UIFactory.CreateButton(_offsetRoot, "HatSunglassesBtn", "");
+            UIFactory.SetLayoutElement(_hatSunglassesBtn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
+            PropBrowserUI.ApplyButtonColors(_hatSunglassesBtn);
+            _hatSunglassesLabel = _hatSunglassesBtn.Component.GetComponentInChildren<Text>();
+            _hatSunglassesBtn.OnClick += ToggleHatSunglasses;
+            _hatSunglassesRow = _hatSunglassesBtn.Component.gameObject;
+            _hatSunglassesRow.SetActive(false);
+
             Vec3Row("Pos", 9,  _offsetRoot);
             Vec3Row("Rot", 12, _offsetRoot);
+
+            // Hair cut section (Hat mode only).
+            _hairSection = UIFactory.CreateUIObject("HairSection", _offsetRoot);
+            UIFactory.SetLayoutGroup<VerticalLayoutGroup>(_hairSection,
+                forceWidth: true, forceHeight: false,
+                childControlWidth: true, childControlHeight: true, spacing: 2);
+            UIFactory.SetLayoutElement(_hairSection, flexibleWidth: 9999, minHeight: 0);
+
+            var hairLblGO = UIFactory.CreateLabel(_hairSection, "HairLbl", "Hair cut: 0%",
+                TextAnchor.MiddleLeft, Color.white, fontSize: 13);
+            UIFactory.SetLayoutElement(hairLblGO.gameObject, minHeight: 18, flexibleWidth: 9999);
+            _hairLabel = hairLblGO;
+
+            var hairSliderGO = UIFactory.CreateUIObject("HairSlider", _hairSection);
+            UIFactory.SetLayoutElement(hairSliderGO, minHeight: 20, flexibleWidth: 9999);
+            hairSliderGO.AddComponent<Image>().color = new Color(0.2f, 0.2f, 0.25f, 1f);
+
+            var fillArea = UIFactory.CreateUIObject("Fill Area", hairSliderGO);
+            var fillAreaRT = fillArea.GetComponent<RectTransform>();
+            fillAreaRT.anchorMin = new Vector2(0f, 0.2f);
+            fillAreaRT.anchorMax = new Vector2(1f, 0.8f);
+            fillAreaRT.offsetMin = new Vector2(5f, 0f);
+            fillAreaRT.offsetMax = new Vector2(-15f, 0f);
+            var fill = UIFactory.CreateUIObject("Fill", fillArea);
+            fill.AddComponent<Image>().color = new Color(0.35f, 0.55f, 0.85f, 1f);
+            var fillRT = fill.GetComponent<RectTransform>();
+            fillRT.anchorMin = Vector2.zero; fillRT.anchorMax = Vector2.one; fillRT.sizeDelta = Vector2.zero;
+
+            var handleArea = UIFactory.CreateUIObject("Handle Slide Area", hairSliderGO);
+            var handleAreaRT = handleArea.GetComponent<RectTransform>();
+            handleAreaRT.anchorMin = Vector2.zero; handleAreaRT.anchorMax = Vector2.one;
+            handleAreaRT.offsetMin = new Vector2(10f, 0f); handleAreaRT.offsetMax = new Vector2(-10f, 0f);
+            var handle = UIFactory.CreateUIObject("Handle", handleArea);
+            var handleImg = handle.AddComponent<Image>();
+            handleImg.color = new Color(0.65f, 0.75f, 0.95f, 1f);
+            var handleRT = handle.GetComponent<RectTransform>();
+            handleRT.anchorMin = new Vector2(0f, 0f); handleRT.anchorMax = new Vector2(0f, 1f);
+            handleRT.sizeDelta = new Vector2(20f, 0f);
+
+            _hairSlider = hairSliderGO.AddComponent<Slider>();
+            _hairSlider.fillRect     = fillRT;
+            _hairSlider.handleRect   = handleRT;
+            _hairSlider.targetGraphic = handleImg;
+            _hairSlider.direction    = Slider.Direction.LeftToRight;
+            _hairSlider.minValue     = 0f;
+            _hairSlider.maxValue     = 1f;
+            _hairSlider.value        = 0f;
+
+            _hairSlider.onValueChanged.AddListener((float v) =>
+            {
+                if (_target == null || _target.physicsMode != PhysicsMode.Hat) return;
+                // Store the game-ready value (1=full hair, 0=none) so SyncHatHairAmount
+                // and in-game hat.hairAmt are correct without any extra inversion.
+                float gameVal = 1f - v;
+                _target.hatHairAmt = gameVal;
+                var hat = _target.GetComponent<Hat>()
+                       ?? _target.GetComponentInChildren<Hat>(true);
+                if (hat != null) hat.hairAmt = gameVal;
+                else PhysicsObjectManager.SyncHatHairAmount(_target);
+                _preview?.ApplyHairShader(gameVal, hat);
+                if (_hairLabel != null)
+                    _hairLabel.text = $"Hair: {Mathf.RoundToInt(v * 100f)}%";
+            });
+
+            _hairSection.SetActive(false);
+
+            // Zero-height anchor — HatPreviewRenderer reads its screen position each
+            // OnGUI frame to know where to draw the IMGUI preview texture.
+            var previewAnchor = UIFactory.CreateUIObject("HatPreviewAnchor", _offsetRoot);
+            UIFactory.SetLayoutElement(previewAnchor, minHeight: 0, flexibleWidth: 9999);
+            HatPreviewRenderer.SetAnchor(previewAnchor.GetComponent<RectTransform>());
 
             _offsetRoot.SetActive(false);
         }
@@ -505,7 +615,11 @@ namespace BabyBlocks.UI
             if (Instance._target != leo)
             {
                 Instance._preview?.Teardown();
-                Instance._preview = null;
+                Instance._preview       = null;
+                Instance._hatModeIsHead = true;
+                // Sync hair slider to new target (without firing the write-back listener).
+                if (Instance._hairSlider != null)
+                    Instance._hairSlider.SetValueWithoutNotify(1f - leo.hatHairAmt);
             }
             Instance._target = leo;
             Instance.UIRoot.SetActive(true);
@@ -611,7 +725,14 @@ namespace BabyBlocks.UI
             RefreshMatLabel();
             RefreshSurfLabel();
             RefreshFlagLabels();
+            RefreshHatModeLabel();
             TickOffsets();
+        }
+
+        void RefreshHatModeLabel()
+        {
+            if (_hatModeLabel != null)
+                _hatModeLabel.text = _hatModeIsHead ? "Head → Hand" : "Hand → Head";
         }
 
         void TickOffsets()
@@ -621,10 +742,31 @@ namespace BabyBlocks.UI
             var mode = _target.physicsMode;
             bool showOffsets = mode == PhysicsMode.Hat || mode == PhysicsMode.Grabable;
 
+            // Apply all visibility changes first so the layout query below sees the final state.
             if (_offsetRoot.activeSelf != showOffsets)
-            {
                 _offsetRoot.SetActive(showOffsets);
-                LayoutRebuilder.ForceRebuildLayoutImmediate(ContentRoot.GetComponent<RectTransform>());
+            if (_offsetHdrText != null)
+                _offsetHdrText.text = mode == PhysicsMode.Hat ? "─ Hat Offsets" : "─ Grab Offsets";
+            if (_hatModeRow != null)
+                _hatModeRow.SetActive(showOffsets && mode == PhysicsMode.Hat);
+            if (_hairSection != null)
+                _hairSection.SetActive(showOffsets && mode == PhysicsMode.Hat);
+            if (_hatSunglassesRow != null)
+                _hatSunglassesRow.SetActive(showOffsets && mode == PhysicsMode.Hat);
+            if (showOffsets && mode == PhysicsMode.Hat)
+                RefreshHatSunglassesLabel();
+
+            // Size the panel to exactly fit its visible content.
+            // LayoutUtility.GetPreferredHeight traverses the hierarchy without triggering
+            // a full rebuild, so it reflects the SetActive calls above immediately.
+            var contentRT = ContentRoot.GetComponent<RectTransform>();
+            float contentH    = UnityEngine.UI.LayoutUtility.GetPreferredHeight(contentRT);
+            float previewExtra = showOffsets ? HatPreviewRenderer.PreviewSize + 8f : 0f;
+            float targetH     = Mathf.Max(contentH + 4f + previewExtra, (float)MinHeight);
+            if (!Mathf.Approximately(Rect.rect.height, targetH))
+            {
+                Rect.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, targetH);
+                Dragger.OnEndResize();
             }
 
             if (!showOffsets)
@@ -633,21 +775,33 @@ namespace BabyBlocks.UI
                 return;
             }
 
-            // Update section label
-            if (_offsetHdrText != null)
-                _offsetHdrText.text = mode == PhysicsMode.Hat ? "─ Hat Offsets" : "─ Grab Offsets";
+            // Keep label current and sync slider to external changes (undo, level load).
+            if (mode == PhysicsMode.Hat && _hairSlider != null && _hairLabel != null)
+            {
+                float propVal = _target.hatHairAmt;  // game value: 1=full hair, 0=none
+                float sliderPos = 1f - propVal;
+                if (!Mathf.Approximately(_hairSlider.value, sliderPos))
+                {
+                    _hairSlider.SetValueWithoutNotify(sliderPos);
+                    var hat = _target.GetComponent<Hat>() ?? _target.GetComponentInChildren<Hat>(true);
+                    _preview?.ApplyHairShader(propVal, hat);
+                }
+                _hairLabel.text = $"Hair: {Mathf.RoundToInt(sliderPos * 100f)}%";
+            }
 
-            bool wantPreview = mode == PhysicsMode.Hat;
+            // Grabable always shows hand-mode preview; Hat respects _hatModeIsHead.
+            bool wantPreview   = mode == PhysicsMode.Hat || mode == PhysicsMode.Grabable;
+            bool previewHeadMode = mode == PhysicsMode.Hat && _hatModeIsHead;
             if (wantPreview)
             {
                 if (_preview == null || !_preview.IsReady)
                 {
                     _preview = new HatPreviewRenderer();
-                    _preview.Setup(_target);
+                    _preview.Setup(_target, previewHeadMode);
                 }
                 else
                 {
-                    _preview.SyncPropFromTarget(_target);
+                    _preview.SyncPropFromTarget(_target, previewHeadMode);
                     _preview.UpdateCameraPosition();
                 }
             }
@@ -669,9 +823,9 @@ namespace BabyBlocks.UI
 
             if (_offsetRoot != null && _offsetRoot.activeSelf)
             {
-                bool isHat = _target.physicsMode == PhysicsMode.Hat;
-                var op = isHat ? _target.hatOffsetPos : _target.grabOffsetPos;
-                var or_ = isHat ? _target.hatOffsetRot : _target.grabOffsetRot;
+                bool useHat = _target.physicsMode == PhysicsMode.Hat && _hatModeIsHead;
+                var op  = useHat ? _target.hatOffsetPos : _target.grabOffsetPos;
+                var or_ = useHat ? _target.hatOffsetRot : _target.grabOffsetRot;
                 SetF(9, op.x);  SetF(10, op.y); SetF(11, op.z);
                 SetF(12, or_.x); SetF(13, or_.y); SetF(14, or_.z);
             }
@@ -739,6 +893,24 @@ namespace BabyBlocks.UI
         // ─────────────────────────────────────────────────────────────────────
         //  Flag toggles
         // ─────────────────────────────────────────────────────────────────────
+
+        void ToggleHatSunglasses()
+        {
+            if (_target == null || _target.physicsMode != PhysicsMode.Hat) return;
+            var hat = _target.GetComponent<Hat>() ?? _target.GetComponentInChildren<Hat>(true);
+            if (hat == null) return;
+            hat.isSunglasses = !hat.isSunglasses;
+            RefreshHatSunglassesLabel(hat);
+        }
+
+        void RefreshHatSunglassesLabel(Hat hat = null)
+        {
+            if (_hatSunglassesLabel == null) return;
+            if (hat == null && _target != null)
+                hat = _target.GetComponent<Hat>() ?? _target.GetComponentInChildren<Hat>(true);
+            bool on = hat != null && hat.isSunglasses;
+            _hatSunglassesLabel.text = on ? "Act As Sunglasses: On → Off" : "Act As Sunglasses: Off → On";
+        }
 
         void ToggleSunglasses()
         {
@@ -1003,18 +1175,19 @@ namespace BabyBlocks.UI
         {
             if (_target == null) return 0f;
             var t = _target.transform;
-            bool isHat = _target.physicsMode == PhysicsMode.Hat;
+            // Use hat offsets when in Hat mode AND head mode; grab offsets otherwise.
+            bool useHat = _target.physicsMode == PhysicsMode.Hat && _hatModeIsHead;
             return i switch
             {
                 0 => t.position.x,    1 => t.position.y,    2 => t.position.z,
                 3 => t.localScale.x,  4 => t.localScale.y,  5 => t.localScale.z,
                 6 => t.eulerAngles.x, 7 => t.eulerAngles.y, 8 => t.eulerAngles.z,
-                9  => isHat ? _target.hatOffsetPos.x : _target.grabOffsetPos.x,
-                10 => isHat ? _target.hatOffsetPos.y : _target.grabOffsetPos.y,
-                11 => isHat ? _target.hatOffsetPos.z : _target.grabOffsetPos.z,
-                12 => isHat ? _target.hatOffsetRot.x : _target.grabOffsetRot.x,
-                13 => isHat ? _target.hatOffsetRot.y : _target.grabOffsetRot.y,
-                14 => isHat ? _target.hatOffsetRot.z : _target.grabOffsetRot.z,
+                9  => useHat ? _target.hatOffsetPos.x : _target.grabOffsetPos.x,
+                10 => useHat ? _target.hatOffsetPos.y : _target.grabOffsetPos.y,
+                11 => useHat ? _target.hatOffsetPos.z : _target.grabOffsetPos.z,
+                12 => useHat ? _target.hatOffsetRot.x : _target.grabOffsetRot.x,
+                13 => useHat ? _target.hatOffsetRot.y : _target.grabOffsetRot.y,
+                14 => useHat ? _target.hatOffsetRot.z : _target.grabOffsetRot.z,
                 _ => 0f,
             };
         }
@@ -1048,20 +1221,45 @@ namespace BabyBlocks.UI
 
         void SetOffsetPos(float v, int axis)
         {
-            bool isHat = _target.physicsMode == PhysicsMode.Hat;
-            var p = isHat ? _target.hatOffsetPos : _target.grabOffsetPos;
+            bool useHat = _target.physicsMode == PhysicsMode.Hat && _hatModeIsHead;
+            var p = useHat ? _target.hatOffsetPos : _target.grabOffsetPos;
             if (axis == 0) p.x = v; else if (axis == 1) p.y = v; else p.z = v;
-            if (isHat) { _target.hatOffsetPos = p;  LevelEditor.SetHatOffset(_target.hatOffsetPos, _target.hatOffsetRot); _preview?.ApplyHatOffset(_target); }
-            else       { _target.grabOffsetPos = p; LevelEditor.SetGrabOffset(_target.grabOffsetPos, _target.grabOffsetRot); }
+            if (useHat)
+            {
+                _target.hatOffsetPos = p;
+                LevelEditor.SetHatOffset(_target.hatOffsetPos, _target.hatOffsetRot);
+                _preview?.ApplyHatOffset(_target, headMode: true);
+            }
+            else
+            {
+                _target.grabOffsetPos = p;
+                // LevelEditor.SetGrabOffset skips Hat-mode props; call SyncGrabOffset directly.
+                PhysicsObjectManager.SyncGrabOffset(_target);
+                if (_target.physicsMode == PhysicsMode.Grabable)
+                    LevelEditor.SetGrabOffset(_target.grabOffsetPos, _target.grabOffsetRot);
+                _preview?.ApplyHatOffset(_target, headMode: false);
+            }
         }
 
         void SetOffsetRot(float v, int axis)
         {
-            bool isHat = _target.physicsMode == PhysicsMode.Hat;
-            var r = isHat ? _target.hatOffsetRot : _target.grabOffsetRot;
+            bool useHat = _target.physicsMode == PhysicsMode.Hat && _hatModeIsHead;
+            var r = useHat ? _target.hatOffsetRot : _target.grabOffsetRot;
             if (axis == 0) r.x = v; else if (axis == 1) r.y = v; else r.z = v;
-            if (isHat) { _target.hatOffsetRot = r;  LevelEditor.SetHatOffset(_target.hatOffsetPos, _target.hatOffsetRot); _preview?.ApplyHatOffset(_target); }
-            else       { _target.grabOffsetRot = r; LevelEditor.SetGrabOffset(_target.grabOffsetPos, _target.grabOffsetRot); }
+            if (useHat)
+            {
+                _target.hatOffsetRot = r;
+                LevelEditor.SetHatOffset(_target.hatOffsetPos, _target.hatOffsetRot);
+                _preview?.ApplyHatOffset(_target, headMode: true);
+            }
+            else
+            {
+                _target.grabOffsetRot = r;
+                PhysicsObjectManager.SyncGrabOffset(_target);
+                if (_target.physicsMode == PhysicsMode.Grabable)
+                    LevelEditor.SetGrabOffset(_target.grabOffsetPos, _target.grabOffsetRot);
+                _preview?.ApplyHatOffset(_target, headMode: false);
+            }
         }
 
         void RestoreVec(Vector3 pos, Vector3 scale, Quaternion rot)
@@ -1076,8 +1274,8 @@ namespace BabyBlocks.UI
             i < 3  ? SensPos :
             i < 6  ? SensScale :
             i < 9  ? SensRot :
-            i < 12 ? SensPos :   // offset pos
-                     SensRot;    // offset rot
+            i < 12 ? SensOffsetPos :
+                     SensRot;
 
         static float TryParse(string s, float fallback) =>
             float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
