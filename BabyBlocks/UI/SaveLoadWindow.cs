@@ -1,7 +1,9 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using MelonLoader.Utils;
 using UnityEngine;
 
 namespace BabyBlocks
@@ -139,7 +141,7 @@ namespace BabyBlocks
     static class SaveLoadWindow
     {
         const float WinW   = 310f;
-        const float BaseWinH = 208f;
+        const float BaseWinH = 232f;
         const float HeaderH= 30f;
         const float Pad    = 7f;
         const float DropdownItemH = 18f;
@@ -175,9 +177,7 @@ namespace BabyBlocks
             string saved = Core.LastSavePath;
             _filePath = !string.IsNullOrEmpty(saved)
                 ? saved
-                : Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                    "BabyBlocks", "level.bbb");
+                : Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "levels", "level.bbb");
 
             _windowRect = new Rect(Screen.width - WinW - 10f, Screen.height - BaseWinH - 40f, WinW, BaseWinH);
         }
@@ -298,6 +298,11 @@ namespace BabyBlocks
                 }
             }
 
+            if (GUI.Button(new Rect(contentX, contentY, innerW, 22f), "Open Levels Folder"))
+                OpenLevelsFolder();
+
+            contentY += 26f;
+
             // File path text field + browse button
             float browseW = 26f;
             float fieldW  = innerW - browseW - Pad;
@@ -409,6 +414,23 @@ namespace BabyBlocks
             {
                 _filePath = picked;
                 Core.LastSavePath = picked;
+            }
+        }
+
+        static void OpenLevelsFolder()
+        {
+            string folder = Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "levels");
+            try { Directory.CreateDirectory(folder); } catch { }
+            try
+            {
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    Process.Start("explorer.exe", folder);
+                else
+                    Process.Start(new ProcessStartInfo("xdg-open", folder) { UseShellExecute = false });
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Could not open folder: {ex.Message}");
             }
         }
 

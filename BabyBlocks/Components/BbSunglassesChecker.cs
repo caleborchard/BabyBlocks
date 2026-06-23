@@ -10,7 +10,7 @@ namespace BabyBlocks
 
         public static bool IsWearingSunglasses()
         {
-            if (FlyCamController.FlyCamActive && FlyCamController.CursorMode) return true;
+            if (FlyCamController.FlyCamActive) return true;
             var pm = PlayerMovement.me;
             return pm != null && pm.currentHat != null && pm.currentHat.isSunglasses && !pm.inCutscene;
         }

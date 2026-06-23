@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using MelonLoader;
 using MelonLoader.Utils;
 using UnityEngine;
@@ -122,6 +124,12 @@ namespace BabyBlocks.UI
             _statusText = UIFactory.CreateLabel(ContentRoot, "Status", "",
                 TextAnchor.MiddleLeft, new Color(1f, 1f, 0.4f), fontSize: 13);
             UIFactory.SetLayoutElement(_statusText.gameObject, minHeight: 18, flexibleWidth: 9999);
+
+            // ── Open folder button ────────────────────────────────────────────
+            var openFolderBtn = UIFactory.CreateButton(ContentRoot, "OpenFolderBtn", "Open Levels Folder");
+            UIFactory.SetLayoutElement(openFolderBtn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
+            PropBrowserUI.ApplyButtonColors(openFolderBtn);
+            openFolderBtn.OnClick += () => OpenFolder(LevelsDir);
 
             // ── Divider ───────────────────────────────────────────────────────
             var divLbl = UIFactory.CreateLabel(ContentRoot, "DivLbl", "── existing files ──",
@@ -307,6 +315,22 @@ namespace BabyBlocks.UI
         {
             if (_statusText != null) _statusText.text = msg;
             _statusTime = Time.realtimeSinceStartup;
+        }
+
+        static void OpenFolder(string folder)
+        {
+            try { Directory.CreateDirectory(folder); } catch { }
+            try
+            {
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    Process.Start("explorer.exe", folder);
+                else
+                    Process.Start(new ProcessStartInfo("xdg-open", folder) { UseShellExecute = false });
+            }
+            catch (Exception e)
+            {
+                MelonLogger.Warning($"[FileBrowser] Could not open folder: {e.Message}");
+            }
         }
 
         static void TintButton(ButtonRef btn, Color color)
