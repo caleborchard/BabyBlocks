@@ -49,6 +49,10 @@ namespace BabyBlocks
         // an id into MaterialConstructionLibrary.Entries, -1 if none.
         public int materialConstructionId = -1;
 
+        // Per-instance overrides independent of any material construction entry.
+        public bool sunglassesNeeded;   // adds BbSunglassesChecker (prop invisible without sunglasses hat)
+        public bool playerPassthrough;  // makes all colliders triggers so player walks through the prop
+
         // Non-zero once this object has been synced over the network (placed or
         // received via ModNetworking). Shared between both clients' copies of the
         // same logical prop so transform updates apply in-place instead of

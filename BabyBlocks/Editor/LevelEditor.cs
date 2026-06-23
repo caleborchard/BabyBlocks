@@ -73,6 +73,8 @@ namespace BabyBlocks
             public bool isAddressable;
             public int materialConstructionId; // -1 if none
             public PhysicsMode physicsMode;
+            public bool sunglassesNeeded;
+            public bool playerPassthrough;
         }
 
         static readonly List<CopyEntry> _copyEntries = new();
@@ -1252,7 +1254,9 @@ namespace BabyBlocks
                     rotation = obj.transform.rotation,
                     isAddressable = !string.IsNullOrEmpty(obj.addressableKey),
                     materialConstructionId = obj.materialConstructionId,
-                    physicsMode = obj.physicsMode,
+                    physicsMode       = obj.physicsMode,
+                    sunglassesNeeded  = obj.sunglassesNeeded,
+                    playerPassthrough = obj.playerPassthrough,
                 };
 
                 if (!entry.isAddressable)
@@ -1319,6 +1323,13 @@ namespace BabyBlocks
                     selectedObject = obj;
                     SetPhysicsMode(entry.physicsMode);
                 }
+
+                obj.sunglassesNeeded  = entry.sunglassesNeeded;
+                obj.playerPassthrough = entry.playerPassthrough;
+                if (entry.sunglassesNeeded && obj.GetComponent<BbSunglassesChecker>() == null)
+                    obj.gameObject.AddComponent<BbSunglassesChecker>();
+                if (entry.playerPassthrough)
+                    PropInstanceServices.SetBushPassthrough(obj.gameObject, true);
 
                 newSelection.Add(obj);
                 LevelEditorHistory.PushSpawn(obj);

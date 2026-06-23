@@ -61,6 +61,12 @@ namespace BabyBlocks.UI
         GameObject _surfDDGO;
         bool       _surfOpen;
 
+        // Flag toggles
+        ButtonRef _sunglassesBtn;
+        Text      _sunglassesLabel;
+        ButtonRef _passthroughBtn;
+        Text      _passthroughLabel;
+
         // Connector line (sibling of panel in canvas root)
         RectTransform _lineRT;
 
@@ -147,6 +153,21 @@ namespace BabyBlocks.UI
             _surfLabel = _surfBtn.Component.GetComponentInChildren<Text>();
             _surfBtn.OnClick += ToggleSurfDd;
             BuildSurfDd();
+
+            // ── Flags ─────────────────────────────────────────────────────────
+            SectionHdr("Flags");
+
+            _sunglassesBtn = UIFactory.CreateButton(ContentRoot, "SunglassesBtn", "");
+            UIFactory.SetLayoutElement(_sunglassesBtn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
+            PropBrowserUI.ApplyButtonColors(_sunglassesBtn);
+            _sunglassesLabel = _sunglassesBtn.Component.GetComponentInChildren<Text>();
+            _sunglassesBtn.OnClick += ToggleSunglasses;
+
+            _passthroughBtn = UIFactory.CreateButton(ContentRoot, "PassthroughBtn", "");
+            UIFactory.SetLayoutElement(_passthroughBtn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
+            PropBrowserUI.ApplyButtonColors(_passthroughBtn);
+            _passthroughLabel = _passthroughBtn.Component.GetComponentInChildren<Text>();
+            _passthroughBtn.OnClick += TogglePassthrough;
 
             // ── Offsets (reserved for future use) ─────────────────────────────
             SectionHdr("Offsets (coming soon)");
@@ -523,6 +544,7 @@ namespace BabyBlocks.UI
             RefreshPhysLabel();
             RefreshMatLabel();
             RefreshSurfLabel();
+            RefreshFlagLabels();
             UpdateLine();
         }
 
@@ -537,6 +559,7 @@ namespace BabyBlocks.UI
             RefreshPhysLabel();
             RefreshMatLabel();
             RefreshSurfLabel();
+            RefreshFlagLabels();
         }
 
         void RefreshTransform()
@@ -606,6 +629,45 @@ namespace BabyBlocks.UI
             if (_surfLabel == null || _target == null) return;
             string tag = _target.gameObject.tag;
             _surfLabel.text = string.IsNullOrEmpty(tag) || tag == "Untagged" ? "(none)" : tag;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  Flag toggles
+        // ─────────────────────────────────────────────────────────────────────
+
+        void ToggleSunglasses()
+        {
+            if (_target == null) return;
+            bool newVal = !_target.sunglassesNeeded;
+            _target.sunglassesNeeded = newVal;
+            var existing = _target.GetComponent<BbSunglassesChecker>();
+            if (newVal && existing == null)
+                _target.gameObject.AddComponent<BbSunglassesChecker>();
+            else if (!newVal && existing != null)
+                UnityEngine.Object.DestroyImmediate(existing);
+            RefreshFlagLabels();
+        }
+
+        void TogglePassthrough()
+        {
+            if (_target == null) return;
+            bool newVal = !_target.playerPassthrough;
+            _target.playerPassthrough = newVal;
+            PropInstanceServices.SetBushPassthrough(_target.gameObject, newVal);
+            RefreshFlagLabels();
+        }
+
+        void RefreshFlagLabels()
+        {
+            if (_target == null) return;
+            // Drive sunglassesNeeded from actual component presence: construction entries also
+            // add/remove BbSunglassesChecker, so the component is the source of truth.
+            bool hasSunglasses = _target.GetComponent<BbSunglassesChecker>() != null;
+            _target.sunglassesNeeded = hasSunglasses;
+            if (_sunglassesLabel != null)
+                _sunglassesLabel.text = (hasSunglasses ? "[ON]  " : "[OFF] ") + "Sunglasses Invisible";
+            if (_passthroughLabel != null)
+                _passthroughLabel.text = (_target.playerPassthrough ? "[ON]  " : "[OFF] ") + "No Player Collision";
         }
 
         // ─────────────────────────────────────────────────────────────────────

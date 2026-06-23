@@ -72,7 +72,7 @@ namespace BabyBlocks
     static class LevelSaveLoad
     {
         static readonly byte[] Magic = { 0x42, 0x42, 0x42 };
-        const byte FormatVersion = 9;
+        const byte FormatVersion = 10;
 
         // Reserved MetaIndex value identifying the Spawn Point — it isn't registered in
         // PropMetadataPanel (no per-instance metadata needed), so a sentinel outside the
@@ -96,6 +96,7 @@ namespace BabyBlocks
             public Vector3 hatOffsetPos;
             public Vector3 hatOffsetRot;
             public int materialConstructionId;
+            public byte instanceFlags; // 0x01=sunglassesNeeded  0x02=playerPassthrough
         }
 
         public static bool Save(string path)
@@ -330,7 +331,8 @@ namespace BabyBlocks
                     hatOffsetRot  = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
                 }
 
-                int materialConstructionId = version >= 8 ? r.ReadInt32() : -1;
+                int  materialConstructionId = version >= 8  ? r.ReadInt32() : -1;
+                byte instanceFlags          = version >= 10 ? r.ReadByte()  : (byte)0;
 
                 var info = PropLibrary.FindById(propId);
                 if (info == null)
@@ -373,13 +375,20 @@ namespace BabyBlocks
                 {
                     var construction = MaterialConstructionLibrary.FindById(materialConstructionId);
                     if (construction != null)
-                        MaterialConstructionPanel.ApplyToInstance(leo, construction);
+                        MaterialConstructionPanel.ApplyToInstance(leo, construction, pushHistory: false);
                     else
                     {
                         MelonLogger.Warning($"[SaveLoad] Material construction {materialConstructionId} not found for {leo.addressableKey}");
                         leo.materialConstructionId = -1;
                     }
                 }
+
+                leo.sunglassesNeeded  = (instanceFlags & 0x01) != 0;
+                leo.playerPassthrough = (instanceFlags & 0x02) != 0;
+                if (leo.sunglassesNeeded && leo.GetComponent<BbSunglassesChecker>() == null)
+                    leo.gameObject.AddComponent<BbSunglassesChecker>();
+                if (leo.playerPassthrough)
+                    PropInstanceServices.SetBushPassthrough(leo.gameObject, true);
                 leos[i] = leo;
                 spawned++;
 
@@ -505,6 +514,7 @@ namespace BabyBlocks
                     hatOffsetPos     = leo.hatOffsetPos,
                     hatOffsetRot     = leo.hatOffsetRot,
                     materialConstructionId = leo.materialConstructionId,
+                    instanceFlags = (byte)((leo.sunglassesNeeded ? 0x01 : 0) | (leo.playerPassthrough ? 0x02 : 0)),
                 });
             }
 
@@ -545,6 +555,7 @@ namespace BabyBlocks
             w.Write(record.hatOffsetPos.x);  w.Write(record.hatOffsetPos.y);  w.Write(record.hatOffsetPos.z);
             w.Write(record.hatOffsetRot.x);  w.Write(record.hatOffsetRot.y);  w.Write(record.hatOffsetRot.z);
             w.Write(record.materialConstructionId);
+            w.Write(record.instanceFlags);
         }
 
         // Persists every physics-enabled object's already-baked mesh+atlas (see
