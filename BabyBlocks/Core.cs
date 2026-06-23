@@ -284,6 +284,7 @@ namespace BabyBlocks
         public override void OnGUI()
         {
             FlyCamController.OnGUI();
+            UI.HatPreviewRenderer.DrawWindowGUI();
         }
     }
 

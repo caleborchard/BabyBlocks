@@ -30,15 +30,23 @@ namespace BabyBlocks.UI
             name = "Reset to Default",
         };
 
-        // Transform fields indexed 0-8: pos X/Y/Z, scale X/Y/Z, rot X/Y/Z
-        readonly InputFieldRef[] _fields = new InputFieldRef[9];
+        // Transform fields 0-8: pos X/Y/Z, scale X/Y/Z, rot X/Y/Z
+        // Offset fields 9-14:  offsetPos X/Y/Z, offsetRot X/Y/Z  (Hat / Grabable only)
+        readonly InputFieldRef[] _fields = new InputFieldRef[15];
 
         // Drag-to-edit state
-        int        _dragId = -1;
+        int        _dragId     = -1;
+        int        _editId     = -1;   // field currently in text-entry mode (-1 = none)
+        string     _editOriginalText = "";
+        bool       _editWasFocused;    // tracks isFocused frame-over-frame to detect Enter-to-commit via focus loss
+        bool       _wasHeld;           // LMB state last frame, used to synthesize 'up' (GetMouseButtonUp unreliable in IL2CPP)
         float      _dragStartMx, _dragStartVal;
         Vector3    _dragPos0;
         Vector3    _dragScale0;
         Quaternion _dragRot0;
+        Vector3    _dragRot0Euler;   // eulerAngles captured at drag start (stable base for rotation drag)
+        float      _lastClickTime  = -1f;
+        int        _lastClickField = -1;
 
         // Physics dropdown
         ButtonRef  _physBtn;
@@ -66,6 +74,11 @@ namespace BabyBlocks.UI
         Text      _sunglassesLabel;
         ButtonRef _passthroughBtn;
         Text      _passthroughLabel;
+
+        // Offsets section (Hat / Grabable)
+        HatPreviewRenderer _preview;
+        GameObject         _offsetRoot;
+        Text               _offsetHdrText;
 
         // Connector line (sibling of panel in canvas root)
         RectTransform _lineRT;
@@ -95,7 +108,7 @@ namespace BabyBlocks.UI
             Rect.pivot            = new Vector2(0.5f, 0.5f);
             Rect.anchorMin        = new Vector2(0.5f, 0.5f);
             Rect.anchorMax        = new Vector2(0.5f, 0.5f);
-            Rect.sizeDelta        = new Vector2(300f, 470f);
+            Rect.sizeDelta        = new Vector2(300f, 600f);
             Rect.anchoredPosition = new Vector2(250f, 0f);
         }
 
@@ -169,8 +182,22 @@ namespace BabyBlocks.UI
             _passthroughLabel = _passthroughBtn.Component.GetComponentInChildren<Text>();
             _passthroughBtn.OnClick += TogglePassthrough;
 
-            // ── Offsets (reserved for future use) ─────────────────────────────
-            SectionHdr("Offsets (coming soon)");
+            // ── Offsets (Hat / Grabable) ──────────────────────────────────────
+            _offsetRoot = UIFactory.CreateUIObject("OffsetSection", ContentRoot);
+            UIFactory.SetLayoutGroup<VerticalLayoutGroup>(_offsetRoot,
+                forceWidth: true, forceHeight: false,
+                childControlWidth: true, childControlHeight: true, spacing: 4);
+            UIFactory.SetLayoutElement(_offsetRoot, flexibleWidth: 9999, minHeight: 0);
+
+            var offsetHdrGO = UIFactory.CreateLabel(_offsetRoot, "OffsetHdr", "─ Hat Offsets",
+                TextAnchor.MiddleLeft, new Color(0.55f, 0.55f, 0.65f), fontSize: 12);
+            UIFactory.SetLayoutElement(offsetHdrGO.gameObject, minHeight: 16, flexibleWidth: 9999);
+            _offsetHdrText = offsetHdrGO;
+
+            Vec3Row("Pos", 9,  _offsetRoot);
+            Vec3Row("Rot", 12, _offsetRoot);
+
+            _offsetRoot.SetActive(false);
         }
 
         void SectionHdr(string text)
@@ -180,15 +207,16 @@ namespace BabyBlocks.UI
             UIFactory.SetLayoutElement(lbl.gameObject, minHeight: 16, flexibleWidth: 9999);
         }
 
-        void Vec3Row(string label, int baseIdx)
+        void Vec3Row(string label, int baseIdx, GameObject parent = null)
         {
-            var row = UIFactory.CreateHorizontalGroup(ContentRoot, $"Row{label}",
+            parent ??= ContentRoot;
+            var row = UIFactory.CreateHorizontalGroup(parent, $"Row{label}",
                 false, false, true, true, spacing: 2);
             UIFactory.SetLayoutElement(row, minHeight: 24, flexibleWidth: 9999);
 
             var lbl = UIFactory.CreateLabel(row, "Lbl", label,
                 TextAnchor.MiddleLeft, Color.white, fontSize: 13);
-            UIFactory.SetLayoutElement(lbl.gameObject, minWidth: 64, flexibleWidth: 0);
+            UIFactory.SetLayoutElement(lbl.gameObject, minWidth: 64, preferredWidth: 64, flexibleWidth: 0);
 
             Color[] axCol = {
                 new Color(0.95f, 0.35f, 0.35f),
@@ -200,12 +228,16 @@ namespace BabyBlocks.UI
             {
                 var al = UIFactory.CreateLabel(row, $"A{axes[i]}", axes[i],
                     TextAnchor.MiddleCenter, axCol[i], fontSize: 11);
-                UIFactory.SetLayoutElement(al.gameObject, minWidth: 12, flexibleWidth: 0);
+                UIFactory.SetLayoutElement(al.gameObject, minWidth: 12, minHeight: 22, flexibleWidth: 0);
 
                 var f = UIFactory.CreateInputField(row, $"F{label}{axes[i]}", "0");
                 UIFactory.SetLayoutElement(f.Component.gameObject,
-                    flexibleWidth: 1, minHeight: 22, minWidth: 36);
+                    flexibleWidth: 1, minHeight: 22, minWidth: 44, preferredWidth: 55);
                 f.Component.characterLimit = 14;
+                f.Component.contentType    = InputField.ContentType.DecimalNumber;
+                // Prevent content-driven resizing so all fields stay the same width.
+                var csf = f.Component.GetComponent<ContentSizeFitter>();
+                if (csf != null) csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
                 _fields[baseIdx + i] = f;
             }
         }
@@ -467,6 +499,14 @@ namespace BabyBlocks.UI
         public static void ShowForProp(LevelEditorObject leo)
         {
             if (Instance == null || leo == null) return;
+            Instance.DeactivateEditField();
+            Instance._lastClickField = -1;
+            Instance._lastClickTime  = -1f;
+            if (Instance._target != leo)
+            {
+                Instance._preview?.Teardown();
+                Instance._preview = null;
+            }
             Instance._target = leo;
             Instance.UIRoot.SetActive(true);
             Instance.CloseAllDds();
@@ -476,7 +516,12 @@ namespace BabyBlocks.UI
         public static void ClosePanel()
         {
             if (Instance == null) return;
+            Instance.DeactivateEditField();
+            Instance._lastClickField = -1;
+            Instance._lastClickTime  = -1f;
             Instance._target = null;
+            Instance._preview?.Teardown();
+            Instance._preview = null;
             Instance.CloseAllDds();
             Instance.UIRoot.SetActive(false);
             if (Instance._lineRT != null)
@@ -528,7 +573,12 @@ namespace BabyBlocks.UI
                     ShowForProp(sel);
             }
 
-            if (!panelActive || _target == null) return;
+            if (!panelActive) return;
+            if (_target == null)
+            {
+                ClosePanel();
+                return;
+            }
 
             // Live filter material search text.
             if (_matOpen && _matSearch != null)
@@ -545,6 +595,7 @@ namespace BabyBlocks.UI
             RefreshMatLabel();
             RefreshSurfLabel();
             RefreshFlagLabels();
+            TickOffsets();
             UpdateLine();
         }
 
@@ -560,6 +611,51 @@ namespace BabyBlocks.UI
             RefreshMatLabel();
             RefreshSurfLabel();
             RefreshFlagLabels();
+            TickOffsets();
+        }
+
+        void TickOffsets()
+        {
+            if (_target == null || _offsetRoot == null) return;
+
+            var mode = _target.physicsMode;
+            bool showOffsets = mode == PhysicsMode.Hat || mode == PhysicsMode.Grabable;
+
+            if (_offsetRoot.activeSelf != showOffsets)
+            {
+                _offsetRoot.SetActive(showOffsets);
+                LayoutRebuilder.ForceRebuildLayoutImmediate(ContentRoot.GetComponent<RectTransform>());
+            }
+
+            if (!showOffsets)
+            {
+                if (_preview != null) { _preview.Teardown(); _preview = null; }
+                return;
+            }
+
+            // Update section label
+            if (_offsetHdrText != null)
+                _offsetHdrText.text = mode == PhysicsMode.Hat ? "─ Hat Offsets" : "─ Grab Offsets";
+
+            bool wantPreview = mode == PhysicsMode.Hat;
+            if (wantPreview)
+            {
+                if (_preview == null || !_preview.IsReady)
+                {
+                    _preview = new HatPreviewRenderer();
+                    _preview.Setup(_target);
+                }
+                else
+                {
+                    _preview.SyncPropFromTarget(_target);
+                    _preview.UpdateCameraPosition();
+                }
+            }
+            else if (_preview != null)
+            {
+                _preview.Teardown();
+                _preview = null;
+            }
         }
 
         void RefreshTransform()
@@ -570,12 +666,21 @@ namespace BabyBlocks.UI
             SetF(3, t.localScale.x);  SetF(4, t.localScale.y);  SetF(5, t.localScale.z);
             var e = t.eulerAngles;
             SetF(6, e.x);             SetF(7, e.y);             SetF(8, e.z);
+
+            if (_offsetRoot != null && _offsetRoot.activeSelf)
+            {
+                bool isHat = _target.physicsMode == PhysicsMode.Hat;
+                var op = isHat ? _target.hatOffsetPos : _target.grabOffsetPos;
+                var or_ = isHat ? _target.hatOffsetRot : _target.grabOffsetRot;
+                SetF(9, op.x);  SetF(10, op.y); SetF(11, op.z);
+                SetF(12, or_.x); SetF(13, or_.y); SetF(14, or_.z);
+            }
         }
 
         void SetF(int i, float v)
         {
             var f = _fields[i];
-            if (f?.Component == null || f.Component.isFocused) return;
+            if (f?.Component == null || i == _editId) return;
             f.Component.text = v.ToString("F3", CultureInfo.InvariantCulture);
         }
 
@@ -687,31 +792,129 @@ namespace BabyBlocks.UI
         //  Drag-to-edit transform fields
         // ─────────────────────────────────────────────────────────────────────
 
+        void CommitEditField()
+        {
+            if (_editId < 0) return;
+            var ef = _fields[_editId];
+            if (ef?.Component != null)
+            {
+                var p0 = _target.transform.position;
+                var s0 = _target.transform.localScale;
+                var r0 = _target.transform.rotation;
+                float parsed = TryParse(ef.Component.text, GetVal(_editId));
+                SetVal(_editId, parsed);
+                if (_editId < 3)
+                    LevelEditorManager.Instance?.SyncLoopBase(_target);
+                if (_editId < 9)
+                {
+                    LevelEditorHistory.PushTransform(_target, p0, s0, r0);
+                    if (_target.netId != 0)
+                        Networking.ModNetworking.SendPropTransform(_target.netId,
+                            _target.transform.position, _target.transform.rotation,
+                            _target.transform.localScale, reliable: true);
+                }
+            }
+            DeactivateEditField();
+        }
+
+        void DeactivateEditField()
+        {
+            if (_editId < 0) return;
+            var ef = _fields[_editId];
+            if (ef?.Component != null)
+            {
+                ef.Component.DeactivateInputField();
+                ef.Component.text = GetVal(_editId).ToString("F3", CultureInfo.InvariantCulture);
+            }
+            _editId = -1;
+            _editWasFocused = false;
+        }
+
         void TickDrag()
         {
             if (_target == null) return;
             bool dn   = Input.GetMouseButtonDown(0);
             bool held = Input.GetMouseButton(0);
-            bool up   = Input.GetMouseButtonUp(0);
+            bool up   = !held && _wasHeld; // synthesized — GetMouseButtonUp(0) is unreliable in IL2CPP
+            _wasHeld  = held;
             Vector2 mp = Input.mousePosition;
 
-            // Start drag when LMB pressed over an unfocused field.
-            if (_dragId < 0 && dn)
+            // While in text-edit mode: let native InputField handle typing.
+            // Commit on click-outside or focus loss (Enter); restore on click-outside without commit.
+            if (_editId >= 0)
             {
-                for (int i = 0; i < 9; i++)
+                var ef = _fields[_editId];
+                bool isFocused = ef?.Component?.isFocused ?? false;
+
+                if (dn)
+                {
+                    var ert = ef?.Component?.GetComponent<RectTransform>();
+                    bool clickedEditField = ert != null
+                        && RectTransformUtility.RectangleContainsScreenPoint(ert, mp, null);
+                    if (!clickedEditField)
+                        CommitEditField();
+                }
+                else if (_editWasFocused && !isFocused)
+                {
+                    CommitEditField();
+                }
+
+                _editWasFocused = isFocused;
+            }
+
+            if (dn)
+            {
+                bool inPanel = Rect != null && RectTransformUtility.RectangleContainsScreenPoint(Rect, mp, null);
+                if (!inPanel)
+                {
+                    _lastClickField = -1;
+                    _lastClickTime  = -1f;
+                }
+            }
+
+            // Recover from a stuck drag (mouse released outside the window — up event was missed).
+            if (_dragId >= 0 && !held && !up)
+            {
+                float stuckMoved = mp.x - _dragStartMx;
+                if (Mathf.Abs(stuckMoved) >= 3f)
+                {
+                    LevelEditorHistory.PushTransform(_target, _dragPos0, _dragScale0, _dragRot0);
+                    if (_target.netId != 0)
+                        Networking.ModNetworking.SendPropTransform(_target.netId,
+                            _target.transform.position, _target.transform.rotation,
+                            _target.transform.localScale, reliable: true);
+                }
+                else
+                    RestoreVec(_dragPos0, _dragScale0, _dragRot0);
+                _dragId         = -1;
+                _lastClickField = -1;
+            }
+
+            // Start drag: only when not editing, and only if a field was physically clicked.
+            if (_dragId < 0 && dn && _editId < 0)
+            {
+                int clickedField = -1;
+                int fieldCount = _offsetRoot != null && _offsetRoot.activeSelf ? 15 : 9;
+                for (int i = 0; i < fieldCount; i++)
                 {
                     var f = _fields[i];
-                    if (f?.Component == null || f.Component.isFocused) continue;
+                    if (f?.Component == null) continue;
                     var rt = f.Component.GetComponent<RectTransform>();
                     if (rt == null) continue;
-                    if (!RectTransformUtility.RectangleContainsScreenPoint(rt, mp, null)) continue;
-                    _dragId       = i;
-                    _dragStartMx  = mp.x;
-                    _dragStartVal = GetVal(i);
-                    _dragPos0     = _target.transform.position;
-                    _dragScale0   = _target.transform.localScale;
-                    _dragRot0     = _target.transform.rotation;
+                    bool hit = RectTransformUtility.RectangleContainsScreenPoint(rt, mp, null);
+                    if (!hit) continue;
+                    clickedField = i;
                     break;
+                }
+                if (clickedField >= 0)
+                {
+                    _dragId        = clickedField;
+                    _dragStartMx   = mp.x;
+                    _dragStartVal  = GetVal(clickedField);
+                    _dragPos0      = _target.transform.position;
+                    _dragScale0    = _target.transform.localScale;
+                    _dragRot0      = _target.transform.rotation;
+                    _dragRot0Euler = _target.transform.eulerAngles;
                 }
             }
 
@@ -719,7 +922,22 @@ namespace BabyBlocks.UI
             if (_dragId >= 0 && held)
             {
                 float v = _dragStartVal + (mp.x - _dragStartMx) * FieldSens(_dragId);
-                SetVal(_dragId, v);
+                if (_dragId >= 6 && _dragId < 9)
+                {
+                    // Transform rotation: apply delta on top of captured start euler to avoid
+                    // gimbal-lock flip when reading t.eulerAngles mid-drag.
+                    var e = _dragRot0Euler;
+                    if (_dragId == 6) e.x = v;
+                    else if (_dragId == 7) e.y = v;
+                    else e.z = v;
+                    _target.transform.eulerAngles = e;
+                }
+                else
+                {
+                    SetVal(_dragId, v);
+                    if (_dragId < 3)
+                        LevelEditorManager.Instance?.SyncLoopBase(_target);
+                }
                 var f = _fields[_dragId];
                 if (f?.Component != null)
                     f.Component.text = v.ToString("F3", CultureInfo.InvariantCulture);
@@ -731,37 +949,53 @@ namespace BabyBlocks.UI
                 float moved = mp.x - _dragStartMx;
                 if (Mathf.Abs(moved) < 3f)
                 {
-                    // Short click: restore original value and enter text-edit mode.
-                    RestoreVec(_dragPos0, _dragScale0, _dragRot0);
-                    var f = _fields[_dragId];
-                    if (f?.Component != null)
+                    if (_dragId < 9) RestoreVec(_dragPos0, _dragScale0, _dragRot0);
+                    bool isDouble = _lastClickField == _dragId
+                                 && Time.unscaledTime - _lastClickTime < 0.5f;
+                    if (isDouble)
                     {
-                        f.Component.text = GetVal(_dragId).ToString("F3", CultureInfo.InvariantCulture);
-                        f.Component.ActivateInputField();
-                        f.Component.Select();
+                        _editId = _dragId;
+                        _editOriginalText = GetVal(_editId).ToString("F3", CultureInfo.InvariantCulture);
+                        _editWasFocused = false;
+                        var f = _fields[_editId];
+                        if (f?.Component != null)
+                        {
+                            f.Component.text = _editOriginalText;
+                            f.Component.ActivateInputField();
+                            f.Component.Select();
+                        }
+                        _lastClickField = -1;
+                        _lastClickTime  = -1f;
+                    }
+                    else
+                    {
+                        _lastClickField = _dragId;
+                        _lastClickTime  = Time.unscaledTime;
                     }
                 }
                 else
                 {
-                    LevelEditorHistory.PushTransform(_target, _dragPos0, _dragScale0, _dragRot0);
+                    if (_dragId < 9)
+                    {
+                        LevelEditorHistory.PushTransform(_target, _dragPos0, _dragScale0, _dragRot0);
+                        if (_target.netId != 0)
+                            Networking.ModNetworking.SendPropTransform(_target.netId,
+                                _target.transform.position, _target.transform.rotation,
+                                _target.transform.localScale, reliable: true);
+                    }
+                    _lastClickField = -1;
                 }
                 _dragId = -1;
             }
 
-            // Confirm text-entered value on Return.
-            for (int i = 0; i < 9; i++)
+            // Kill focus on all fields when not in edit mode so single-click/drag doesn't show a cursor.
+            if (_editId < 0)
             {
-                var f = _fields[i];
-                if (f?.Component == null || !f.Component.isFocused) continue;
-                if (!Input.GetKeyDown(KeyCode.Return) && !Input.GetKeyDown(KeyCode.KeypadEnter)) continue;
-                var p0 = _target.transform.position;
-                var s0 = _target.transform.localScale;
-                var r0 = _target.transform.rotation;
-                float parsed = TryParse(f.Component.text, GetVal(i));
-                SetVal(i, parsed);
-                LevelEditorHistory.PushTransform(_target, p0, s0, r0);
-                PropBrowserUI.Deselect();
-                break;
+                foreach (var f in _fields)
+                {
+                    if (f?.Component != null && f.Component.isFocused)
+                        f.Component.DeactivateInputField();
+                }
             }
         }
 
@@ -769,11 +1003,18 @@ namespace BabyBlocks.UI
         {
             if (_target == null) return 0f;
             var t = _target.transform;
+            bool isHat = _target.physicsMode == PhysicsMode.Hat;
             return i switch
             {
-                0 => t.position.x,   1 => t.position.y,   2 => t.position.z,
-                3 => t.localScale.x, 4 => t.localScale.y, 5 => t.localScale.z,
+                0 => t.position.x,    1 => t.position.y,    2 => t.position.z,
+                3 => t.localScale.x,  4 => t.localScale.y,  5 => t.localScale.z,
                 6 => t.eulerAngles.x, 7 => t.eulerAngles.y, 8 => t.eulerAngles.z,
+                9  => isHat ? _target.hatOffsetPos.x : _target.grabOffsetPos.x,
+                10 => isHat ? _target.hatOffsetPos.y : _target.grabOffsetPos.y,
+                11 => isHat ? _target.hatOffsetPos.z : _target.grabOffsetPos.z,
+                12 => isHat ? _target.hatOffsetRot.x : _target.grabOffsetRot.x,
+                13 => isHat ? _target.hatOffsetRot.y : _target.grabOffsetRot.y,
+                14 => isHat ? _target.hatOffsetRot.z : _target.grabOffsetRot.z,
                 _ => 0f,
             };
         }
@@ -793,7 +1034,34 @@ namespace BabyBlocks.UI
                 case 6: { var e = t.eulerAngles; t.eulerAngles = new Vector3(v, e.y, e.z);  } break;
                 case 7: { var e = t.eulerAngles; t.eulerAngles = new Vector3(e.x, v, e.z);  } break;
                 case 8: { var e = t.eulerAngles; t.eulerAngles = new Vector3(e.x, e.y, v);  } break;
+
+                // Offset position (9-11)
+                case 9:  SetOffsetPos(v, 0); break;
+                case 10: SetOffsetPos(v, 1); break;
+                case 11: SetOffsetPos(v, 2); break;
+                // Offset rotation (12-14)
+                case 12: SetOffsetRot(v, 0); break;
+                case 13: SetOffsetRot(v, 1); break;
+                case 14: SetOffsetRot(v, 2); break;
             }
+        }
+
+        void SetOffsetPos(float v, int axis)
+        {
+            bool isHat = _target.physicsMode == PhysicsMode.Hat;
+            var p = isHat ? _target.hatOffsetPos : _target.grabOffsetPos;
+            if (axis == 0) p.x = v; else if (axis == 1) p.y = v; else p.z = v;
+            if (isHat) { _target.hatOffsetPos = p;  LevelEditor.SetHatOffset(_target.hatOffsetPos, _target.hatOffsetRot); _preview?.ApplyHatOffset(_target); }
+            else       { _target.grabOffsetPos = p; LevelEditor.SetGrabOffset(_target.grabOffsetPos, _target.grabOffsetRot); }
+        }
+
+        void SetOffsetRot(float v, int axis)
+        {
+            bool isHat = _target.physicsMode == PhysicsMode.Hat;
+            var r = isHat ? _target.hatOffsetRot : _target.grabOffsetRot;
+            if (axis == 0) r.x = v; else if (axis == 1) r.y = v; else r.z = v;
+            if (isHat) { _target.hatOffsetRot = r;  LevelEditor.SetHatOffset(_target.hatOffsetPos, _target.hatOffsetRot); _preview?.ApplyHatOffset(_target); }
+            else       { _target.grabOffsetRot = r; LevelEditor.SetGrabOffset(_target.grabOffsetPos, _target.grabOffsetRot); }
         }
 
         void RestoreVec(Vector3 pos, Vector3 scale, Quaternion rot)
@@ -804,7 +1072,12 @@ namespace BabyBlocks.UI
             _target.transform.rotation   = rot;
         }
 
-        static float FieldSens(int i) => i < 3 ? SensPos : i < 6 ? SensScale : SensRot;
+        static float FieldSens(int i) =>
+            i < 3  ? SensPos :
+            i < 6  ? SensScale :
+            i < 9  ? SensRot :
+            i < 12 ? SensPos :   // offset pos
+                     SensRot;    // offset rot
 
         static float TryParse(string s, float fallback) =>
             float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;

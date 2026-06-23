@@ -745,6 +745,7 @@
 		<Compile Include="Props\MaterialConstructionLibrary.cs" />
 		<Compile Include="Logic\SaveLoad\LevelSaveLoad.cs" />
 		<Compile Include="UI\FileBrowserPanel.cs" />
+		<Compile Include="UI\HatPreviewRenderer.cs" />
 		<Compile Include="UI\PropertiesPanel.cs" />
 		<Compile Include="UI\SaveLoadWindow.cs" />
 		<Compile Include="UI\GuiStyleHelpers.cs" />
