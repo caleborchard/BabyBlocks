@@ -53,7 +53,9 @@ namespace BabyBlocks
         // Original materials cached per LEO (instanceId → per-renderer sharedMaterials snapshot)
         // captured the first time ApplyToInstance touches a pristine prop (materialConstructionId < 0).
         // Keyed by leo.gameObject.GetInstanceID().
-        static readonly Dictionary<int, Material[][]> _origCache = new();
+        static readonly Dictionary<int, Material[][]> _origCache   = new();
+        // Original surface tag cached in parallel so Reset to Default can restore it.
+        static readonly Dictionary<int, string>       _origTagCache = new();
 
         static MaterialConstructionEntry _editing;
         static int _draggingIndex = -1;
@@ -535,7 +537,9 @@ namespace BabyBlocks
 
             int idBefore = leo.materialConstructionId;
 
-            // Snapshot original materials before any modification so Reset to Default can restore them.
+            // Snapshot original materials and tag before any modification so Reset to Default
+            // can restore them (EnsureOriginalsCache from PropertiesPanel may have done this
+            // already; this path handles direct-drag without a prior raw override).
             if (leo.materialConstructionId < 0)
             {
                 int leoKey = leo.gameObject.GetInstanceID();
@@ -548,7 +552,8 @@ namespace BabyBlocks
                         if (sm == null || sm.Length == 0) continue;
                         snap[i] = sm; // sharedMaterials getter already returns a copy
                     }
-                    _origCache[leoKey] = snap;
+                    _origCache[leoKey]   = snap;
+                    _origTagCache[leoKey] = leo.gameObject.tag;
                 }
             }
 
@@ -589,6 +594,26 @@ namespace BabyBlocks
                 LevelEditorHistory.PushMaterial(leo, renderers, matsBefore, tagObjs, tagsBefore, idBefore);
                 PropHistory.RecordMaterialUse(entry.id);
             }
+        }
+
+        // Capture true original materials before any external override (e.g. raw material from
+        // PropertiesPanel) so that ResetToDefault always restores PropMetadata originals even
+        // when a raw override is applied first and a construction entry is dragged on top.
+        internal static void EnsureOriginalsCache(LevelEditorObject leo)
+        {
+            if (leo == null) return;
+            int key = leo.gameObject.GetInstanceID();
+            if (_origCache.ContainsKey(key)) return;
+            var renderers = leo.GetComponentsInChildren<Renderer>(true);
+            if (renderers == null || renderers.Length == 0) return;
+            var snap = new Material[renderers.Length][];
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                var sm = renderers[i]?.sharedMaterials;
+                if (sm != null && sm.Length > 0) snap[i] = sm;
+            }
+            _origCache[key]   = snap;
+            _origTagCache[key] = leo.gameObject.tag;
         }
 
         // ── Reset to default ─────────────────────────────────────────────────
@@ -642,7 +667,12 @@ namespace BabyBlocks
                 }
             }
 
-            PropInstanceServices.ApplySurfaceType(leo, "");
+            // Restore original surface tag if cached; otherwise leave it as-is rather than
+            // blanking it (props carry a meaningful default tag even without a construction entry).
+            int leoKeyTag = leo.gameObject.GetInstanceID();
+            if (_origTagCache.TryGetValue(leoKeyTag, out var origTag))
+                PropInstanceServices.ApplySurfaceType(leo, origTag);
+
             var existingChecker = leo.GetComponent<BbSunglassesChecker>();
             if (existingChecker != null) UnityEngine.Object.DestroyImmediate(existingChecker);
 

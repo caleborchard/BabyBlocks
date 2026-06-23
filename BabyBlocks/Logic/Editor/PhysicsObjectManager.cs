@@ -621,7 +621,7 @@ namespace BabyBlocks
 
         internal static void AddRigidBodyComponent(GameObject go, Collider[] colls, string propId = null)
         {
-            MaterialBaker.Bake(go, propId);
+            // MaterialBaker.Bake(go, propId); // disabled for now
             foreach (var mc in go.GetComponentsInChildren<MeshCollider>(true)) mc.convex = true;
             var rb = go.GetComponent<Rigidbody>() ?? go.AddComponent<Rigidbody>();
             rb.mass                   = 5f;
@@ -634,7 +634,7 @@ namespace BabyBlocks
         internal static void AddGrabableComponent(GameObject go, bool isHat, Collider[] colls, string propId = null)
         {
             if (go == null) return;
-            MaterialBaker.Bake(go, propId);
+            // MaterialBaker.Bake(go, propId); // disabled for now
             if (colls == null) colls = Array.Empty<Collider>();
 
             foreach (var mc in go.GetComponentsInChildren<MeshCollider>(true)) mc.convex = true;

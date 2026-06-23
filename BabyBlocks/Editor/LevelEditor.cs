@@ -72,6 +72,7 @@ namespace BabyBlocks
             public Quaternion rotation;
             public bool isAddressable;
             public int materialConstructionId; // -1 if none
+            public PhysicsMode physicsMode;
         }
 
         static readonly List<CopyEntry> _copyEntries = new();
@@ -1251,6 +1252,7 @@ namespace BabyBlocks
                     rotation = obj.transform.rotation,
                     isAddressable = !string.IsNullOrEmpty(obj.addressableKey),
                     materialConstructionId = obj.materialConstructionId,
+                    physicsMode = obj.physicsMode,
                 };
 
                 if (!entry.isAddressable)
@@ -1307,6 +1309,17 @@ namespace BabyBlocks
                 if (obj == null) continue;
                 obj.transform.localScale = entry.scale;
                 obj.transform.rotation = entry.rotation;
+
+                // Apply non-static physics mode — temporarily select the single object so
+                // SetPhysicsMode's group/single branching logic works correctly.
+                if (entry.physicsMode != PhysicsMode.Static)
+                {
+                    _selection.Clear();
+                    _selection.Add(obj);
+                    selectedObject = obj;
+                    SetPhysicsMode(entry.physicsMode);
+                }
+
                 newSelection.Add(obj);
                 LevelEditorHistory.PushSpawn(obj);
 
