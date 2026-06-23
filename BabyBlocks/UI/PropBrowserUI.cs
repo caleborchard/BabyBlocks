@@ -16,12 +16,14 @@ namespace BabyBlocks.UI
     {
         public static bool Ready { get; private set; }
         public static bool IsTypingInUI => (_panel != null && _panel.IsSearchFocused)
-                                        || (_fileBrowser != null && _fileBrowser.IsTypingInUI);
+                                        || (_fileBrowser != null && _fileBrowser.IsTypingInUI)
+                                        || (_propertiesPanel != null && _propertiesPanel.IsMatSearchFocused);
 
         static UIBase              _uiBase;
         static TopBarPanel         _topBar;
         static PropLibraryPanel    _panel;
         static FileBrowserPanel    _fileBrowser;
+        static PropertiesPanel     _propertiesPanel;
 
         public static void Init()
         {
@@ -37,9 +39,10 @@ namespace BabyBlocks.UI
             _uiBase = UniversalUI.RegisterUI<PropBrowserUIBase>("BabyBlocks.PropBrowser", OnUpdate);
             try
             {
-                _topBar      = new TopBarPanel(_uiBase);
-                _panel       = new PropLibraryPanel(_uiBase);
-                _fileBrowser = new FileBrowserPanel(_uiBase);
+                _topBar           = new TopBarPanel(_uiBase);
+                _panel            = new PropLibraryPanel(_uiBase);
+                _fileBrowser      = new FileBrowserPanel(_uiBase);
+                _propertiesPanel  = new PropertiesPanel(_uiBase);
                 Ready = true;
                 MelonLogger.Msg("[BabyBlocks] Prop browser UI ready.");
             }
@@ -115,6 +118,7 @@ namespace BabyBlocks.UI
             _topBar?.Tick();
             _panel?.Tick();
             _fileBrowser?.Tick();
+            _propertiesPanel?.Tick();
 
             // Re-apply camera viewport fraction if the screen width changes while editor is open.
             if (_uiBase != null && _uiBase.Enabled && Screen.width != _lastViewportW)
@@ -155,6 +159,9 @@ namespace BabyBlocks.UI
                 return true;
             if (_fileBrowser?.UIRoot?.activeSelf == true && _fileBrowser.Rect != null &&
                 RectTransformUtility.RectangleContainsScreenPoint(_fileBrowser.Rect, pos, null))
+                return true;
+            if (_propertiesPanel?.UIRoot?.activeSelf == true && _propertiesPanel.Rect != null &&
+                RectTransformUtility.RectangleContainsScreenPoint(_propertiesPanel.Rect, pos, null))
                 return true;
             return false;
         }
