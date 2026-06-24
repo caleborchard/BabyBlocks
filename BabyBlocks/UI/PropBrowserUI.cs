@@ -38,6 +38,15 @@ namespace BabyBlocks.UI
         static void OnReady()
         {
             _uiBase = UniversalUI.RegisterUI<PropBrowserUIBase>("BabyBlocks.PropBrowser", OnUpdate);
+
+            // Scale all UI with screen resolution so layout holds at any resolution.
+            var scaler = _uiBase.RootObject.GetComponent<UnityEngine.UI.CanvasScaler>()
+                      ?? _uiBase.RootObject.AddComponent<UnityEngine.UI.CanvasScaler>();
+            scaler.uiScaleMode       = UnityEngine.UI.CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920f, 1080f);
+            scaler.screenMatchMode   = UnityEngine.UI.CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
+            scaler.matchWidthOrHeight = 0.5f;
+
             try
             {
                 _topBar           = new TopBarPanel(_uiBase);
@@ -101,7 +110,9 @@ namespace BabyBlocks.UI
             if (cam == null) return;
             if (editorOpen)
             {
-                float panelFrac = PropLibraryPanel.PanelWidth / (float)Screen.width;
+                var canvas = _uiBase?.RootObject?.GetComponent<Canvas>();
+                float scaleFactor = canvas != null ? canvas.scaleFactor : 1f;
+                float panelFrac = PropLibraryPanel.PanelWidth * scaleFactor / Screen.width;
                 cam.rect = new Rect(panelFrac, 0f, 1f - panelFrac, 1f);
             }
             else
