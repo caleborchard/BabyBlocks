@@ -15,6 +15,7 @@ namespace BabyBlocks.UI
     static class PropBrowserUI
     {
         public static bool Ready { get; private set; }
+        internal static bool IsSearchActive => _panel?.IsSearchActive == true;
         public static bool IsTypingInUI => (_panel != null && _panel.IsSearchFocused)
                                         || (_fileBrowser != null && _fileBrowser.IsTypingInUI)
                                         || (_propertiesPanel != null && _propertiesPanel.IsMatSearchFocused);
@@ -592,7 +593,7 @@ namespace BabyBlocks.UI
                 {
                     string label = PropPalette.ShowingMaterials
                         ? "Materials"
-                        : (PropPalette.SelectedCategory ?? "All");
+                        : (PropBrowserUI.IsSearchActive ? "All" : (PropPalette.SelectedCategory ?? "All"));
                     txt.text = $" {label} ▼ ";
                 }
             }
@@ -709,6 +710,7 @@ namespace BabyBlocks.UI
         public override bool    CanDragAndResize => false;
 
         internal bool IsSearchFocused => _searchInput?.Component?.isFocused == true;
+        internal bool IsSearchActive  => !string.IsNullOrEmpty(_searchText);
 
         public override void SetDefaultSizeAndPosition()
         {
@@ -756,7 +758,10 @@ namespace BabyBlocks.UI
 
         // Search
         InputFieldRef _searchInput;
-        string        _searchText = "";
+        string        _searchText        = "";
+        bool          _searchInputActive = false; // true only while user explicitly has focus
+        string        _preSrchCategory   = null;  // category active before search started
+        int           _preSrchOffset     = 0;     // scroll offset before search started
         readonly List<PropInfo>                          _propSearchResults = new();
         readonly List<MaterialConstructionEntry>         _matSearchResults  = new();
         readonly List<PropHistory.ResolvedHistoryEntry>  _histSearchResults = new();
@@ -790,6 +795,10 @@ namespace BabyBlocks.UI
             _searchInput = UIFactory.CreateInputField(searchRow, "SearchInput", "Search...");
             UIFactory.SetLayoutElement(_searchInput.Component.gameObject, flexibleWidth: 9999, minHeight: 22);
             _searchInput.Component.characterLimit = 64;
+            // Disable keyboard navigation so Space/Enter can't re-activate the field after the user exits it.
+            var srchNav = _searchInput.Component.navigation;
+            srchNav.mode = Navigation.Mode.None;
+            _searchInput.Component.navigation = srchNav;
 
             for (int i = 0; i < SlotCount; i++)
                 _cards[i] = BuildCard(ContentRoot, i);
@@ -927,13 +936,14 @@ namespace BabyBlocks.UI
         IReadOnlyList<PropInfo> GetPanelProps()
         {
             if (PropPalette.ShowingMaterials) return Array.Empty<PropInfo>();
-            var filtered = PropLibrary.FilteredProps;
-            IReadOnlyList<PropInfo> result = filtered;
+            IReadOnlyList<PropInfo> result = PropLibrary.FilteredProps;
             if (!string.IsNullOrEmpty(_searchText))
             {
+                // Search across all categorized props (same set as "All" category), ignoring current category.
                 _propSearchResults.Clear();
-                foreach (var p in filtered)
+                foreach (var p in PropLibrary.AllProps)
                 {
+                    if (!PropMetadataStore.HasCategory(p.id)) continue;
                     var name = PropMetadataStore.GetDisplayName(p.id) ?? p.displayName ?? "";
                     if (name.IndexOf(_searchText, StringComparison.OrdinalIgnoreCase) >= 0)
                         _propSearchResults.Add(p);
@@ -1033,19 +1043,51 @@ namespace BabyBlocks.UI
 
             if (_searchInput?.Component != null)
             {
-                // Deselect if user clicks outside the search field
-                if (_searchInput.Component.isFocused && (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1)))
+                // Track focus intent ourselves rather than relying on Unity's isFocused or
+                // EventSystem — both are unreliable in the Il2Cpp context.
+                if (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1))
                 {
                     var rt = _searchInput.Component.GetComponent<RectTransform>();
-                    if (rt == null || !RectTransformUtility.RectangleContainsScreenPoint(rt, Input.mousePosition, null))
+                    bool onSearch = rt != null && RectTransformUtility.RectangleContainsScreenPoint(rt, Input.mousePosition, null);
+                    if (onSearch)
+                        _searchInputActive = true;
+                    else if (_searchInputActive)
+                    {
+                        _searchInputActive = false;
                         _searchInput.Component.DeactivateInputField();
+                        UnityEngine.EventSystems.EventSystem.current?.SetSelectedGameObject(null);
+                        UniversalUI.EventSys?.SetSelectedGameObject(null);
+                    }
+                }
+                // If Unity re-focused the field without an explicit user click, force it back out.
+                if (!_searchInputActive && _searchInput.Component.isFocused)
+                {
+                    _searchInput.Component.DeactivateInputField();
+                    UnityEngine.EventSystems.EventSystem.current?.SetSelectedGameObject(null);
+                    UniversalUI.EventSys?.SetSelectedGameObject(null);
                 }
 
                 string cur = _searchInput.Component.text ?? "";
                 if (cur != _searchText)
                 {
+                    bool wasEmpty = string.IsNullOrEmpty(_searchText);
+                    bool nowEmpty = string.IsNullOrEmpty(cur);
+
+                    if (wasEmpty && !nowEmpty)
+                    {
+                        // Search just started — remember where we were.
+                        _preSrchCategory = PropPalette.SelectedCategory;
+                        _preSrchOffset   = _offset;
+                    }
+                    else if (!wasEmpty && nowEmpty)
+                    {
+                        // Search cleared — restore previous category/offset.
+                        PropPalette.SelectedCategory = _preSrchCategory;
+                        _offset = _preSrchOffset;
+                    }
+
                     _searchText = cur;
-                    _offset = 0;
+                    if (!nowEmpty) _offset = 0;
                 }
             }
 

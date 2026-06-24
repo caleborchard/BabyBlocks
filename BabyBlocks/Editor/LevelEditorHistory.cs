@@ -49,7 +49,9 @@ namespace BabyBlocks
 
             public void Undo()
             {
-                if (LevelEditor.selectedObject == _live) LevelEditor.selectedObject = null;
+                // Clear selection before Remove so GizmoRenderer never reads
+                // the destroyed object's transform and jumps to world origin.
+                LevelEditor.ClearAllSelectionState();
                 LevelEditorManager.Instance?.Remove(_live);
                 _live = null;
             }
@@ -125,8 +127,8 @@ namespace BabyBlocks
                 _after  = after;
             }
 
-            public void Undo() { if (_obj != null) { _before.Apply(_obj.transform); LevelEditor.Select(_obj); } }
-            public void Redo() { if (_obj != null) { _after.Apply(_obj.transform);  LevelEditor.Select(_obj); } }
+            public void Undo() { if (_obj != null) { _before.Apply(_obj.transform); LevelEditorManager.Instance?.SyncLoopBase(_obj); LevelEditor.Select(_obj); } }
+            public void Redo() { if (_obj != null) { _after.Apply(_obj.transform);  LevelEditorManager.Instance?.SyncLoopBase(_obj); LevelEditor.Select(_obj); } }
         }
 
         class MaterialAction : IAction

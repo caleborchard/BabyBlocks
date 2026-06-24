@@ -195,7 +195,7 @@ namespace BabyBlocks
                 var colls = leo.gameObject.GetComponentsInChildren<Collider>(true);
                 PhysicsObjectManager.AddGrabableComponent(leo.gameObject, leo.physicsMode == PhysicsMode.Hat, colls, leo.addressableKey);
                 PhysicsObjectManager.SyncHatHairAmount(leo);
-                if (leo.physicsMode == PhysicsMode.Grabable) PhysicsObjectManager.SyncGrabOffset(leo);
+                if (leo.physicsMode == PhysicsMode.Grabable || leo.physicsMode == PhysicsMode.Hat) PhysicsObjectManager.SyncGrabOffset(leo);
                 PhysicsObjectManager.MarkPhysicsChunkIndependent(leo);
                 leo.isPhysicsManaged = true;
             }
@@ -291,7 +291,7 @@ namespace BabyBlocks
                     }
                 }
                 if (mode == PhysicsMode.Hat && members.Count > 0) PhysicsObjectManager.SyncHatHairAmount(members[0]);
-                if (mode == PhysicsMode.Grabable && members.Count > 0) PhysicsObjectManager.SyncGrabOffset(members[0]);
+                if ((mode == PhysicsMode.Grabable || mode == PhysicsMode.Hat) && members.Count > 0) PhysicsObjectManager.SyncGrabOffset(members[0]);
                 foreach (var m in members) PhysicsObjectManager.MarkPhysicsChunkIndependent(m);
                 return;
             }

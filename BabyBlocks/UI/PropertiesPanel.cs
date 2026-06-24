@@ -108,8 +108,11 @@ namespace BabyBlocks.UI
         // Connector line (sibling of panel in canvas root)
         RectTransform _lineRT;
 
-        // Right-click tracking: only open panel when released on the same prop as pressed.
+        // Right-click tracking: only open panel when released on the same prop as pressed,
+        // and only when the mouse didn't move enough to count as a camera drag.
         LevelEditorObject _rmbDownLeo;
+        Vector2           _rmbDownPos;
+        const float       RmbDragThresholdPx = 6f;
 
         // Raw catalog material tracking: per-instance-ID name of last raw material applied.
         static readonly Dictionary<int, string> _rawMatNames = new();
@@ -721,11 +724,16 @@ namespace BabyBlocks.UI
             if (!PropBrowserUI.IsTypingInUI && !PropBrowserUI.IsPointerOverPanel())
             {
                 if (Input.GetMouseButtonDown(1))
+                {
                     _rmbDownLeo = RaycastForLeo();
+                    _rmbDownPos = Input.mousePosition;
+                }
 
                 if (Input.GetMouseButtonUp(1))
                 {
-                    if (_rmbDownLeo != null)
+                    bool wasDrag = ((Vector2)Input.mousePosition - _rmbDownPos).sqrMagnitude
+                                  > RmbDragThresholdPx * RmbDragThresholdPx;
+                    if (_rmbDownLeo != null && !wasDrag)
                     {
                         var upLeo = RaycastForLeo();
                         if (upLeo == _rmbDownLeo)

@@ -282,7 +282,11 @@ namespace BabyBlocks
             bool active = (control.transform.position - playerPos).sqrMagnitude <= PhysicsActiveRadiusSqr;
             if (active)
             {
-                if (rb.isKinematic) rb.isKinematic = false;
+                if (rb.isKinematic)
+                {
+                    rb.isKinematic = false;
+                    SetMeshCollidersConvex(control, true); // going dynamic: need convex
+                }
                 rb.useGravity = true;
             }
             else if (!rb.isKinematic)
@@ -291,6 +295,7 @@ namespace BabyBlocks
                 rb.angularVelocity = Vector3.zero;
                 rb.isKinematic     = true;
                 rb.useGravity      = false;
+                SetMeshCollidersConvex(control, false); // back to kinematic: concave OK
             }
         }
 
@@ -462,6 +467,7 @@ namespace BabyBlocks
                 rb.isKinematic     = true;
                 rb.useGravity      = false;
                 rb.constraints     = RigidbodyConstraints.FreezeAll;
+                SetMeshCollidersConvex(obj.gameObject, false); // kinematic: concave OK
             }
             else if (obj.editorFreezeStateValid)
             {
@@ -471,6 +477,7 @@ namespace BabyBlocks
                 rb.velocity        = obj.editorFreezeVelocity;
                 rb.angularVelocity = obj.editorFreezeAngularVelocity;
                 obj.editorFreezeStateValid = false;
+                if (!rb.isKinematic) SetMeshCollidersConvex(obj.gameObject, true); // going dynamic: need convex
             }
         }
 
@@ -486,12 +493,14 @@ namespace BabyBlocks
                 rb.isKinematic     = true;
                 rb.useGravity      = false;
                 rb.constraints     = RigidbodyConstraints.FreezeAll;
+                SetMeshCollidersConvex(go, false); // kinematic: concave OK
             }
             else
             {
                 rb.constraints = RigidbodyConstraints.None;
                 rb.isKinematic = false;
                 rb.useGravity  = true;
+                SetMeshCollidersConvex(go, true); // going dynamic: need convex
             }
         }
 
@@ -567,7 +576,7 @@ namespace BabyBlocks
             {
                 AddGrabableComponent(leo.gameObject, leo.physicsMode == PhysicsMode.Hat, colls, leo.addressableKey);
                 SyncHatHairAmount(leo);
-                if (leo.physicsMode == PhysicsMode.Grabable) SyncGrabOffset(leo);
+                if (leo.physicsMode == PhysicsMode.Grabable || leo.physicsMode == PhysicsMode.Hat) SyncGrabOffset(leo);
                 if (leo.physicsMode == PhysicsMode.Hat && BbHatSunglassesFlag.Has(leo))
                 {
                     var hat = leo.gameObject.GetComponent<Hat>();
@@ -679,10 +688,20 @@ namespace BabyBlocks
             }
         }
 
+        // Sets convex on all MeshColliders under `go`. Called when a Rigidbody prop transitions
+        // between kinematic (editor, concave OK) and dynamic (game, convex required by PhysX).
+        static void SetMeshCollidersConvex(GameObject go, bool convex)
+        {
+            if (go == null) return;
+            foreach (var mc in go.GetComponentsInChildren<MeshCollider>(true))
+                mc.convex = convex;
+        }
+
         internal static void AddRigidBodyComponent(GameObject go, Collider[] colls, string propId = null)
         {
             // MaterialBaker.Bake(go, propId); // disabled for now
-            foreach (var mc in go.GetComponentsInChildren<MeshCollider>(true)) mc.convex = true;
+            // Note: convex is NOT set here. Colliders stay concave in editor (isKinematic=true).
+            // SetMeshCollidersConvex is called at unfreeze time when the rb goes dynamic.
             var rb = go.GetComponent<Rigidbody>() ?? go.AddComponent<Rigidbody>();
             rb.mass                   = 5f;
             rb.isKinematic            = false;
@@ -697,8 +716,7 @@ namespace BabyBlocks
             // MaterialBaker.Bake(go, propId); // disabled for now
             if (colls == null) colls = Array.Empty<Collider>();
 
-            foreach (var mc in go.GetComponentsInChildren<MeshCollider>(true)) mc.convex = true;
-
+            // Grabable/Hat rigidbodies are always kinematic, so convex is never required.
             var existingHat      = go.GetComponent<Hat>();
             var existingGrabable = go.GetComponent<Grabable>();
             Grabable g = null;
@@ -755,6 +773,11 @@ namespace BabyBlocks
             AddFloater(go);
         }
 
+        // WaterObject.GenerateSimMesh hangs the main thread on high-poly meshes even with
+        // simplifyMesh=true (the simplification step itself is the bottleneck). Cap at a safe
+        // vertex count and fall back to a bounding-box mesh so the prop still floats correctly.
+        const int FloaterVertexLimit = 5000;
+
         static void AddFloater(GameObject go)
         {
             if (go == null) return;
@@ -762,14 +785,26 @@ namespace BabyBlocks
             var existing = go.transform.Find("Floater");
             if (existing != null) UnityEngine.Object.DestroyImmediate(existing.gameObject);
 
-            Mesh readableMesh = null;
-            var sourceMf = go.GetComponentInChildren<MeshFilter>();
-            if (sourceMf?.sharedMesh != null)
-                readableMesh = BuildPhysicsMesh(sourceMf.sharedMesh);
+            var sourceMf   = go.GetComponentInChildren<MeshFilter>();
+            var sourceMesh = sourceMf?.sharedMesh;
 
-            if (readableMesh == null)
+            Mesh floaterMesh = null;
+            if (sourceMesh != null)
             {
-                MelonLogger.Warning("[BabyBlocks] AddFloater: could not build readable mesh, skipping Floater.");
+                if (sourceMesh.vertexCount <= FloaterVertexLimit)
+                {
+                    floaterMesh = BuildPhysicsMesh(sourceMesh);
+                }
+                else
+                {
+                    // Mesh too complex for GenerateSimMesh — use bounds box so the prop still floats.
+                    floaterMesh = BuildBoundsMesh(sourceMesh.bounds);
+                }
+            }
+
+            if (floaterMesh == null)
+            {
+                MelonLogger.Warning("[BabyBlocks] AddFloater: could not build floater mesh, skipping Floater.");
                 return;
             }
 
@@ -779,7 +814,7 @@ namespace BabyBlocks
             floater.layer = go.layer;
 
             var mf = floater.AddComponent<MeshFilter>();
-            mf.sharedMesh = readableMesh;
+            mf.sharedMesh = floaterMesh;
 
             var wo = floater.AddComponent<WaterObject>();
             wo.convexifyMesh         = true;
@@ -789,6 +824,35 @@ namespace BabyBlocks
             wo.GenerateSimMesh();
 
             floater.SetActive(true);
+        }
+
+        static Mesh BuildBoundsMesh(Bounds b)
+        {
+            var mesh = new Mesh();
+            var c    = b.center;
+            var e    = b.extents;
+            mesh.vertices = new Vector3[]
+            {
+                new(c.x - e.x, c.y - e.y, c.z - e.z),
+                new(c.x + e.x, c.y - e.y, c.z - e.z),
+                new(c.x + e.x, c.y + e.y, c.z - e.z),
+                new(c.x - e.x, c.y + e.y, c.z - e.z),
+                new(c.x - e.x, c.y - e.y, c.z + e.z),
+                new(c.x + e.x, c.y - e.y, c.z + e.z),
+                new(c.x + e.x, c.y + e.y, c.z + e.z),
+                new(c.x - e.x, c.y + e.y, c.z + e.z),
+            };
+            mesh.triangles = new int[]
+            {
+                0,2,1, 0,3,2,
+                4,5,6, 4,6,7,
+                0,1,5, 0,5,4,
+                3,6,2, 3,7,6,
+                0,4,7, 0,7,3,
+                1,2,6, 1,6,5,
+            };
+            mesh.RecalculateNormals();
+            return mesh;
         }
 
         internal static void RemoveGrabableComponents(GameObject go)
