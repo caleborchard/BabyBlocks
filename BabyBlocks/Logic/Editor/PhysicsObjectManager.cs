@@ -327,18 +327,13 @@ namespace BabyBlocks
                 RestoreHeldObjectScales();
                 EnterEditorPhysicsMode();
 
-                // Undo any baked ghost-cube collider carves so moving/selecting
-                // props in the editor isn't affected by holes cut for gameplay.
-                GhostCollisionCutter.RestoreAllColliderCarves();
+                // GhostCollisionCutter.RestoreAllColliderCarves(); // prop collider carving disabled
             }
             else
             {
                 ExitEditorPhysicsMode();
 
-                // Bake collider carves for every ghost cube now that editing is
-                // done — this is the only point props' MeshColliders get cut, so
-                // anything moved into a hole while editing is picked up here.
-                GhostCollisionCutter.BakeAllColliderCarves();
+                // GhostCollisionCutter.BakeAllColliderCarves(); // prop collider carving disabled
             }
         }
 

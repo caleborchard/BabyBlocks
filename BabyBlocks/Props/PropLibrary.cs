@@ -1211,16 +1211,26 @@ namespace BabyBlocks
         {
             try
             {
-                var tempGo = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-                var mesh = tempGo.GetComponent<MeshFilter>()?.sharedMesh;
-                var tempMr = tempGo.GetComponent<MeshRenderer>();
-                var defMats = tempMr != null ? tempMr.sharedMaterials : null;
-                UnityEngine.Object.Destroy(tempGo);
+                var edges = new (Vector3 a, Vector3 b)[]
+                {
+                    (new Vector3(-0.5f,-0.5f,-0.5f), new Vector3( 0.5f,-0.5f,-0.5f)),
+                    (new Vector3( 0.5f,-0.5f,-0.5f), new Vector3( 0.5f,-0.5f, 0.5f)),
+                    (new Vector3( 0.5f,-0.5f, 0.5f), new Vector3(-0.5f,-0.5f, 0.5f)),
+                    (new Vector3(-0.5f,-0.5f, 0.5f), new Vector3(-0.5f,-0.5f,-0.5f)),
+                    (new Vector3(-0.5f, 0.5f,-0.5f), new Vector3( 0.5f, 0.5f,-0.5f)),
+                    (new Vector3( 0.5f, 0.5f,-0.5f), new Vector3( 0.5f, 0.5f, 0.5f)),
+                    (new Vector3( 0.5f, 0.5f, 0.5f), new Vector3(-0.5f, 0.5f, 0.5f)),
+                    (new Vector3(-0.5f, 0.5f, 0.5f), new Vector3(-0.5f, 0.5f,-0.5f)),
+                    (new Vector3(-0.5f,-0.5f,-0.5f), new Vector3(-0.5f, 0.5f,-0.5f)),
+                    (new Vector3( 0.5f,-0.5f,-0.5f), new Vector3( 0.5f, 0.5f,-0.5f)),
+                    (new Vector3( 0.5f,-0.5f, 0.5f), new Vector3( 0.5f, 0.5f, 0.5f)),
+                    (new Vector3(-0.5f,-0.5f, 0.5f), new Vector3(-0.5f, 0.5f, 0.5f)),
+                };
 
                 info.parts.Add(new PropMeshPart
                 {
-                    mesh          = mesh,
-                    materials     = defMats,
+                    mesh          = BuildEdgeTubeMesh(edges, 0.02f),
+                    materials     = new[] { BuildWireframeMaterial(new Color(1f, 0.95f, 0.3f)) },
                     localPosition = Vector3.zero,
                     localRotation = Quaternion.identity,
                     localScale    = Vector3.one,
@@ -1247,24 +1257,37 @@ namespace BabyBlocks
 
             try
             {
-                var tempGo = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-                var mesh = tempGo.GetComponent<MeshFilter>()?.sharedMesh;
-                var tempMr = tempGo.GetComponent<MeshRenderer>();
-                var defMats = tempMr != null ? tempMr.sharedMaterials : null;
-                UnityEngine.Object.Destroy(tempGo);
+                var edges = new List<(Vector3 a, Vector3 b)>();
 
-                if (mesh == null)
+                // Footprint ring on the ground.
+                const int ringSegments = 24;
+                const float ringRadius = 0.4f;
+                var ringPoints = new Vector3[ringSegments];
+                for (int i = 0; i < ringSegments; i++)
                 {
-                    info.isLoaded  = true;
-                    info.isInvalid = true;
-                    return;
+                    float angle = (i / (float)ringSegments) * Mathf.PI * 2f;
+                    ringPoints[i] = new Vector3(Mathf.Cos(angle) * ringRadius, 0.02f, Mathf.Sin(angle) * ringRadius);
                 }
+                for (int i = 0; i < ringSegments; i++)
+                    edges.Add((ringPoints[i], ringPoints[(i + 1) % ringSegments]));
+
+                // Vertical pole showing player height.
+                edges.Add((Vector3.zero, new Vector3(0f, 1.8f, 0f)));
+
+                // Forward arrow (local +Z).
+                const float arrowLen = 0.7f;
+                const float headLen  = 0.18f;
+                var arrowBase = new Vector3(0f, 0.05f, 0f);
+                var tip = new Vector3(0f, 0.05f, arrowLen);
+                edges.Add((arrowBase, tip));
+                edges.Add((tip, tip + Quaternion.Euler(0f,  150f, 0f) * Vector3.forward * headLen));
+                edges.Add((tip, tip + Quaternion.Euler(0f, -150f, 0f) * Vector3.forward * headLen));
 
                 info.parts.Add(new PropMeshPart
                 {
-                    mesh          = mesh,
-                    materials     = defMats,
-                    localPosition = new Vector3(0f, 1f, 0f),
+                    mesh          = BuildEdgeTubeMesh(edges.ToArray(), 0.018f),
+                    materials     = new[] { BuildWireframeMaterial(new Color(0.3f, 1f, 0.45f)) },
+                    localPosition = Vector3.zero,
                     localRotation = Quaternion.identity,
                     localScale    = Vector3.one,
                 });
@@ -1304,6 +1327,66 @@ namespace BabyBlocks
                 rendererSubPath = GetRendererSubPath(t, rootT),
             };
             info.parts.Add(part);
+        }
+
+        // Builds a mesh from an array of line segments, each represented as a thin rectangular prism.
+        static Mesh BuildEdgeTubeMesh((Vector3 a, Vector3 b)[] edges, float thickness)
+        {
+            var verts = new List<Vector3>();
+            var tris  = new List<int>();
+            float h   = thickness * 0.5f;
+
+            foreach (var (a, b) in edges)
+            {
+                var dir = b - a;
+                if (dir.sqrMagnitude < 0.000001f) continue;
+                dir.Normalize();
+
+                // Two perpendicular axes forming the tube cross-section.
+                var perp1 = Mathf.Abs(dir.y) < 0.9f
+                    ? new Vector3(-dir.z, 0f, dir.x).normalized
+                    : new Vector3(0f, -dir.z, dir.y).normalized;
+                var perp2 = Vector3.Cross(dir, perp1);
+
+                var r = perp1 * h;
+                var u = perp2 * h;
+
+                int vi = verts.Count;
+                verts.Add(a - r - u); verts.Add(a + r - u);
+                verts.Add(a + r + u); verts.Add(a - r + u);
+                verts.Add(b - r - u); verts.Add(b + r - u);
+                verts.Add(b + r + u); verts.Add(b - r + u);
+
+                AddTubeQuad(tris, vi, 0, 1, 5, 4);
+                AddTubeQuad(tris, vi, 1, 2, 6, 5);
+                AddTubeQuad(tris, vi, 2, 3, 7, 6);
+                AddTubeQuad(tris, vi, 3, 0, 4, 7);
+                AddTubeQuad(tris, vi, 3, 2, 1, 0);
+                AddTubeQuad(tris, vi, 4, 5, 6, 7);
+            }
+
+            var mesh = new Mesh { name = "WireframeTubes" };
+            mesh.vertices  = verts.ToArray();
+            mesh.triangles = tris.ToArray();
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        static void AddTubeQuad(List<int> tris, int vi, int a, int b, int c, int d)
+        {
+            tris.Add(vi + a); tris.Add(vi + b); tris.Add(vi + c);
+            tris.Add(vi + a); tris.Add(vi + c); tris.Add(vi + d);
+        }
+
+        static Material BuildWireframeMaterial(Color color)
+        {
+            var shader = Shader.Find("Unlit/Color")
+                      ?? Shader.Find("Sprites/Default")
+                      ?? Shader.Find("Standard");
+            var mat = new Material(shader) { name = "BabyBlocks_WirePreview" };
+            if (mat.HasProperty("_Color")) mat.SetColor("_Color", color);
+            return mat;
         }
 
         static string GetRendererSubPath(Transform t, Transform rootT)

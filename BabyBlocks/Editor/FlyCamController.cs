@@ -149,10 +149,7 @@ namespace BabyBlocks
                 LevelEditor.PruneSelection();
                 if (GizmoRenderer.IsReady) GizmoRenderer.RefreshAssets();
 
-                // All props from the loaded save are back in the scene now —
-                // bake ghost-cube collider carves so holes apply to whatever
-                // ended up inside them.
-                GhostCollisionCutter.BakeAllColliderCarves();
+                // GhostCollisionCutter.BakeAllColliderCarves(); // prop collider carving disabled
             }
 
             // Toggling fly/editor mode while a cutscene is playing leaves PlayerMovement and

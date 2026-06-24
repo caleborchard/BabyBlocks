@@ -25,6 +25,7 @@ namespace BabyBlocks.UI
         static PropLibraryPanel    _panel;
         static FileBrowserPanel    _fileBrowser;
         static PropertiesPanel     _propertiesPanel;
+        static GraphicRaycaster    _raycaster;
 
         public static void Init()
         {
@@ -127,6 +128,14 @@ namespace BabyBlocks.UI
         {
             // Prevent Space/Enter from re-firing the last clicked button.
             UniversalUI.EventSys?.SetSelectedGameObject(null);
+
+            // Only intercept pointer events when the cursor is actually over one of our
+            // panels — otherwise let clicks fall through to the base game's own UI.
+            if (_raycaster == null && _uiBase?.RootObject != null)
+                _raycaster = _uiBase.RootObject.GetComponent<GraphicRaycaster>();
+            if (_raycaster != null)
+                _raycaster.enabled = IsPointerOverPanel();
+
             _topBar?.Tick();
             _panel?.Tick();
             _fileBrowser?.Tick();

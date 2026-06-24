@@ -11,7 +11,7 @@ namespace BabyBlocks
     // Format: Version(int32) | Count(int32) | [propId(str), jpgLen(int32), jpgBytes...]
     static class PropPreviewCache
     {
-        const int FormatVersion = 19;
+        const int FormatVersion = 20;
 
         static string CachePath =>
             Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "PropPreviews.bin");

@@ -104,6 +104,7 @@ namespace BabyBlocks
     {
         public GhostCollisionCutter(IntPtr ptr) : base(ptr) { }
 
+        /*
         struct CarvedMeshState
         {
             public Mesh   originalMesh;
@@ -112,6 +113,7 @@ namespace BabyBlocks
             public bool   originalConvex;
             public bool   IsValid => originalMesh != null;
         }
+        */
 
         struct CarvedTerrainState
         {
@@ -125,20 +127,20 @@ namespace BabyBlocks
             public bool        IsValid => originalData != null && originalHoles != null;
         }
 
-        static readonly Dictionary<MeshCollider, CarvedMeshState> _carvedColliders = new();
-        static readonly Dictionary<MeshFilter,   CarvedMeshState> _carvedFilters   = new();
+        // static readonly Dictionary<MeshCollider, CarvedMeshState> _carvedColliders = new();
+        // static readonly Dictionary<MeshFilter,   CarvedMeshState> _carvedFilters   = new();
         static readonly Dictionary<UnityEngine.Terrain,      CarvedTerrainState> _carvedTerrains = new();
 
         // All enabled cutters, so the editor-mode-transition / post-load hooks can
         // drive a one-shot collider carve pass across every ghost cube at once.
         static readonly List<GhostCollisionCutter> _instances = new();
 
-        readonly HashSet<Transform> _activeRoots = new();
+        // readonly HashSet<Transform> _activeRoots = new();
         BoxCollider _volume;
 
         // Extra margin added to the overlap-detection box (but NOT the carve box)
         // to stabilize Physics.OverlapBox results for colliders near the boundary.
-        const float DetectionPadding = 0.05f;
+        // const float DetectionPadding = 0.05f;
 
         // Cached cutter pose used to debounce carve rebuilds — tiny per-frame
         // float jitter in the transform must not trigger a restore+reapply
@@ -195,14 +197,6 @@ namespace BabyBlocks
                 _frameRoot.gameObject.SetActive(editorActive);
         }
 
-        // Terrain carving stays dynamic (cheap geometric check, no physics involved —
-        // see RefreshTerrains). Carving other props' mesh colliders is NOT done here
-        // anymore: it used to run off Physics.OverlapBox every frame, but that only
-        // re-evaluates the cutter's own pose — if some other prop is moved into an
-        // already-stationary ghost cube, the carve key never changes and the new
-        // prop's collider is never carved. Mesh-collider carving is instead baked in
-        // one shot via BakeAllColliderCarves (see SetEditorModeActive and the
-        // post-load settle hook in FlyCamController).
         void Refresh()
         {
             if (_volume == null) _volume = GetComponent<BoxCollider>();
@@ -218,6 +212,7 @@ namespace BabyBlocks
             RefreshTerrains(carveKey, worldCenter, rotation, halfExtents);
         }
 
+        /*
         // One-shot mesh-collider carve pass: finds every prop currently overlapping
         // this cutter and carves its MeshColliders, restoring any previously-carved
         // props that no longer overlap. Call via BakeAllColliderCarves.
@@ -285,6 +280,7 @@ namespace BabyBlocks
         {
             foreach (var inst in _instances) inst?.RestoreColliderCarve();
         }
+        */
 
         // Terrains can't be discovered through Physics.OverlapBox like other roots:
         // carving calls TerrainData.SetHoles, which makes Unity rebuild the
@@ -359,7 +355,7 @@ namespace BabyBlocks
         {
             _hasLastCarvePose = false;
 
-            RestoreColliderCarve();
+            // RestoreColliderCarve();
 
             // Terrains are tracked independently of _activeRoots (see RefreshTerrains),
             // so they need to be restored here too — otherwise deleting/disabling the
@@ -371,6 +367,7 @@ namespace BabyBlocks
             }
         }
 
+        /*
         void UpdateRootCarve(Transform root, string carveKey)
         {
             if (root == null) return;
@@ -478,6 +475,7 @@ namespace BabyBlocks
             state.carveKey          = carveKey;
             _carvedFilters[filter]  = state;
         }
+        */
 
         void ApplyTerrainCarve(Terrain terrain, string carveKey, Vector3 cutterCenter, Quaternion cutterRotation, Vector3 cutterHalfExtents)
         {
@@ -720,6 +718,7 @@ namespace BabyBlocks
             return _lastCarveKey;
         }
 
+        /*
         // ── Physics carve ────────────────────────────────────────────────────────
         // Exact original algorithm: flat triangle loop, centroid+vertex inside test,
         // single-submesh output. Signature mirrors the original to preserve behaviour.
@@ -986,17 +985,20 @@ namespace BabyBlocks
             }
             return (byteSize + 3) / 4;
         }
+        */
 
         static bool PointInsideBox(Vector3 local, Vector3 half)
             => Mathf.Abs(local.x) <= half.x
             && Mathf.Abs(local.y) <= half.y
             && Mathf.Abs(local.z) <= half.z;
 
+        /*
         bool IsOwnCollider(Collider c)  => c != null && IsOwnTransform(c.transform);
         bool IsOwnTransform(Transform t) => t != null && (t == transform || t.IsChildOf(transform));
 
         bool IsPlayerCollider(Collider c)  => c != null && PlayerMovement.me != null && IsPlayerTransform(c.transform);
         bool IsPlayerTransform(Transform t) => t != null && PlayerMovement.me != null
             && (t == PlayerMovement.me.transform || t.IsChildOf(PlayerMovement.me.transform));
+        */
     }
 }
