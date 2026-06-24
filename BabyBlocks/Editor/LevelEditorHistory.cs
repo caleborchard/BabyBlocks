@@ -1,6 +1,7 @@
 ﻿using System.Collections.Generic;
 using Il2Cpp;
 using UnityEngine;
+using System.Linq;
 
 namespace BabyBlocks
 {
@@ -168,11 +169,85 @@ namespace BabyBlocks
             }
         }
 
+        class GroupScaleAction : IAction
+        {
+            readonly int                  _groupId;
+            readonly GameObject           _groupRoot;
+            readonly LevelEditorObject[]  _members;
+            readonly Vector3              _rootPosBefore,      _rootPosAfter;
+            readonly Vector3              _displayScaleBefore, _displayScaleAfter;
+            readonly Vector3[]            _scalesBefore,       _scalesAfter;
+            readonly Vector3[]            _localPosBefore,     _localPosAfter;
+
+            public GroupScaleAction(int groupId, GameObject groupRoot, LevelEditorObject[] members,
+                Vector3 rootPosBefore, Vector3 displayScaleBefore,
+                Vector3[] scalesBefore, Vector3[] localPosBefore)
+            {
+                _groupId    = groupId;
+                _groupRoot  = groupRoot;
+                _members    = members;
+                _rootPosBefore      = rootPosBefore;
+                _displayScaleBefore = displayScaleBefore;
+                _scalesBefore    = scalesBefore;
+                _localPosBefore  = localPosBefore;
+
+                // Capture after-state at construction time (called immediately after the change).
+                _rootPosAfter      = groupRoot?.transform.position ?? Vector3.zero;
+                _displayScaleAfter = GroupManager.GetGroupDisplayScale(groupId);
+                _scalesAfter   = new Vector3[members.Length];
+                _localPosAfter = new Vector3[members.Length];
+                for (int i = 0; i < members.Length; i++)
+                {
+                    if (members[i] == null) continue;
+                    _scalesAfter[i]   = members[i].transform.localScale;
+                    _localPosAfter[i] = members[i].transform.localPosition;
+                }
+            }
+
+            public bool HasChanges()
+            {
+                if (_displayScaleBefore != _displayScaleAfter) return true;
+                for (int i = 0; i < _members.Length; i++)
+                    if (_scalesBefore[i] != _scalesAfter[i]) return true;
+                return false;
+            }
+
+            public void Undo() => Apply(_scalesBefore, _localPosBefore, _rootPosBefore, _displayScaleBefore);
+            public void Redo() => Apply(_scalesAfter,  _localPosAfter,  _rootPosAfter,  _displayScaleAfter);
+
+            void Apply(Vector3[] scales, Vector3[] localPositions, Vector3 rootPos, Vector3 displayScale)
+            {
+                if (_groupRoot != null) _groupRoot.transform.position = rootPos;
+                for (int i = 0; i < _members.Length; i++)
+                {
+                    if (_members[i] == null) continue;
+                    _members[i].transform.localScale    = scales[i];
+                    _members[i].transform.localPosition = localPositions[i];
+                }
+                GroupManager.SetGroupDisplayScale(_groupId, displayScale);
+                // Re-select a live member so the gizmo refreshes.
+                var live = _members.FirstOrDefault(m => m != null);
+                if (live != null) LevelEditor.Select(live);
+            }
+        }
+
         static readonly List<IAction> _undo = new();
         static readonly List<IAction> _redo = new();
 
         public static void PushSpawn(LevelEditorObject obj)  => Push(new SpawnAction(obj));
         public static void PushDelete(LevelEditorObject obj) => Push(new DeleteAction(obj));
+
+        // Collects member state and pushes an undo entry for a group scale change.
+        // Call AFTER the scale has been applied; the before-state is supplied by the caller.
+        public static void PushGroupScale(int groupId, GameObject groupRoot,
+            LevelEditorObject[] members,
+            Vector3 rootPosBefore, Vector3 displayScaleBefore,
+            Vector3[] memberScalesBefore, Vector3[] memberLocalPosBefore)
+        {
+            var action = new GroupScaleAction(groupId, groupRoot, members,
+                rootPosBefore, displayScaleBefore, memberScalesBefore, memberLocalPosBefore);
+            if (action.HasChanges()) Push(action);
+        }
 
         public static void PushMaterial(LevelEditorObject obj, Renderer[] renderers, Material[][] matsBefore,
             GameObject[] tagObjs, string[] tagsBefore, int idBefore)

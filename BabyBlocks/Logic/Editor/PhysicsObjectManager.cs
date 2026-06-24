@@ -568,6 +568,11 @@ namespace BabyBlocks
                 AddGrabableComponent(leo.gameObject, leo.physicsMode == PhysicsMode.Hat, colls, leo.addressableKey);
                 SyncHatHairAmount(leo);
                 if (leo.physicsMode == PhysicsMode.Grabable) SyncGrabOffset(leo);
+                if (leo.physicsMode == PhysicsMode.Hat && BbHatSunglassesFlag.Has(leo))
+                {
+                    var hat = leo.gameObject.GetComponent<Hat>();
+                    if (hat != null) hat.isSunglasses = true;
+                }
             }
             MarkPhysicsChunkIndependent(leo);
             leo.isPhysicsManaged = true;

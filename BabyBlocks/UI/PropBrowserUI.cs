@@ -1263,9 +1263,28 @@ namespace BabyBlocks.UI
             }
 
             if (foundLeo == null) return;
-            MaterialConstructionPanel.ApplyToInstance(foundLeo, _matDragEntry);
-            if (foundLeo.netId != 0)
-                Networking.ModNetworking.SendMaterialApplied(foundLeo.netId, _matDragEntry.id);
+
+            // Apply to all group members when the hit prop is in a group.
+            var groupMembers = foundLeo.groupId > 0
+                ? LevelEditorManager.Instance?.GetLogicalGroupMembers(foundLeo.groupId)
+                : null;
+
+            if (groupMembers != null && groupMembers.Count > 1)
+            {
+                foreach (var m in groupMembers)
+                {
+                    if (m == null) continue;
+                    MaterialConstructionPanel.ApplyToInstance(m, _matDragEntry, pushHistory: false);
+                    if (m.netId != 0)
+                        Networking.ModNetworking.SendMaterialApplied(m.netId, _matDragEntry.id);
+                }
+            }
+            else
+            {
+                MaterialConstructionPanel.ApplyToInstance(foundLeo, _matDragEntry);
+                if (foundLeo.netId != 0)
+                    Networking.ModNetworking.SendMaterialApplied(foundLeo.netId, _matDragEntry.id);
+            }
         }
 
         void CancelMatDrag()

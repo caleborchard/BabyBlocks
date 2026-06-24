@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.IO.Compression;
 using System.Text;
 using Il2Cpp;
@@ -69,10 +70,16 @@ namespace BabyBlocks
     //
     // Version 9 adds, after RestoreDayWeatherPlaylist:
     //   WeatherPreset : int32 (-1 = Default, 0..N = locked preset index)
+    //
+    // Version 11 adds, after the baked-render-data block:
+    //   GroupScaleCount : int32   (number of groups with a non-identity display scale)
+    //   For each:
+    //     GroupId  : int32
+    //     Scale.xyz: 3 × float32
     static class LevelSaveLoad
     {
         static readonly byte[] Magic = { 0x42, 0x42, 0x42 };
-        const byte FormatVersion = 10;
+        const byte FormatVersion = 11;
 
         // Reserved MetaIndex value identifying the Spawn Point — it isn't registered in
         // PropMetadataPanel (no per-instance metadata needed), so a sentinel outside the
@@ -128,6 +135,7 @@ namespace BabyBlocks
                     WriteRecord(w, records[i]);
 
                 WriteBakedData(w, records);
+                WriteGroupScales(w);
 
                 MelonLogger.Msg($"[SaveLoad] Saved {records.Count} object(s) → {path}");
                 return true;
@@ -207,6 +215,7 @@ namespace BabyBlocks
                 foreach (var rec in records)
                     WriteRecord(w, rec);
                 w.Write(0); // CompressedLen = 0 — no baked data
+                WriteGroupScales(w);
                 return ms.ToArray();
             }
             catch (Exception e)
@@ -247,6 +256,7 @@ namespace BabyBlocks
             mgr.RemoveAll();
             LevelEditor.ClearAllSelectionState();
             BabyBlocks.Networking.ModNetworking.ClearNetworkedObjects();
+            BbHatSunglassesFlag.Clear();
 
             var leos = new LevelEditorObject[count];
 
@@ -389,6 +399,8 @@ namespace BabyBlocks
                     leo.gameObject.AddComponent<BbSunglassesChecker>();
                 if (leo.playerPassthrough)
                     PropInstanceServices.SetBushPassthrough(leo.gameObject, true);
+                if ((instanceFlags & 0x04) != 0)
+                    BbHatSunglassesFlag.Set(leo, true);
                 leos[i] = leo;
                 spawned++;
 
@@ -404,6 +416,9 @@ namespace BabyBlocks
 
             GroupManager.ApplyGroups();
             PhysicsObjectManager.SyncLoadedHatHairValues();
+
+            if (version >= 11)
+                ReadGroupScales(r);
 
             // Teleport BEFORE applying the saved base-map state: SetBaseMapEnabled's
             // chunk-hide scan and brl.off toggling need to happen at the player's
@@ -514,7 +529,7 @@ namespace BabyBlocks
                     hatOffsetPos     = leo.hatOffsetPos,
                     hatOffsetRot     = leo.hatOffsetRot,
                     materialConstructionId = leo.materialConstructionId,
-                    instanceFlags = (byte)((leo.sunglassesNeeded ? 0x01 : 0) | (leo.playerPassthrough ? 0x02 : 0)),
+                    instanceFlags = (byte)((leo.sunglassesNeeded ? 0x01 : 0) | (leo.playerPassthrough ? 0x02 : 0) | (BbHatSunglassesFlag.Has(leo) ? 0x04 : 0)),
                 });
             }
 
@@ -632,6 +647,28 @@ namespace BabyBlocks
                 if (index >= 0 && index < leos.Length && leos[index] != null
                     && !PropMetadataStore.GetDisableBaking(leos[index].addressableKey))
                     MaterialBaker.ImportBakedData(leos[index].gameObject, parts);
+            }
+        }
+
+        static void WriteGroupScales(BinaryWriter w)
+        {
+            var scales = GroupManager.GetAllGroupDisplayScales().ToList();
+            w.Write(scales.Count);
+            foreach (var kv in scales)
+            {
+                w.Write(kv.Key);
+                w.Write(kv.Value.x); w.Write(kv.Value.y); w.Write(kv.Value.z);
+            }
+        }
+
+        static void ReadGroupScales(BinaryReader r)
+        {
+            int count = r.ReadInt32();
+            for (int i = 0; i < count; i++)
+            {
+                int groupId = r.ReadInt32();
+                var scale   = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                GroupManager.SetGroupDisplayScale(groupId, scale);
             }
         }
 

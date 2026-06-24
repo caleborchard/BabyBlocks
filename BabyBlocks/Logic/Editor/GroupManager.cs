@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using Il2Cpp;
 using Il2CppInterop.Runtime.Attributes;
 using UnityEngine;
 
@@ -25,6 +26,27 @@ namespace BabyBlocks
         }
 
         static void RemoveGroupRoot(int groupId) => LevelEditorManager.Instance._groupRoots.Remove(groupId);
+
+        // Display scale: the "virtual" group scale shown in the Properties Panel text boxes.
+        // The group root GO's localScale is always (1,1,1) to avoid Unity's shear artifact
+        // (non-uniform parent scale + rotated children = implicit skew). Scale is instead
+        // applied directly to each member's localScale and localPosition.
+        static readonly Dictionary<int, Vector3> _groupDisplayScales = new();
+
+        public static Vector3 GetGroupDisplayScale(int groupId)
+        {
+            if (groupId > 0 && _groupDisplayScales.TryGetValue(groupId, out var s)) return s;
+            return Vector3.one;
+        }
+
+        public static void SetGroupDisplayScale(int groupId, Vector3 scale) =>
+            _groupDisplayScales[groupId] = scale;
+
+        public static void RemoveGroupDisplayScale(int groupId) =>
+            _groupDisplayScales.Remove(groupId);
+
+        public static IEnumerable<KeyValuePair<int, Vector3>> GetAllGroupDisplayScales() =>
+            _groupDisplayScales;
 
         internal static void FreezeRigidBodyGroupForEditor(int physicsGroupId)
         {
@@ -99,15 +121,21 @@ namespace BabyBlocks
                 }
                 RemoveGroupRoot(physicsGroupId);
                 UnityEngine.Object.Destroy(root);
-                return;
+            }
+            else
+            {
+                foreach (var member in members)
+                {
+                    PhysicsObjectManager.RemoveGrabableComponents(member.gameObject);
+                    PhysicsObjectManager.RestoreBasePose(member);
+                    member.isPhysicsManaged = false;
+                }
             }
 
-            foreach (var member in members)
-            {
-                PhysicsObjectManager.RemoveGrabableComponents(member.gameObject);
-                PhysicsObjectManager.RestoreBasePose(member);
-                member.isPhysicsManaged = false;
-            }
+            // Recreate the static logical group root so GetGroupRoot(groupId) stays valid
+            // for the preview system while in editor mode.
+            foreach (var grp in members.Where(m => m != null && m.groupId > 0).GroupBy(m => m.groupId))
+                EnsureStaticGroupRoot(grp.Key, grp.ToList());
         }
 
         public static void ApplyGroups()
@@ -253,6 +281,15 @@ namespace BabyBlocks
                     m.isPhysicsManaged = true;
                 }
                 PhysicsObjectManager.AddGrabableComponent(existingRoot, mode == PhysicsMode.Hat, colls2.ToArray());
+                if (mode == PhysicsMode.Hat)
+                {
+                    var hat = existingRoot.GetComponent<Hat>();
+                    if (hat != null)
+                    {
+                        foreach (var m in members)
+                            if (m != null && BbHatSunglassesFlag.Has(m)) { hat.isSunglasses = true; break; }
+                    }
+                }
                 if (mode == PhysicsMode.Hat && members.Count > 0) PhysicsObjectManager.SyncHatHairAmount(members[0]);
                 if (mode == PhysicsMode.Grabable && members.Count > 0) PhysicsObjectManager.SyncGrabOffset(members[0]);
                 foreach (var m in members) PhysicsObjectManager.MarkPhysicsChunkIndependent(m);
@@ -275,6 +312,15 @@ namespace BabyBlocks
                 m.isPhysicsManaged = true;
             }
             PhysicsObjectManager.AddGrabableComponent(root, mode == PhysicsMode.Hat, colls.ToArray());
+            if (mode == PhysicsMode.Hat)
+            {
+                var hat = root.GetComponent<Hat>();
+                if (hat != null)
+                {
+                    foreach (var m in members)
+                        if (m != null && BbHatSunglassesFlag.Has(m)) { hat.isSunglasses = true; break; }
+                }
+            }
             if (mode == PhysicsMode.Hat && members.Count > 0) PhysicsObjectManager.SyncHatHairAmount(members[0]);
             if (mode == PhysicsMode.Grabable && members.Count > 0) PhysicsObjectManager.SyncGrabOffset(members[0]);
             foreach (var m in members) PhysicsObjectManager.MarkPhysicsChunkIndependent(m);
@@ -308,6 +354,7 @@ namespace BabyBlocks
                     }
                 }
                 RemoveGroupRoot(groupId);
+                RemoveGroupDisplayScale(groupId);
                 UnityEngine.Object.Destroy(root);
             }
             else
@@ -323,6 +370,7 @@ namespace BabyBlocks
                     obj.groupId          = 0;
                     obj.isPhysicsManaged = false;
                 }
+                RemoveGroupDisplayScale(groupId);
             }
         }
 

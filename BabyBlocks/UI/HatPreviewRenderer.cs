@@ -30,6 +30,7 @@ namespace BabyBlocks.UI
         float         _orbitDist  = 0.5f;
         bool          _headMode   = true;  // tracks where prop is currently parented
         bool          _propOnHead = true;
+        int           _groupRootInstanceId;
 
         public bool IsReady => _rt != null && _cam != null && _propClone != null;
 
@@ -129,11 +130,24 @@ namespace BabyBlocks.UI
                             ?? FindDescendant(_playerClone.transform, "wrist.r.x")
                             ?? FindDescendant(_playerClone.transform, "wrist.r");
 
-            _propClone = UnityEngine.Object.Instantiate(target.gameObject);
+            // Clone the group root (contains all members) if the target is in a group;
+            // otherwise clone just the single target prop.
+            var groupRoot = ResolveGroupRoot(target);
+            var cloneSrc  = groupRoot != null ? groupRoot : target.gameObject;
+            _groupRootInstanceId = cloneSrc.GetInstanceID();
+
+            _propClone = UnityEngine.Object.Instantiate(cloneSrc);
             _propClone.name = "[HatPreview]";
-            foreach (var c in _propClone.GetComponentsInChildren<Rigidbody>())     UnityEngine.Object.Destroy(c);
-            foreach (var c in _propClone.GetComponentsInChildren<Collider>())      UnityEngine.Object.Destroy(c);
-            foreach (var c in _propClone.GetComponentsInChildren<MonoBehaviour>()) UnityEngine.Object.Destroy(c);
+
+            // DestroyImmediate with includeInactive:true so scripts on ALL child GOs
+            // (active or inactive) are gone before any Awake/Update can run.
+            // Deferred Destroy would let Hat.Update reset localScale every frame.
+            foreach (var c in _propClone.GetComponentsInChildren<Rigidbody>(true))     UnityEngine.Object.DestroyImmediate(c);
+            foreach (var c in _propClone.GetComponentsInChildren<Collider>(true))      UnityEngine.Object.DestroyImmediate(c);
+            foreach (var c in _propClone.GetComponentsInChildren<MonoBehaviour>(true)) UnityEngine.Object.DestroyImmediate(c);
+
+            // Ensure the clone is visible (source may have been inactive).
+            if (!_propClone.activeSelf) _propClone.SetActive(true);
 
             var attachBone = headMode ? _previewHeadBone : (_previewHandBone ?? _previewHeadBone);
             _propClone.transform.SetParent(attachBone, worldPositionStays: false);
@@ -167,7 +181,9 @@ namespace BabyBlocks.UI
             _activeInstance = this;
 
             // hatHairAmt is stored as the game/shader value (1=full hair, 0=none).
-            var hat = target.GetComponent<Hat>() ?? target.GetComponentInChildren<Hat>(true);
+            var hat = target.GetComponent<Hat>()
+                   ?? target.transform.parent?.GetComponent<Hat>()
+                   ?? target.GetComponentInChildren<Hat>(true);
             ApplyHairShader(target.hatHairAmt, hat);
         }
 
@@ -176,7 +192,25 @@ namespace BabyBlocks.UI
             if (_propClone == null || target == null) return;
             _target   = target;
             _headMode = headMode;
-            _propClone.transform.localScale = target.transform.localScale;
+
+            // Scale is stored on individual members (group root stays at (1,1,1)), so sync
+            // each child of the clone from the corresponding live child.
+            var groupRoot = ResolveGroupRoot(target);
+            if (groupRoot != null)
+            {
+                int n = Mathf.Min(groupRoot.transform.childCount, _propClone.transform.childCount);
+                for (int ci = 0; ci < n; ci++)
+                {
+                    var liveChild  = groupRoot.transform.GetChild(ci);
+                    var cloneChild = _propClone.transform.GetChild(ci);
+                    cloneChild.localScale    = liveChild.localScale;
+                    cloneChild.localPosition = liveChild.localPosition;
+                }
+            }
+            else
+            {
+                _propClone.transform.localScale = target.transform.localScale;
+            }
 
             // Re-parent if mode changed.
             if (headMode != _propOnHead)
@@ -187,6 +221,34 @@ namespace BabyBlocks.UI
             }
 
             ApplyHatOffset(target, headMode);
+            SyncMaterials(target);
+        }
+
+        // Returns true when the group root used at Setup is no longer the current live root
+        // (e.g. after a game-mode toggle that replaces the PhysicsGroup root with a new static root).
+        // The caller should teardown and rebuild the preview in that case.
+        public bool NeedsRebuildForTarget(LevelEditorObject target)
+        {
+            var root = ResolveGroupRoot(target);
+            int id   = root != null ? root.GetInstanceID() : (target?.gameObject.GetInstanceID() ?? 0);
+            return id != _groupRootInstanceId;
+        }
+
+        // Copies sharedMaterials from the live prop hierarchy to the preview clone.
+        // Called each frame so material-construction drags show up in the preview immediately.
+        void SyncMaterials(LevelEditorObject target)
+        {
+            if (_propClone == null || target == null) return;
+            var groupRoot = ResolveGroupRoot(target);
+            var liveRoot  = groupRoot != null ? groupRoot : target.gameObject;
+            var src = liveRoot.GetComponentsInChildren<Renderer>(true);
+            var dst = _propClone.GetComponentsInChildren<Renderer>(true);
+            int n = src.Length < dst.Length ? src.Length : dst.Length;
+            for (int i = 0; i < n; i++)
+            {
+                if (src[i] == null || dst[i] == null) continue;
+                dst[i].sharedMaterials = src[i].sharedMaterials;
+            }
         }
 
         public void ApplyHatOffset(LevelEditorObject target, bool headMode = true)
@@ -264,6 +326,25 @@ namespace BabyBlocks.UI
                 var child = root.GetChild(i);
                 if (child.GetComponentInChildren<SkinnedMeshRenderer>() != null)
                     return child;
+            }
+            return null;
+        }
+
+        // Returns the group root for a grouped prop. Falls back to the target's actual scene
+        // parent if the group root isn't registered in _groupRoots (e.g., after a game-mode
+        // toggle that removed the physics root before the static root was recreated).
+        static GameObject ResolveGroupRoot(LevelEditorObject target)
+        {
+            if (target == null || target.groupId <= 0) return null;
+            var root = GroupManager.GetGroupRoot(target.groupId);
+            if (root != null) return root;
+            var parent = target.transform.parent?.gameObject;
+            if (parent == null) return null;
+            for (int i = 0; i < parent.transform.childCount; i++)
+            {
+                var sibling = parent.transform.GetChild(i).GetComponent<LevelEditorObject>();
+                if (sibling != null && sibling != target && sibling.groupId == target.groupId)
+                    return parent;
             }
             return null;
         }

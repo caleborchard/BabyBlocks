@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Linq;
 using Il2Cpp;
 using UnityEngine;
 using UnityEngine.UI;
@@ -45,6 +46,15 @@ namespace BabyBlocks.UI
         Vector3    _dragScale0;
         Quaternion _dragRot0;
         Vector3    _dragRot0Euler;   // eulerAngles captured at drag start (stable base for rotation drag)
+
+        // Snapshot taken at the start of a group-scale drag or text-box edit (for undo/redo).
+        int                  _grpScSnapGroupId;
+        GameObject           _grpScSnapRoot;
+        LevelEditorObject[]  _grpScSnapMembers;
+        Vector3              _grpScSnapRootPos;
+        Vector3              _grpScSnapDisplayScale;
+        Vector3[]            _grpScSnapMemberScales;
+        Vector3[]            _grpScSnapMemberLocalPos;
         float      _lastClickTime  = -1f;
         int        _lastClickField = -1;
 
@@ -74,6 +84,11 @@ namespace BabyBlocks.UI
         Text      _sunglassesLabel;
         ButtonRef _passthroughBtn;
         Text      _passthroughLabel;
+
+        // Group / Ungroup button (top of panel)
+        ButtonRef  _groupBtn;
+        Text       _groupLabel;
+        GameObject _groupBtnGO;
 
         // Offsets section (Hat / Grabable)
         HatPreviewRenderer _preview;
@@ -144,6 +159,15 @@ namespace BabyBlocks.UI
                 forceWidth: true, forceHeight: false,
                 childControlWidth: true, childControlHeight: true,
                 spacing: 4, padTop: 6, padBottom: 8, padLeft: 8, padRight: 8);
+
+            // ── Group / Ungroup ───────────────────────────────────────────────
+            _groupBtn = UIFactory.CreateButton(ContentRoot, "GroupBtn", "Group");
+            UIFactory.SetLayoutElement(_groupBtn.Component.gameObject, minHeight: 28, flexibleWidth: 9999);
+            PropBrowserUI.ApplyButtonColors(_groupBtn);
+            _groupLabel = _groupBtn.Component.GetComponentInChildren<Text>();
+            _groupBtn.OnClick += ToggleGroup;
+            _groupBtnGO = _groupBtn.Component.gameObject;
+            _groupBtnGO.SetActive(false);
 
             // ── Transform ─────────────────────────────────────────────────────
             SectionHdr("Transform");
@@ -286,12 +310,13 @@ namespace BabyBlocks.UI
             _hairSlider.onValueChanged.AddListener((float v) =>
             {
                 if (_target == null || _target.physicsMode != PhysicsMode.Hat) return;
-                // Store the game-ready value (1=full hair, 0=none) so SyncHatHairAmount
-                // and in-game hat.hairAmt are correct without any extra inversion.
                 float gameVal = 1f - v;
                 _target.hatHairAmt = gameVal;
-                var hat = _target.GetComponent<Hat>()
-                       ?? _target.GetComponentInChildren<Hat>(true);
+                // Propagate to all members in the same logical group.
+                if (_target.groupId > 0 && LevelEditorManager.Instance != null)
+                    foreach (var m in LevelEditorManager.Instance.Objects)
+                        if (m != null && m.groupId == _target.groupId) m.hatHairAmt = gameVal;
+                var hat = FindHat();
                 if (hat != null) hat.hairAmt = gameVal;
                 else PhysicsObjectManager.SyncHatHairAmount(_target);
                 _preview?.ApplyHairShader(gameVal, hat);
@@ -469,41 +494,62 @@ namespace BabyBlocks.UI
         void ApplyRawMaterial(string matName)
         {
             if (_target == null) return;
-            int key = _target.gameObject.GetInstanceID();
+            int key   = _target.gameObject.GetInstanceID();
+            var grpGO = GetGroupRoot();
 
             if (string.IsNullOrEmpty(matName))
             {
                 MelonLoader.MelonLogger.Msg($"[PP Reset] key={key} matConstructId={_target.materialConstructionId} rawHasKey={_rawMatNames.ContainsKey(key)} rawVal={(_rawMatNames.TryGetValue(key, out var dbgV) ? dbgV : "<none>")}");
-                _rawMatNames.Remove(key);
-                MelonLoader.MelonLogger.Msg($"[PP Reset] after Remove: rawHasKey={_rawMatNames.ContainsKey(key)}");
-                MaterialConstructionPanel.ApplyToInstance(_target, _resetEntry);
-                MelonLoader.MelonLogger.Msg($"[PP Reset] after ApplyToInstance: matConstructId={_target.materialConstructionId} rawHasKey={_rawMatNames.ContainsKey(key)}");
-                _target.materialConstructionId = -1;
+                if (grpGO != null)
+                {
+                    foreach (var m in GetGroupMembers())
+                    {
+                        if (m == null) continue;
+                        int mKey = m.gameObject.GetInstanceID();
+                        _rawMatNames.Remove(mKey);
+                        MaterialConstructionPanel.ApplyToInstance(m, _resetEntry);
+                        m.materialConstructionId = -1;
+                    }
+                }
+                else
+                {
+                    _rawMatNames.Remove(key);
+                    MelonLoader.MelonLogger.Msg($"[PP Reset] after Remove: rawHasKey={_rawMatNames.ContainsKey(key)}");
+                    MaterialConstructionPanel.ApplyToInstance(_target, _resetEntry);
+                    MelonLoader.MelonLogger.Msg($"[PP Reset] after ApplyToInstance: matConstructId={_target.materialConstructionId} rawHasKey={_rawMatNames.ContainsKey(key)}");
+                    _target.materialConstructionId = -1;
+                }
                 RefreshMatLabel();
                 return;
             }
 
-            var renderers = _target.GetComponentsInChildren<Renderer>(true);
-            if (renderers == null || renderers.Length == 0) return;
-
-            // Ensure MaterialConstructionPanel's cache has the TRUE originals before we overwrite
-            // renderers, so that a subsequent construction drag + Reset restores prop defaults.
-            MaterialConstructionPanel.EnsureOriginalsCache(_target);
-
             if (!MaterialCatalog.MaterialByName.TryGetValue(matName, out var mat) || mat == null) return;
 
-            // Apply to every slot of every renderer.
-            foreach (var r in renderers)
+            var applyList = grpGO != null ? GetGroupMembers() : (IReadOnlyList<LevelEditorObject>)new[] { _target };
+            foreach (var tgt in applyList)
             {
-                if (r == null) continue;
-                int slots = r.sharedMaterials.Length;
-                if (slots == 0) slots = 1;
-                var mats = new Material[slots];
-                for (int i = 0; i < slots; i++) mats[i] = mat;
-                r.sharedMaterials = mats;
+                if (tgt == null) continue;
+                int tKey = tgt.gameObject.GetInstanceID();
+                var renderers = tgt.GetComponentsInChildren<Renderer>(true);
+                if (renderers == null || renderers.Length == 0) continue;
+
+                // Ensure MaterialConstructionPanel's cache has the TRUE originals before we overwrite
+                // renderers, so that a subsequent construction drag + Reset restores prop defaults.
+                MaterialConstructionPanel.EnsureOriginalsCache(tgt);
+
+                // Apply to every slot of every renderer.
+                foreach (var r in renderers)
+                {
+                    if (r == null) continue;
+                    int slots = r.sharedMaterials.Length;
+                    if (slots == 0) slots = 1;
+                    var mats = new Material[slots];
+                    for (int i = 0; i < slots; i++) mats[i] = mat;
+                    r.sharedMaterials = mats;
+                }
+                tgt.materialConstructionId = -1;
+                _rawMatNames[tKey] = matName;
             }
-            _target.materialConstructionId = -1;
-            _rawMatNames[key] = matName;
             RefreshMatLabel();
         }
 
@@ -537,7 +583,12 @@ namespace BabyBlocks.UI
                 PropBrowserUI.ApplyButtonColors(btn);
                 btn.OnClick += () =>
                 {
-                    if (_target != null) PropInstanceServices.ApplySurfaceType(_target, cap);
+                    var grpGO2 = GetGroupRoot();
+                    if (grpGO2 != null)
+                        foreach (var m in GetGroupMembers())
+                            if (m != null) PropInstanceServices.ApplySurfaceType(m, cap);
+                    else if (_target != null)
+                        PropInstanceServices.ApplySurfaceType(_target, cap);
                     CloseAllDds();
                     RefreshSurfLabel();
                 };
@@ -614,12 +665,29 @@ namespace BabyBlocks.UI
             Instance._lastClickTime  = -1f;
             if (Instance._target != leo)
             {
-                Instance._preview?.Teardown();
-                Instance._preview       = null;
+                // Keep the preview when switching between members of the same group —
+                // the clone covers all members and doesn't need to be rebuilt.
+                bool sameGroup = Instance._target != null
+                                 && Instance._target.groupId > 0
+                                 && Instance._target.groupId == leo.groupId;
+                if (!sameGroup)
+                {
+                    Instance._preview?.Teardown();
+                    Instance._preview       = null;
+                }
                 Instance._hatModeIsHead = true;
-                // Sync hair slider to new target (without firing the write-back listener).
                 if (Instance._hairSlider != null)
-                    Instance._hairSlider.SetValueWithoutNotify(1f - leo.hatHairAmt);
+                {
+                    // For groups, use the first member as the hair-amount representative
+                    // so clicking any member in the group shows the same slider value.
+                    float hairAmt = leo.hatHairAmt;
+                    if (leo.groupId > 0 && LevelEditorManager.Instance != null)
+                    {
+                        var rep = LevelEditorManager.Instance.Objects.FirstOrDefault(o => o != null && o.groupId == leo.groupId);
+                        if (rep != null) hairAmt = rep.hatHairAmt;
+                    }
+                    Instance._hairSlider.SetValueWithoutNotify(1f - hairAmt);
+                }
             }
             Instance._target = leo;
             Instance.UIRoot.SetActive(true);
@@ -662,7 +730,13 @@ namespace BabyBlocks.UI
                         var upLeo = RaycastForLeo();
                         if (upLeo == _rmbDownLeo)
                         {
-                            LevelEditor.Select(upLeo);
+                            // Keep existing multi-selection if the clicked prop is already selected;
+                            // only clear and re-select when clicking a prop outside the current selection.
+                            bool alreadySelected = LevelEditor.SelectedObjects?.Any(s => s == upLeo) ?? false;
+                            if (alreadySelected)
+                                LevelEditor.selectedObject = upLeo;
+                            else
+                                LevelEditor.Select(upLeo);
                             ShowForProp(upLeo);
                         }
                     }
@@ -704,6 +778,7 @@ namespace BabyBlocks.UI
             TickDrag();
             SyncOpenDdPosition();
             // Keep all fields in sync with live prop state every frame.
+            RefreshGroupBtn();
             RefreshTransform();
             RefreshPhysLabel();
             RefreshMatLabel();
@@ -720,6 +795,7 @@ namespace BabyBlocks.UI
         void RefreshAll()
         {
             _dragId = -1;
+            RefreshGroupBtn();
             RefreshTransform();
             RefreshPhysLabel();
             RefreshMatLabel();
@@ -756,10 +832,11 @@ namespace BabyBlocks.UI
             if (showOffsets && mode == PhysicsMode.Hat)
                 RefreshHatSunglassesLabel();
 
-            // Size the panel to exactly fit its visible content.
-            // LayoutUtility.GetPreferredHeight traverses the hierarchy without triggering
-            // a full rebuild, so it reflects the SetActive calls above immediately.
+            // Force an immediate layout rebuild so the preferred-height query reflects the
+            // SetActive changes above — VerticalLayoutGroup caches its size and only updates
+            // it during the normal LateUpdate canvas pass, which is too late for same-frame queries.
             var contentRT = ContentRoot.GetComponent<RectTransform>();
+            UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(contentRT);
             float contentH    = UnityEngine.UI.LayoutUtility.GetPreferredHeight(contentRT);
             float previewExtra = showOffsets ? HatPreviewRenderer.PreviewSize + 8f : 0f;
             float targetH     = Mathf.Max(contentH + 4f + previewExtra, (float)MinHeight);
@@ -776,15 +853,21 @@ namespace BabyBlocks.UI
             }
 
             // Keep label current and sync slider to external changes (undo, level load).
+            // For grouped hats, use the first member as the representative so all members
+            // in the group show the same slider value regardless of which one is clicked.
             if (mode == PhysicsMode.Hat && _hairSlider != null && _hairLabel != null)
             {
-                float propVal = _target.hatHairAmt;  // game value: 1=full hair, 0=none
+                float propVal = _target.hatHairAmt;
+                if (_target.groupId > 0 && LevelEditorManager.Instance != null)
+                {
+                    var rep = LevelEditorManager.Instance.Objects.FirstOrDefault(o => o != null && o.groupId == _target.groupId);
+                    if (rep != null) propVal = rep.hatHairAmt;
+                }
                 float sliderPos = 1f - propVal;
                 if (!Mathf.Approximately(_hairSlider.value, sliderPos))
                 {
                     _hairSlider.SetValueWithoutNotify(sliderPos);
-                    var hat = _target.GetComponent<Hat>() ?? _target.GetComponentInChildren<Hat>(true);
-                    _preview?.ApplyHairShader(propVal, hat);
+                    _preview?.ApplyHairShader(propVal, FindHat());
                 }
                 _hairLabel.text = $"Hair: {Mathf.RoundToInt(sliderPos * 100f)}%";
             }
@@ -794,6 +877,14 @@ namespace BabyBlocks.UI
             bool previewHeadMode = mode == PhysicsMode.Hat && _hatModeIsHead;
             if (wantPreview)
             {
+                // Rebuild the preview if the underlying group root changed (e.g. after a
+                // game-mode toggle that replaced the PhysicsGroup root with a new static root).
+                if (_preview != null && _preview.IsReady && _preview.NeedsRebuildForTarget(_target))
+                {
+                    _preview.Teardown();
+                    _preview = null;
+                }
+
                 if (_preview == null || !_preview.IsReady)
                 {
                     _preview = new HatPreviewRenderer();
@@ -815,9 +906,12 @@ namespace BabyBlocks.UI
         void RefreshTransform()
         {
             if (_target == null || _dragId >= 0) return;
-            var t = _target.transform;
+            var grpGO = GetGroupRoot();
+            var t = grpGO != null ? grpGO.transform : _target.transform;
             SetF(0, t.position.x);    SetF(1, t.position.y);    SetF(2, t.position.z);
-            SetF(3, t.localScale.x);  SetF(4, t.localScale.y);  SetF(5, t.localScale.z);
+            var ds = (grpGO != null && _target?.groupId > 0)
+                ? GroupManager.GetGroupDisplayScale(_target.groupId) : t.localScale;
+            SetF(3, ds.x);  SetF(4, ds.y);  SetF(5, ds.z);
             var e = t.eulerAngles;
             SetF(6, e.x);             SetF(7, e.y);             SetF(8, e.z);
 
@@ -850,9 +944,83 @@ namespace BabyBlocks.UI
             };
         }
 
+        // ─────────────────────────────────────────────────────────────────────
+        //  Group helpers
+        // ─────────────────────────────────────────────────────────────────────
+
+        GameObject GetGroupRoot() =>
+            _target != null && _target.groupId > 0 ? GroupManager.GetGroupRoot(_target.groupId) : null;
+
+        // When props are in a physics group the Hat component lives on the group root GO,
+        // not on the individual member, so we must also check the immediate parent.
+        Hat FindHat() =>
+            _target == null ? null :
+            _target.GetComponent<Hat>()
+            ?? _target.transform.parent?.GetComponent<Hat>()
+            ?? _target.GetComponentInChildren<Hat>(true);
+
+        IReadOnlyList<LevelEditorObject> GetGroupMembers()
+        {
+            if (_target == null || _target.groupId <= 0) return new[] { _target };
+            return LevelEditorManager.Instance?.GetLogicalGroupMembers(_target.groupId)
+                ?? (IReadOnlyList<LevelEditorObject>)new[] { _target };
+        }
+
+        void ToggleGroup()
+        {
+            if (_target == null) return;
+            if (_target.groupId > 0)
+                LevelEditor.UngroupSelection();
+            else
+                LevelEditor.GroupSelection();
+            var sel = LevelEditor.selectedObject;
+            if (sel != null) ShowForProp(sel);
+            else             ClosePanel();
+        }
+
+        void RefreshGroupBtn()
+        {
+            if (_groupBtnGO == null || _groupLabel == null) return;
+            bool isGrouped = _target != null && _target.groupId > 0;
+            int  selCount  = LevelEditor.SelectedObjects?.Count ?? 0;
+            bool show      = isGrouped || selCount > 1;
+            if (_groupBtnGO.activeSelf != show) _groupBtnGO.SetActive(show);
+            if (show) _groupLabel.text = isGrouped ? "Ungroup" : "Group";
+        }
+
+        string GetMatLabel(LevelEditorObject leo)
+        {
+            int id  = leo.materialConstructionId;
+            int key = leo.gameObject.GetInstanceID();
+            if (id >= 0)
+            {
+                var entry = MaterialConstructionLibrary.FindById(id);
+                return entry != null && !string.IsNullOrEmpty(entry.materialName) ? entry.materialName : "?";
+            }
+            if (_rawMatNames.TryGetValue(key, out var name) && name != null) return name;
+            return "None";
+        }
+
         void RefreshMatLabel()
         {
             if (_matLabel == null || _target == null) return;
+
+            // Group mode: show "Multiple" if members differ.
+            var grpGO = GetGroupRoot();
+            if (grpGO != null)
+            {
+                var members = GetGroupMembers();
+                if (members.Count > 1)
+                {
+                    string first  = GetMatLabel(members[0]);
+                    bool   differ = false;
+                    for (int i = 1; i < members.Count; i++)
+                        if (members[i] != null && GetMatLabel(members[i]) != first) { differ = true; break; }
+                    _matLabel.text = differ ? "Multiple" : first;
+                    return;
+                }
+            }
+
             int id  = _target.materialConstructionId;
             int key = _target.gameObject.GetInstanceID();
             if (id >= 0)
@@ -886,6 +1054,24 @@ namespace BabyBlocks.UI
         void RefreshSurfLabel()
         {
             if (_surfLabel == null || _target == null) return;
+
+            // Group mode: show "Multiple" if members differ.
+            var grpGO = GetGroupRoot();
+            if (grpGO != null)
+            {
+                var members = GetGroupMembers();
+                if (members.Count > 1)
+                {
+                    string first  = members[0]?.gameObject.tag ?? "";
+                    bool   differ = false;
+                    for (int i = 1; i < members.Count; i++)
+                        if (members[i] != null && members[i].gameObject.tag != first) { differ = true; break; }
+                    if (differ) { _surfLabel.text = "Multiple"; return; }
+                    _surfLabel.text = string.IsNullOrEmpty(first) || first == "Untagged" ? "(none)" : first;
+                    return;
+                }
+            }
+
             string tag = _target.gameObject.tag;
             _surfLabel.text = string.IsNullOrEmpty(tag) || tag == "Untagged" ? "(none)" : tag;
         }
@@ -897,18 +1083,26 @@ namespace BabyBlocks.UI
         void ToggleHatSunglasses()
         {
             if (_target == null || _target.physicsMode != PhysicsMode.Hat) return;
-            var hat = _target.GetComponent<Hat>() ?? _target.GetComponentInChildren<Hat>(true);
-            if (hat == null) return;
-            hat.isSunglasses = !hat.isSunglasses;
+            var hat = FindHat();
+            // Read current state from the live hat component if present; fall back to the
+            // persistent flag so the button still works when the Hat component is absent
+            // (e.g., after DeactivateGroupForEditor re-parented members to propsContainer).
+            bool currentOn = hat != null ? hat.isSunglasses : BbHatSunglassesFlag.Has(_target);
+            bool newOn = !currentOn;
+            if (hat != null) hat.isSunglasses = newOn;
+            foreach (var m in GetGroupMembers())
+            {
+                if (m == null) continue;
+                BbHatSunglassesFlag.Set(m, newOn);
+            }
             RefreshHatSunglassesLabel(hat);
         }
 
         void RefreshHatSunglassesLabel(Hat hat = null)
         {
             if (_hatSunglassesLabel == null) return;
-            if (hat == null && _target != null)
-                hat = _target.GetComponent<Hat>() ?? _target.GetComponentInChildren<Hat>(true);
-            bool on = hat != null && hat.isSunglasses;
+            if (hat == null) hat = FindHat();
+            bool on = hat != null ? hat.isSunglasses : BbHatSunglassesFlag.Has(_target);
             _hatSunglassesLabel.text = on ? "Act As Sunglasses: On → Off" : "Act As Sunglasses: Off → On";
         }
 
@@ -916,12 +1110,16 @@ namespace BabyBlocks.UI
         {
             if (_target == null) return;
             bool newVal = !_target.sunglassesNeeded;
-            _target.sunglassesNeeded = newVal;
-            var existing = _target.GetComponent<BbSunglassesChecker>();
-            if (newVal && existing == null)
-                _target.gameObject.AddComponent<BbSunglassesChecker>();
-            else if (!newVal && existing != null)
-                UnityEngine.Object.DestroyImmediate(existing);
+            foreach (var m in GetGroupMembers())
+            {
+                if (m == null) continue;
+                m.sunglassesNeeded = newVal;
+                var existing = m.GetComponent<BbSunglassesChecker>();
+                if (newVal && existing == null)
+                    m.gameObject.AddComponent<BbSunglassesChecker>();
+                else if (!newVal && existing != null)
+                    UnityEngine.Object.DestroyImmediate(existing);
+            }
             RefreshFlagLabels();
         }
 
@@ -929,22 +1127,49 @@ namespace BabyBlocks.UI
         {
             if (_target == null) return;
             bool newVal = !_target.playerPassthrough;
-            _target.playerPassthrough = newVal;
-            PropInstanceServices.SetBushPassthrough(_target.gameObject, newVal);
+            foreach (var m in GetGroupMembers())
+            {
+                if (m == null) continue;
+                m.playerPassthrough = newVal;
+                PropInstanceServices.SetBushPassthrough(m.gameObject, newVal);
+            }
             RefreshFlagLabels();
         }
 
         void RefreshFlagLabels()
         {
             if (_target == null) return;
-            // Drive sunglassesNeeded from actual component presence: construction entries also
-            // add/remove BbSunglassesChecker, so the component is the source of truth.
+            var members = GetGroupMembers();
+            bool isGroup = members.Count > 1;
+
+            // Component presence is source of truth for sunglassesNeeded.
+            bool firstSunglasses = members[0]?.GetComponent<BbSunglassesChecker>() != null;
+            bool sunglassesDiffer = false;
+            if (isGroup)
+                for (int i = 1; i < members.Count; i++)
+                    if (members[i] != null && (members[i].GetComponent<BbSunglassesChecker>() != null) != firstSunglasses)
+                    { sunglassesDiffer = true; break; }
+
+            // Sync _target's field to its own component state.
             bool hasSunglasses = _target.GetComponent<BbSunglassesChecker>() != null;
             _target.sunglassesNeeded = hasSunglasses;
+
             if (_sunglassesLabel != null)
-                _sunglassesLabel.text = (hasSunglasses ? "[ON]  " : "[OFF] ") + "Sunglasses Invisible";
+                _sunglassesLabel.text = (isGroup && sunglassesDiffer)
+                    ? "[---] Sunglasses Invisible"
+                    : (firstSunglasses ? "[ON]  " : "[OFF] ") + "Sunglasses Invisible";
+
+            bool firstPassthrough = members[0]?.playerPassthrough ?? false;
+            bool passthroughDiffer = false;
+            if (isGroup)
+                for (int i = 1; i < members.Count; i++)
+                    if (members[i] != null && members[i].playerPassthrough != firstPassthrough)
+                    { passthroughDiffer = true; break; }
+
             if (_passthroughLabel != null)
-                _passthroughLabel.text = (_target.playerPassthrough ? "[ON]  " : "[OFF] ") + "No Player Collision";
+                _passthroughLabel.text = (isGroup && passthroughDiffer)
+                    ? "[---] No Player Collision"
+                    : (firstPassthrough ? "[ON]  " : "[OFF] ") + "No Player Collision";
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -970,14 +1195,29 @@ namespace BabyBlocks.UI
             var ef = _fields[_editId];
             if (ef?.Component != null)
             {
-                var p0 = _target.transform.position;
-                var s0 = _target.transform.localScale;
-                var r0 = _target.transform.rotation;
+                var grpGO = GetGroupRoot();
+                var workT = grpGO != null ? grpGO.transform : _target.transform;
+                var p0 = workT.position;
+                var s0 = workT.localScale;
+                var r0 = workT.rotation;
                 float parsed = TryParse(ef.Component.text, GetVal(_editId));
+
+                // Snapshot before-state for group scale edits.
+                bool isGroupScaleEdit = _editId >= 3 && _editId <= 5 && grpGO != null && _target.groupId > 0;
+                if (isGroupScaleEdit) BeginGroupScaleSnapshot(_target.groupId, grpGO);
+
                 SetVal(_editId, parsed);
                 if (_editId < 3)
-                    LevelEditorManager.Instance?.SyncLoopBase(_target);
-                if (_editId < 9)
+                {
+                    var mgr = LevelEditorManager.Instance;
+                    if (mgr != null)
+                        foreach (var m in GetGroupMembers()) if (m != null) mgr.SyncLoopBase(m);
+                }
+                if (isGroupScaleEdit)
+                {
+                    CommitGroupScaleSnapshot();
+                }
+                else if (_editId < 9 && grpGO == null)
                 {
                     LevelEditorHistory.PushTransform(_target, p0, s0, r0);
                     if (_target.netId != 0)
@@ -1005,6 +1245,8 @@ namespace BabyBlocks.UI
         void TickDrag()
         {
             if (_target == null) return;
+            var grpGO = GetGroupRoot();
+            var workT  = grpGO != null ? grpGO.transform : _target.transform;
             bool dn   = Input.GetMouseButtonDown(0);
             bool held = Input.GetMouseButton(0);
             bool up   = !held && _wasHeld; // synthesized — GetMouseButtonUp(0) is unreliable in IL2CPP
@@ -1050,11 +1292,14 @@ namespace BabyBlocks.UI
                 float stuckMoved = mp.x - _dragStartMx;
                 if (Mathf.Abs(stuckMoved) >= 3f)
                 {
-                    LevelEditorHistory.PushTransform(_target, _dragPos0, _dragScale0, _dragRot0);
-                    if (_target.netId != 0)
-                        Networking.ModNetworking.SendPropTransform(_target.netId,
-                            _target.transform.position, _target.transform.rotation,
-                            _target.transform.localScale, reliable: true);
+                    if (grpGO == null)
+                    {
+                        LevelEditorHistory.PushTransform(_target, _dragPos0, _dragScale0, _dragRot0);
+                        if (_target.netId != 0)
+                            Networking.ModNetworking.SendPropTransform(_target.netId,
+                                _target.transform.position, _target.transform.rotation,
+                                _target.transform.localScale, reliable: true);
+                    }
                 }
                 else
                     RestoreVec(_dragPos0, _dragScale0, _dragRot0);
@@ -1083,10 +1328,15 @@ namespace BabyBlocks.UI
                     _dragId        = clickedField;
                     _dragStartMx   = mp.x;
                     _dragStartVal  = GetVal(clickedField);
-                    _dragPos0      = _target.transform.position;
-                    _dragScale0    = _target.transform.localScale;
-                    _dragRot0      = _target.transform.rotation;
-                    _dragRot0Euler = _target.transform.eulerAngles;
+                    _dragPos0      = workT.position;
+                    _dragScale0    = workT.localScale;
+                    _dragRot0      = workT.rotation;
+                    _dragRot0Euler = workT.eulerAngles;
+                    // Snapshot before-state for group scale drags.
+                    if (clickedField >= 3 && clickedField <= 5 && grpGO != null && _target?.groupId > 0)
+                        BeginGroupScaleSnapshot(_target.groupId, grpGO);
+                    else
+                        _grpScSnapGroupId = 0;
                 }
             }
 
@@ -1102,13 +1352,17 @@ namespace BabyBlocks.UI
                     if (_dragId == 6) e.x = v;
                     else if (_dragId == 7) e.y = v;
                     else e.z = v;
-                    _target.transform.eulerAngles = e;
+                    workT.eulerAngles = e;
                 }
                 else
                 {
                     SetVal(_dragId, v);
                     if (_dragId < 3)
-                        LevelEditorManager.Instance?.SyncLoopBase(_target);
+                    {
+                        var mgr = LevelEditorManager.Instance;
+                        if (mgr != null)
+                            foreach (var m in GetGroupMembers()) if (m != null) mgr.SyncLoopBase(m);
+                    }
                 }
                 var f = _fields[_dragId];
                 if (f?.Component != null)
@@ -1147,7 +1401,11 @@ namespace BabyBlocks.UI
                 }
                 else
                 {
-                    if (_dragId < 9)
+                    if (_dragId >= 3 && _dragId <= 5 && _grpScSnapGroupId > 0)
+                    {
+                        CommitGroupScaleSnapshot();
+                    }
+                    else if (_dragId < 9 && grpGO == null)
                     {
                         LevelEditorHistory.PushTransform(_target, _dragPos0, _dragScale0, _dragRot0);
                         if (_target.netId != 0)
@@ -1174,13 +1432,19 @@ namespace BabyBlocks.UI
         float GetVal(int i)
         {
             if (_target == null) return 0f;
-            var t = _target.transform;
+            var grpGO = GetGroupRoot();
+            var t = grpGO != null ? grpGO.transform : _target.transform;
             // Use hat offsets when in Hat mode AND head mode; grab offsets otherwise.
             bool useHat = _target.physicsMode == PhysicsMode.Hat && _hatModeIsHead;
+            // For groups: read display scale rather than groupRoot.localScale (which is always 1,1,1).
+            var grpDispScale = (grpGO != null && _target.groupId > 0)
+                ? GroupManager.GetGroupDisplayScale(_target.groupId) : (Vector3?)null;
             return i switch
             {
                 0 => t.position.x,    1 => t.position.y,    2 => t.position.z,
-                3 => t.localScale.x,  4 => t.localScale.y,  5 => t.localScale.z,
+                3 => grpDispScale.HasValue ? grpDispScale.Value.x : t.localScale.x,
+                4 => grpDispScale.HasValue ? grpDispScale.Value.y : t.localScale.y,
+                5 => grpDispScale.HasValue ? grpDispScale.Value.z : t.localScale.z,
                 6 => t.eulerAngles.x, 7 => t.eulerAngles.y, 8 => t.eulerAngles.z,
                 9  => useHat ? _target.hatOffsetPos.x : _target.grabOffsetPos.x,
                 10 => useHat ? _target.hatOffsetPos.y : _target.grabOffsetPos.y,
@@ -1195,15 +1459,43 @@ namespace BabyBlocks.UI
         void SetVal(int i, float v)
         {
             if (_target == null) return;
-            var t = _target.transform;
+            var grpGO = GetGroupRoot();
+            var t = grpGO != null ? grpGO.transform : _target.transform;
             switch (i)
             {
                 case 0: t.position = new Vector3(v, t.position.y, t.position.z);   break;
                 case 1: t.position = new Vector3(t.position.x, v, t.position.z);   break;
                 case 2: t.position = new Vector3(t.position.x, t.position.y, v);   break;
-                case 3: t.localScale = new Vector3(v, t.localScale.y, t.localScale.z); break;
-                case 4: t.localScale = new Vector3(t.localScale.x, v, t.localScale.z); break;
-                case 5: t.localScale = new Vector3(t.localScale.x, t.localScale.y, v); break;
+                case 3:
+                    if (grpGO != null && _target.groupId > 0)
+                    {
+                        var ds = GroupManager.GetGroupDisplayScale(_target.groupId);
+                        float r = ds.x > 0.0001f ? v / ds.x : 1f;
+                        ApplyGroupScaleRatio(_target.groupId, new Vector3(r, 1f, 1f));
+                        GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(v, ds.y, ds.z));
+                    }
+                    else t.localScale = new Vector3(v, t.localScale.y, t.localScale.z);
+                    break;
+                case 4:
+                    if (grpGO != null && _target.groupId > 0)
+                    {
+                        var ds = GroupManager.GetGroupDisplayScale(_target.groupId);
+                        float r = ds.y > 0.0001f ? v / ds.y : 1f;
+                        ApplyGroupScaleRatio(_target.groupId, new Vector3(1f, r, 1f));
+                        GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(ds.x, v, ds.z));
+                    }
+                    else t.localScale = new Vector3(t.localScale.x, v, t.localScale.z);
+                    break;
+                case 5:
+                    if (grpGO != null && _target.groupId > 0)
+                    {
+                        var ds = GroupManager.GetGroupDisplayScale(_target.groupId);
+                        float r = ds.z > 0.0001f ? v / ds.z : 1f;
+                        ApplyGroupScaleRatio(_target.groupId, new Vector3(1f, 1f, r));
+                        GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(ds.x, ds.y, v));
+                    }
+                    else t.localScale = new Vector3(t.localScale.x, t.localScale.y, v);
+                    break;
                 case 6: { var e = t.eulerAngles; t.eulerAngles = new Vector3(v, e.y, e.z);  } break;
                 case 7: { var e = t.eulerAngles; t.eulerAngles = new Vector3(e.x, v, e.z);  } break;
                 case 8: { var e = t.eulerAngles; t.eulerAngles = new Vector3(e.x, e.y, v);  } break;
@@ -1216,6 +1508,50 @@ namespace BabyBlocks.UI
                 case 12: SetOffsetRot(v, 0); break;
                 case 13: SetOffsetRot(v, 1); break;
                 case 14: SetOffsetRot(v, 2); break;
+            }
+        }
+
+        // Captures a full before-snapshot of the group scale state for undo.
+        void BeginGroupScaleSnapshot(int groupId, GameObject groupRoot)
+        {
+            _grpScSnapGroupId = groupId;
+            _grpScSnapRoot    = groupRoot;
+            _grpScSnapRootPos      = groupRoot?.transform.position ?? Vector3.zero;
+            _grpScSnapDisplayScale = GroupManager.GetGroupDisplayScale(groupId);
+            var members = LevelEditorManager.Instance?.Objects
+                .Where(o => o != null && o.groupId == groupId).ToArray()
+                ?? System.Array.Empty<LevelEditorObject>();
+            _grpScSnapMembers      = members;
+            _grpScSnapMemberScales   = members.Select(m => m.transform.localScale).ToArray();
+            _grpScSnapMemberLocalPos = members.Select(m => m.transform.localPosition).ToArray();
+        }
+
+        // Commits the snapshot as an undo entry and networks the changes to peers.
+        void CommitGroupScaleSnapshot()
+        {
+            if (_grpScSnapGroupId <= 0 || _grpScSnapMembers == null) return;
+            LevelEditorHistory.PushGroupScale(_grpScSnapGroupId, _grpScSnapRoot, _grpScSnapMembers,
+                _grpScSnapRootPos, _grpScSnapDisplayScale,
+                _grpScSnapMemberScales, _grpScSnapMemberLocalPos);
+            if (LevelEditorManager.Instance != null)
+                foreach (var m in LevelEditorManager.Instance.Objects)
+                    if (m != null && m.groupId == _grpScSnapGroupId && m.netId != 0)
+                        BabyBlocks.Networking.ModNetworking.SendPropTransform(
+                            m.netId, m.transform.position, m.transform.rotation, m.transform.localScale, reliable: true);
+            _grpScSnapGroupId = 0;
+        }
+
+        // Multiplies each group member's localScale and localPosition by the given ratio vector.
+        // Members are children of the group root (identity scale), so this avoids the Unity
+        // shear artifact that occurs when a parent has non-uniform scale and children have rotations.
+        void ApplyGroupScaleRatio(int groupId, Vector3 ratio)
+        {
+            if (LevelEditorManager.Instance == null) return;
+            foreach (var m in LevelEditorManager.Instance.Objects)
+            {
+                if (m == null || m.groupId != groupId) continue;
+                m.transform.localScale    = Vector3.Scale(m.transform.localScale,    ratio);
+                m.transform.localPosition = Vector3.Scale(m.transform.localPosition, ratio);
             }
         }
 
@@ -1265,9 +1601,11 @@ namespace BabyBlocks.UI
         void RestoreVec(Vector3 pos, Vector3 scale, Quaternion rot)
         {
             if (_target == null) return;
-            _target.transform.position   = pos;
-            _target.transform.localScale = scale;
-            _target.transform.rotation   = rot;
+            var grpGO = GetGroupRoot();
+            var workT = grpGO != null ? grpGO.transform : _target.transform;
+            workT.position   = pos;
+            workT.localScale = scale;
+            workT.rotation   = rot;
         }
 
         static float FieldSens(int i) =>
@@ -1343,10 +1681,14 @@ namespace BabyBlocks.UI
         }
 
         // Returns the visual center of a prop (average of enabled renderer bounds centers).
+        // For grouped props, uses the group root so the line points to the group centroid.
         static Vector3 GetPropWorldCenter(LevelEditorObject leo)
         {
-            var renderers = leo.GetComponentsInChildren<Renderer>();
-            if (renderers == null || renderers.Length == 0) return leo.transform.position;
+            var groupRoot = leo.groupId > 0 ? GroupManager.GetGroupRoot(leo.groupId) : null;
+            var source    = groupRoot != null ? groupRoot : leo.gameObject;
+            var renderers = source.GetComponentsInChildren<Renderer>();
+            var fallback  = groupRoot != null ? groupRoot.transform.position : leo.transform.position;
+            if (renderers == null || renderers.Length == 0) return fallback;
             var  sum   = Vector3.zero;
             int  count = 0;
             foreach (var r in renderers)
@@ -1355,7 +1697,7 @@ namespace BabyBlocks.UI
                 sum += r.bounds.center;
                 count++;
             }
-            return count > 0 ? sum / count : leo.transform.position;
+            return count > 0 ? sum / count : fallback;
         }
 
         // Returns the nearest LevelEditorObject under the cursor, or null.

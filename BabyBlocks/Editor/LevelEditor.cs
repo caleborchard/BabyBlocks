@@ -43,6 +43,12 @@ namespace BabyBlocks
         static readonly List<Vector3> _dragStartPositions = new();
         static readonly List<Vector3> _dragStartScales = new();
         static readonly List<Quaternion> _dragStartRotations = new();
+        // Per-drag-object group root info (populated at drag start; used by ApplyScaleToDragObjects).
+        // Parallel to _dragObjects. Entry is null when the object has no group root.
+        static readonly List<GameObject> _dragScaleRoots         = new();
+        static readonly List<Vector3>    _dragStartRootScales    = new();  // display scale, not groupRoot.localScale
+        static readonly List<Vector3>    _dragStartRootPositions = new();
+        static readonly List<Vector3>    _dragStartLocalPositions = new(); // member localPos at drag start (for group scale)
 
         // Throttling for SendPropTransform broadcasts during an active drag, mirroring
         // the freecam update cadence (Unreliable at high frequency, periodic
@@ -409,14 +415,53 @@ namespace BabyBlocks
                     }
                     if (_dragObjects.Count > 0)
                     {
+                        // For group-scale drags push one GroupScaleAction per group instead of
+                        // per-member PushTransform (which would miss display-scale and root-pos).
+                        var processedGroupHistory = new System.Collections.Generic.HashSet<int>();
+                        bool isScaleDrag = currentTool == ToolMode.Scale;
+
                         for (int i = 0; i < _dragObjects.Count; i++)
                         {
                             var obj = _dragObjects[i];
                             if (obj == null) continue;
-                            LevelEditorHistory.PushTransform(obj, _dragStartPositions[i], _dragStartScales[i], _dragStartRotations[i]);
-                            if (obj.netId != 0)
-                                BabyBlocks.Networking.ModNetworking.SendPropTransform(
-                                    obj.netId, obj.transform.position, obj.transform.rotation, obj.transform.localScale, reliable: true);
+
+                            var groupRoot = i < _dragScaleRoots.Count ? _dragScaleRoots[i] : null;
+                            if (isScaleDrag && groupRoot != null)
+                            {
+                                // Network: send each member's final transform.
+                                if (obj.netId != 0)
+                                    BabyBlocks.Networking.ModNetworking.SendPropTransform(
+                                        obj.netId, obj.transform.position, obj.transform.rotation, obj.transform.localScale, reliable: true);
+
+                                // History: once per group.
+                                if (processedGroupHistory.Add(obj.groupId))
+                                {
+                                    // Collect all members in _dragObjects that belong to this group.
+                                    var members = new System.Collections.Generic.List<LevelEditorObject>();
+                                    var scalesBefore   = new System.Collections.Generic.List<Vector3>();
+                                    var localPosBefore = new System.Collections.Generic.List<Vector3>();
+                                    for (int j = 0; j < _dragObjects.Count; j++)
+                                    {
+                                        var m = _dragObjects[j];
+                                        if (m == null || m.groupId != obj.groupId) continue;
+                                        members.Add(m);
+                                        scalesBefore.Add(_dragStartScales[j]);
+                                        localPosBefore.Add(j < _dragStartLocalPositions.Count
+                                            ? _dragStartLocalPositions[j] : m.transform.localPosition);
+                                    }
+                                    LevelEditorHistory.PushGroupScale(
+                                        obj.groupId, groupRoot, members.ToArray(),
+                                        _dragStartRootPositions[i], _dragStartRootScales[i],
+                                        scalesBefore.ToArray(), localPosBefore.ToArray());
+                                }
+                            }
+                            else
+                            {
+                                LevelEditorHistory.PushTransform(obj, _dragStartPositions[i], _dragStartScales[i], _dragStartRotations[i]);
+                                if (obj.netId != 0)
+                                    BabyBlocks.Networking.ModNetworking.SendPropTransform(
+                                        obj.netId, obj.transform.position, obj.transform.rotation, obj.transform.localScale, reliable: true);
+                            }
                         }
                         if (LevelEditorManager.Instance != null)
                             LevelEditorManager.Instance.SyncLoopBases(_dragObjects);
@@ -737,6 +782,10 @@ namespace BabyBlocks
             _dragStartPositions.Clear();
             _dragStartScales.Clear();
             _dragStartRotations.Clear();
+            _dragScaleRoots.Clear();
+            _dragStartRootScales.Clear();
+            _dragStartRootPositions.Clear();
+            _dragStartLocalPositions.Clear();
             for (int i = 0; i < _selection.Count; i++)
             {
                 var obj = _selection[i];
@@ -745,6 +794,12 @@ namespace BabyBlocks
                 _dragStartPositions.Add(obj.transform.position);
                 _dragStartScales.Add(obj.transform.localScale);
                 _dragStartRotations.Add(obj.transform.rotation);
+                var grRoot = obj.groupId > 0 ? GroupManager.GetGroupRoot(obj.groupId) : null;
+                _dragScaleRoots.Add(grRoot);
+                // Store display scale (not groupRoot.localScale) so ratio math works correctly.
+                _dragStartRootScales.Add(grRoot != null ? GroupManager.GetGroupDisplayScale(obj.groupId) : default);
+                _dragStartRootPositions.Add(grRoot != null ? grRoot.transform.position : default);
+                _dragStartLocalPositions.Add(grRoot != null ? obj.transform.localPosition : Vector3.zero);
             }
 
             var cam = Camera.main;
@@ -1441,6 +1496,10 @@ namespace BabyBlocks
                 ? selectedObject.transform.rotation
                 : Quaternion.identity;
 
+            // Track group roots already processed this call so each group root is scaled once,
+            // even when multiple members of the same group are in _dragObjects.
+            var processedGroupRoots = new System.Collections.Generic.HashSet<int>();
+
             for (int i = 0; i < _dragObjects.Count; i++)
             {
                 var obj = _dragObjects[i];
@@ -1450,21 +1509,67 @@ namespace BabyBlocks
                 // shift their position when other selected objects are scaled around them.
                 if (PropLibrary.IsSpawnPointProp(obj.addressableKey)) continue;
 
-                var start = _dragStartScales[i];
-                var final = new Vector3(
-                    scaleX ? Mathf.Max(0.001f, start.x * xFactor) : start.x,
-                    scaleY ? Mathf.Max(0.001f, start.y * yFactor) : start.y,
-                    scaleZ ? Mathf.Max(0.001f, start.z * zFactor) : start.z);
+                var groupRoot = i < _dragScaleRoots.Count ? _dragScaleRoots[i] : null;
+                if (groupRoot != null)
+                {
+                    // Grouped object: apply scale as a ratio to each member's own localScale and
+                    // localPosition. The group root's localScale stays (1,1,1) so non-uniform
+                    // scale of a rotated child never causes Unity's implicit shear/cant artifact.
+                    var start = _dragStartRootScales[i]; // display scale at drag start
+                    var final = new Vector3(
+                        scaleX ? Mathf.Max(0.001f, start.x * xFactor) : start.x,
+                        scaleY ? Mathf.Max(0.001f, start.y * yFactor) : start.y,
+                        scaleZ ? Mathf.Max(0.001f, start.z * zFactor) : start.z);
+                    if (_snapEnabled) final = SnapVector(final);
 
-                if (_snapEnabled) final = SnapVector(final);
-                obj.transform.localScale = final;
+                    float rx = SafeScaleRatio(start.x, final.x);
+                    float ry = SafeScaleRatio(start.y, final.y);
+                    float rz = SafeScaleRatio(start.z, final.z);
 
-                var rel = _dragStartPositions[i] - _dragPivot;
-                var localRel = Quaternion.Inverse(basis) * rel;
-                if (scaleX) localRel.x *= SafeScaleRatio(start.x, final.x);
-                if (scaleY) localRel.y *= SafeScaleRatio(start.y, final.y);
-                if (scaleZ) localRel.z *= SafeScaleRatio(start.z, final.z);
-                obj.transform.position = _dragPivot + (basis * localRel);
+                    // Scale this member from its captured start values.
+                    var memberStart = _dragStartScales[i];
+                    obj.transform.localScale = new Vector3(
+                        scaleX ? Mathf.Max(0.001f, memberStart.x * rx) : memberStart.x,
+                        scaleY ? Mathf.Max(0.001f, memberStart.y * ry) : memberStart.y,
+                        scaleZ ? Mathf.Max(0.001f, memberStart.z * rz) : memberStart.z);
+                    var memberLocalStart = i < _dragStartLocalPositions.Count ? _dragStartLocalPositions[i] : obj.transform.localPosition;
+                    obj.transform.localPosition = new Vector3(
+                        scaleX ? memberLocalStart.x * rx : memberLocalStart.x,
+                        scaleY ? memberLocalStart.y * ry : memberLocalStart.y,
+                        scaleZ ? memberLocalStart.z * rz : memberLocalStart.z);
+
+                    // Per-group: update display scale and move the group root (once per root).
+                    int rootId = groupRoot.GetInstanceID();
+                    if (processedGroupRoots.Add(rootId))
+                    {
+                        GroupManager.SetGroupDisplayScale(obj.groupId, final);
+
+                        // Group root is world-aligned (identity rotation), so adjust in world space.
+                        var startPos = _dragStartRootPositions[i];
+                        var rel      = startPos - _dragPivot;
+                        if (scaleX) rel.x *= rx;
+                        if (scaleY) rel.y *= ry;
+                        if (scaleZ) rel.z *= rz;
+                        groupRoot.transform.position = _dragPivot + rel;
+                    }
+                }
+                else
+                {
+                    var start = _dragStartScales[i];
+                    var final = new Vector3(
+                        scaleX ? Mathf.Max(0.001f, start.x * xFactor) : start.x,
+                        scaleY ? Mathf.Max(0.001f, start.y * yFactor) : start.y,
+                        scaleZ ? Mathf.Max(0.001f, start.z * zFactor) : start.z);
+                    if (_snapEnabled) final = SnapVector(final);
+                    obj.transform.localScale = final;
+
+                    var rel = _dragStartPositions[i] - _dragPivot;
+                    var localRel = Quaternion.Inverse(basis) * rel;
+                    if (scaleX) localRel.x *= SafeScaleRatio(start.x, final.x);
+                    if (scaleY) localRel.y *= SafeScaleRatio(start.y, final.y);
+                    if (scaleZ) localRel.z *= SafeScaleRatio(start.z, final.z);
+                    obj.transform.position = _dragPivot + (basis * localRel);
+                }
             }
 
             SyncDraggedPhysicsTransforms();

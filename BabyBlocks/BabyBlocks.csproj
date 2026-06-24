@@ -713,6 +713,7 @@
 		<Compile Include="Components\GizmoHandle.cs" />
 		<Compile Include="Components\OverlayCamPreRenderHook.cs" />
 		<Compile Include="Components\BbSunglassesChecker.cs" />
+		<Compile Include="Components\BbHatSunglassesFlag.cs" />
 		<Compile Include="Editor\FlyCamController.cs" />
 		<Compile Include="Editor\GhostCube.cs" />
 		<Compile Include="Editor\SpawnPoint.cs" />
