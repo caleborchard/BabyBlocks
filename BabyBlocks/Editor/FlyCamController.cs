@@ -211,6 +211,9 @@ namespace BabyBlocks
             if (Input.GetKeyDown(KeyCode.F5))
                 GizmoRenderer.LogDepthDiag();
 
+            if (Input.GetKeyDown(KeyCode.F7))
+                PropHierarchyDiag.Dump();
+
             if (Input.GetKeyDown(KeyCode.F6))
             {
                 GizmoRenderer.OutlineDebugMode = (GizmoRenderer.OutlineDebugMode + 1) % 3;

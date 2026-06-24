@@ -186,6 +186,24 @@ namespace BabyBlocks
             var leo = root.AddComponent<LevelEditorObject>();
             leo.objectType     = "Addressable";
             leo.addressableKey = info.id;
+
+            // If the native prefab already contains a Rigidbody (e.g. the Toy Wagon),
+            // freeze it immediately so it doesn't fall while in editor mode. The normal
+            // ExitEditorPhysicsMode path unfreezes it when gameplay starts.
+            if (keepHierarchy && root.GetComponent<Rigidbody>() != null)
+            {
+                leo.physicsMode = PhysicsMode.Rigidbody;
+                PhysicsObjectManager.FreezeRigidBodyObject(leo, true);
+                // Disable native scripts (Skateboard etc.) so they don't fight our frozen
+                // transform while in editor mode. Re-enabled by ExitEditorPhysicsMode.
+                PhysicsObjectManager.DisableKeepHierarchyBehaviours(leo);
+                leo.isPhysicsManaged = true;
+                // AmplifyImpostor LODs have no baked texture in a runtime-placed context
+                // and render as invisible at distance. Force the highest LOD at all times.
+                foreach (var lg in root.GetComponentsInChildren<LODGroup>(true))
+                    lg.enabled = false;
+            }
+
             _objects.Add(leo);
             InitializeLoopBase(leo, position);
             PropLibrary.AddRef(info.id);

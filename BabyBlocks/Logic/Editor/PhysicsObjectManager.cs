@@ -24,6 +24,10 @@ namespace BabyBlocks
         static readonly List<LevelEditorObject> _heldObjectsToRestore = new();
         static readonly List<Vector3> _heldScalesToRestore = new();
 
+        // Behaviour components disabled on keepHierarchy props when entering editor
+        // mode (keyed by LEO instance ID). Re-enabled when gameplay resumes.
+        static readonly Dictionary<int, List<Behaviour>> _frozenKHBehaviours = new();
+
         static readonly Dictionary<int, Dictionary<string, Mesh>> _physicsMeshCache = new();
 
         internal static void ReleasePhysicsMeshes(PropInfo info)
@@ -399,8 +403,10 @@ namespace BabyBlocks
                     }
                     else
                     {
-                        RestoreBasePose(obj);
-                        FreezeRigidBodyObject(obj, true);
+                        FreezeRigidBodyObject(obj, true);   // zero velocity + go kinematic first
+                        RestoreBasePose(obj);               // then snap — kinematic so no drift
+                        if (IsKeepHierarchyRigidbody(obj))
+                            DisableKeepHierarchyBehaviours(obj);
                         obj.isPhysicsManaged = true;
                     }
                     continue;
@@ -433,6 +439,8 @@ namespace BabyBlocks
                 }
                 else
                 {
+                    if (IsKeepHierarchyRigidbody(obj))
+                        ReEnableKeepHierarchyBehaviours(obj);
                     FreezeRigidBodyObject(obj, false);
                 }
                 obj.isPhysicsManaged = true;
@@ -452,8 +460,19 @@ namespace BabyBlocks
                 {
                     obj.editorFreezeVelocity        = Vector3.zero;
                     obj.editorFreezeAngularVelocity  = Vector3.zero;
-                    obj.editorFreezeIsKinematic      = rb.isKinematic;
-                    obj.editorFreezeUseGravity       = rb.useGravity;
+                    // UpdatePhysicsObjectState puts Rigidbody props to sleep (kinematic)
+                    // when far from the player. That transient sleeping state is NOT the
+                    // logical gameplay state — always restore to dynamic + gravity.
+                    if (obj.physicsMode == PhysicsMode.Rigidbody)
+                    {
+                        obj.editorFreezeIsKinematic = false;
+                        obj.editorFreezeUseGravity  = true;
+                    }
+                    else
+                    {
+                        obj.editorFreezeIsKinematic = rb.isKinematic;
+                        obj.editorFreezeUseGravity  = rb.useGravity;
+                    }
                     obj.editorFreezeConstraints      = rb.constraints;
                     obj.editorFreezeStateValid       = true;
                 }
@@ -497,6 +516,43 @@ namespace BabyBlocks
                 rb.useGravity  = true;
                 SetMeshCollidersConvex(go, true); // going dynamic: need convex
             }
+        }
+
+        static bool IsKeepHierarchyRigidbody(LevelEditorObject obj)
+            => obj != null
+            && !string.IsNullOrEmpty(obj.addressableKey)
+            && PropMetadataStore.GetKeepOriginalHierarchy(obj.addressableKey)
+            && obj.GetComponent<Rigidbody>() != null;
+
+        // Disable all non-LevelEditorObject root Behaviours on a keepHierarchy prop so
+        // native scripts (Skateboard etc.) don't fight RestoreBasePose while in editor.
+        internal static void DisableKeepHierarchyBehaviours(LevelEditorObject obj)
+        {
+            if (obj == null) return;
+            int id = obj.GetInstanceID();
+            if (_frozenKHBehaviours.ContainsKey(id)) return;
+            var disabled = new List<Behaviour>();
+            var comps = obj.gameObject.GetComponents<Behaviour>();
+            for (int i = 0; i < comps.Length; i++)
+            {
+                var b = comps[i];
+                if (b == null || !b.enabled) continue;
+                if (b.TryCast<LevelEditorObject>() != null) continue;
+                b.enabled = false;
+                disabled.Add(b);
+            }
+            _frozenKHBehaviours[id] = disabled;
+        }
+
+        // Re-enable Behaviours that DisableKeepHierarchyBehaviours previously disabled.
+        internal static void ReEnableKeepHierarchyBehaviours(LevelEditorObject obj)
+        {
+            if (obj == null) return;
+            int id = obj.GetInstanceID();
+            if (!_frozenKHBehaviours.TryGetValue(id, out var list)) return;
+            foreach (var b in list)
+                if (b != null) b.enabled = true;
+            _frozenKHBehaviours.Remove(id);
         }
 
         internal static void SetHierarchyCollisions(GameObject go, bool enabled)

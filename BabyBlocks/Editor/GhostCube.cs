@@ -510,9 +510,15 @@ namespace BabyBlocks
                 // Nothing to carve (e.g. the box is hovering above the terrain
                 // surface) — clear carveKey so we don't keep calling RestoreTerrain
                 // every frame for a region that's already restored.
-                state.carveKey = null;
-                state.xBase = state.yBase = state.width = state.height = 0;
-                _carvedTerrains[terrain] = state;
+                // Only keep the dict entry if we had one before (originalHoles/originalData
+                // cached). A brand-new entry with nothing carved would have width=height=0,
+                // which makes ExtractTerrainPatch return null and SetHoles crash on release.
+                if (hadState)
+                {
+                    state.carveKey = null;
+                    state.xBase = state.yBase = state.width = state.height = 0;
+                    _carvedTerrains[terrain] = state;
+                }
                 return;
             }
 
@@ -538,8 +544,9 @@ namespace BabyBlocks
         static void RestoreTerrain(Terrain terrain, CarvedTerrainState state)
         {
             if (terrain == null || !state.IsValid) return;
-            state.originalData.SetHoles(state.xBase, state.yBase, ExtractTerrainPatch(state.originalHoles,
-                state.xBase, state.yBase, state.width, state.height));
+            var patch = ExtractTerrainPatch(state.originalHoles, state.xBase, state.yBase, state.width, state.height);
+            if (patch == null) return;
+            state.originalData.SetHoles(state.xBase, state.yBase, patch);
         }
 
         static bool TryBuildTerrainHolePatch(Terrain terrain, TerrainData data, Il2CppSystem.Array originalHoles,
