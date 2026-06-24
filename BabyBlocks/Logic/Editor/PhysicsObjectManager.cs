@@ -283,13 +283,15 @@ namespace BabyBlocks
             if (rb == null) return;
             if (control.GetComponent<Grabable>() != null) return; // grabables manage their own kinematic state
 
-            bool active = (control.transform.position - playerPos).sqrMagnitude <= PhysicsActiveRadiusSqr;
+            float distSqr = (control.transform.position - playerPos).sqrMagnitude;
+            bool active = distSqr <= PhysicsActiveRadiusSqr;
             if (active)
             {
                 if (rb.isKinematic)
                 {
                     rb.isKinematic = false;
                     SetMeshCollidersConvex(control, true); // going dynamic: need convex
+                    SetColliderLayers(control, LevelEditorManager.PropsDynamicLayer);
                 }
                 rb.useGravity = true;
             }
@@ -300,6 +302,7 @@ namespace BabyBlocks
                 rb.isKinematic     = true;
                 rb.useGravity      = false;
                 SetMeshCollidersConvex(control, false); // back to kinematic: concave OK
+                SetColliderLayers(control, LevelEditorManager.PropLayer);
             }
         }
 
@@ -482,6 +485,7 @@ namespace BabyBlocks
                 rb.useGravity      = false;
                 rb.constraints     = RigidbodyConstraints.FreezeAll;
                 SetMeshCollidersConvex(obj.gameObject, false); // kinematic: concave OK
+                SetColliderLayers(obj.gameObject, LevelEditorManager.PropLayer);
             }
             else if (obj.editorFreezeStateValid)
             {
@@ -491,7 +495,11 @@ namespace BabyBlocks
                 rb.velocity        = obj.editorFreezeVelocity;
                 rb.angularVelocity = obj.editorFreezeAngularVelocity;
                 obj.editorFreezeStateValid = false;
-                if (!rb.isKinematic) SetMeshCollidersConvex(obj.gameObject, true); // going dynamic: need convex
+                if (!rb.isKinematic)
+                {
+                    SetMeshCollidersConvex(obj.gameObject, true); // going dynamic: need convex
+                    SetColliderLayers(obj.gameObject, LevelEditorManager.PropsDynamicLayer);
+                }
             }
         }
 
@@ -508,6 +516,7 @@ namespace BabyBlocks
                 rb.useGravity      = false;
                 rb.constraints     = RigidbodyConstraints.FreezeAll;
                 SetMeshCollidersConvex(go, false); // kinematic: concave OK
+                SetColliderLayers(go, LevelEditorManager.PropLayer);
             }
             else
             {
@@ -515,6 +524,7 @@ namespace BabyBlocks
                 rb.isKinematic = false;
                 rb.useGravity  = true;
                 SetMeshCollidersConvex(go, true); // going dynamic: need convex
+                SetColliderLayers(go, LevelEditorManager.PropsDynamicLayer);
             }
         }
 
@@ -748,17 +758,103 @@ namespace BabyBlocks
                 mc.convex = convex;
         }
 
+        // Switches all colliders under `go` to the given layer. Called alongside
+        // SetMeshCollidersConvex so Rigidbody props use PropsDynamic (24) while active —
+        // matching native dynamic props — and revert to Props (16) when kinematic/in-editor.
+        static void SetColliderLayers(GameObject go, int layer)
+        {
+            if (go == null) return;
+            foreach (var c in go.GetComponentsInChildren<Collider>(true))
+                c.gameObject.layer = layer;
+        }
+
+        // kg/m³ — wood-like density; yields ~2 kg for a football-sized sphere (r=0.1 m),
+        // which matches the native Football prop mass.
+        const float PropDensityKgM3 = 500f;
+        const float PropMassMin     = 0.1f;
+        const float PropMassMax     = 200f;
+
+        static float ComputePropMass(Collider[] colls)
+        {
+            float volume = 0f;
+            if (colls != null)
+                foreach (var c in colls)
+                    if (c != null && !c.isTrigger) volume += ColliderVolume(c);
+            float mass = volume * PropDensityKgM3;
+            return Mathf.Clamp(mass, PropMassMin, PropMassMax);
+        }
+
+        static float ColliderVolume(Collider c)
+        {
+            var s = c.transform.lossyScale;
+            if (c is SphereCollider sc)
+            {
+                float r = sc.radius * MaxAbs(s);
+                return (4f / 3f) * Mathf.PI * r * r * r;
+            }
+            if (c is BoxCollider bc)
+            {
+                var sz = bc.size;
+                return Mathf.Abs(sz.x * s.x) * Mathf.Abs(sz.y * s.y) * Mathf.Abs(sz.z * s.z);
+            }
+            if (c is CapsuleCollider cc)
+            {
+                float r, cylH;
+                switch (cc.direction)
+                {
+                    case 0:  // X-axis
+                        r    = cc.radius * Mathf.Max(Mathf.Abs(s.y), Mathf.Abs(s.z));
+                        cylH = Mathf.Max(0f, cc.height * Mathf.Abs(s.x) - 2f * r);
+                        break;
+                    case 2:  // Z-axis
+                        r    = cc.radius * Mathf.Max(Mathf.Abs(s.x), Mathf.Abs(s.y));
+                        cylH = Mathf.Max(0f, cc.height * Mathf.Abs(s.z) - 2f * r);
+                        break;
+                    default: // 1 = Y-axis
+                        r    = cc.radius * Mathf.Max(Mathf.Abs(s.x), Mathf.Abs(s.z));
+                        cylH = Mathf.Max(0f, cc.height * Mathf.Abs(s.y) - 2f * r);
+                        break;
+                }
+                return (4f / 3f) * Mathf.PI * r * r * r + Mathf.PI * r * r * cylH;
+            }
+            if (c is MeshCollider mc && mc.sharedMesh != null)
+                return MeshSignedVolume(mc.sharedMesh, s);
+            // Fallback: half of axis-aligned bounds volume
+            var b = c.bounds;
+            return b.size.x * b.size.y * b.size.z * 0.5f;
+        }
+
+        // Divergence-theorem signed-volume integral — exact for any closed mesh.
+        static float MeshSignedVolume(Mesh mesh, Vector3 scale)
+        {
+            var verts = mesh.vertices;
+            var tris  = mesh.triangles;
+            float vol = 0f;
+            for (int i = 0; i + 2 < tris.Length; i += 3)
+            {
+                var p1 = Vector3.Scale(verts[tris[i]],     scale);
+                var p2 = Vector3.Scale(verts[tris[i + 1]], scale);
+                var p3 = Vector3.Scale(verts[tris[i + 2]], scale);
+                vol += Vector3.Dot(p1, Vector3.Cross(p2, p3));
+            }
+            return Mathf.Abs(vol) / 6f;
+        }
+
+        static float MaxAbs(Vector3 v)
+            => Mathf.Max(Mathf.Abs(v.x), Mathf.Abs(v.y), Mathf.Abs(v.z));
+
         internal static void AddRigidBodyComponent(GameObject go, Collider[] colls, string propId = null)
         {
             // MaterialBaker.Bake(go, propId); // disabled for now
             // Note: convex is NOT set here. Colliders stay concave in editor (isKinematic=true).
             // SetMeshCollidersConvex is called at unfreeze time when the rb goes dynamic.
             var rb = go.GetComponent<Rigidbody>() ?? go.AddComponent<Rigidbody>();
-            rb.mass                   = 5f;
+            rb.mass                   = ComputePropMass(colls);
             rb.isKinematic            = false;
             rb.useGravity             = true;
             rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
             rb.interpolation          = RigidbodyInterpolation.Interpolate;
+            MelonLoader.MelonLogger.Msg($"[Physics] '{go.name}' mass={rb.mass:F2} kg");
         }
 
         internal static void AddGrabableComponent(GameObject go, bool isHat, Collider[] colls, string propId = null)

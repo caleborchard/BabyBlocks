@@ -241,7 +241,8 @@ namespace BabyBlocks
             return leo;
         }
 
-        internal const int PropLayer = 16; // "Props" layer — required for the surface Tag to work
+        internal const int PropLayer        = 16; // "Props" layer — required for the surface Tag to work
+        internal const int PropsDynamicLayer = 24; // "PropsDynamic" layer — used by all native kickable/dynamic props
 
         public void Remove(LevelEditorObject obj)
         {

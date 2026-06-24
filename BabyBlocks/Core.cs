@@ -222,6 +222,7 @@ namespace BabyBlocks
 
             FlyCamController.OnUpdate();
             UI.PropBrowserUI.UpdateVisibility();
+
             BaseMapController.TickWeatherPreset();
 
             // Suppress any terrain chunks or prop containers that BRL streams in
