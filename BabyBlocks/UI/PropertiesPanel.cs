@@ -147,6 +147,18 @@ namespace BabyBlocks.UI
 
         protected override void ConstructPanelContent()
         {
+            // Disable keyboard navigation on the UniverseLib close button so Space can't re-fire it.
+            if (TitleBar != null)
+            {
+                var closeBtn = TitleBar.GetComponentInChildren<UnityEngine.UI.Button>();
+                if (closeBtn != null)
+                {
+                    var nav = closeBtn.navigation;
+                    nav.mode = UnityEngine.UI.Navigation.Mode.None;
+                    closeBtn.navigation = nav;
+                }
+            }
+
             // Connector line lives outside the panel so it can span the scene view.
             var lineGO = UIFactory.CreateUIObject("PropConnectorLine", Owner.RootObject);
             lineGO.transform.SetSiblingIndex(0);
@@ -694,6 +706,7 @@ namespace BabyBlocks.UI
             }
             Instance._target = leo;
             Instance.UIRoot.SetActive(true);
+            Instance.UIRoot.transform.SetAsLastSibling(); // always render on top of other panels
             Instance.CloseAllDds();
             Instance.RefreshAll();
         }
@@ -750,6 +763,20 @@ namespace BabyBlocks.UI
                     }
                     _rmbDownLeo = null;
                 }
+            }
+
+            // Clamp panel to screen bounds so it can't be dragged off-screen.
+            if (Rect != null)
+            {
+                float hw = Rect.sizeDelta.x * 0.5f;
+                float hh = Rect.sizeDelta.y * 0.5f;
+                float sw = Screen.width;
+                float sh = Screen.height;
+                var ap = Rect.anchoredPosition;
+                float cx = Mathf.Clamp(sw * 0.5f + ap.x, hw, sw - hw) - sw * 0.5f;
+                float cy = Mathf.Clamp(sh * 0.5f + ap.y, hh, sh - hh) - sh * 0.5f;
+                if (cx != ap.x || cy != ap.y)
+                    Rect.anchoredPosition = new Vector2(cx, cy);
             }
 
             // Keep line hidden when panel is not showing (handles X-button close too).
