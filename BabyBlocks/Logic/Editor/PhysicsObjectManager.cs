@@ -895,17 +895,36 @@ namespace BabyBlocks
                 crusher = co.transform;
             }
 
-            g.rb    = rb;
-            g.rbs   = new Il2CppReferenceArray<Rigidbody>(1); g.rbs[0] = rb;
-            g.colls = new Il2CppReferenceArray<Collider>(colls.Length);
-            for (int i = 0; i < colls.Length; i++) if (colls[i] != null) g.colls[i] = colls[i];
+            g.rb  = rb;
+            g.rbs = new Il2CppReferenceArray<Rigidbody>(1); g.rbs[0] = rb;
+
+            // For hats: native WearHat accesses hat.colls[0] and casts it to BoxCollider
+            // (all native game hats use BoxColliders). Prepend a tiny trigger BoxCollider so
+            // the cast succeeds without affecting physics. The actual physics colliders follow
+            // at indices 1+ and are still body-collision-ignored by IgnoreBodyCollisions.
+            if (isHat)
+            {
+                var bc     = go.AddComponent<BoxCollider>();
+                bc.size    = new Vector3(0.01f, 0.01f, 0.01f);
+                bc.isTrigger = true;
+                var hatColls = new Il2CppReferenceArray<Collider>(colls.Length + 1);
+                hatColls[0] = bc;
+                for (int i = 0; i < colls.Length; i++) if (colls[i] != null) hatColls[i + 1] = colls[i];
+                g.colls = hatColls;
+            }
+            else
+            {
+                g.colls = new Il2CppReferenceArray<Collider>(colls.Length);
+                for (int i = 0; i < colls.Length; i++) if (colls[i] != null) g.colls[i] = colls[i];
+            }
+
             g.crusher = crusher;
             g.type    = isHat ? GrabableType.hat : GrabableType.questItem;
 
             if (isHat && g is Hat hat)
             {
-                hat.enableOnWear  = Array.Empty<GameObject>();
-                hat.disableOnWear = Array.Empty<GameObject>();
+                hat.enableOnWear  = new Il2CppReferenceArray<GameObject>(0);
+                hat.disableOnWear = new Il2CppReferenceArray<GameObject>(0);
             }
 
             var ptsR  = new Il2CppSystem.Collections.Generic.List<Vector3>();

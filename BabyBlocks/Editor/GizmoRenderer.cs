@@ -59,7 +59,6 @@ namespace BabyBlocks
         public static float OutlineThickness    = 0.03f;
         public static float OutlineOccludedAlpha = 0.35f; // 0 = invisible through walls, 1 = full color
         public static float OutlineWidth         = 2.0f;  // pixels; controls SS outline border thickness
-        public static int   OutlineDebugMode     = 0;     // 0=normal  1=force-dark  2=sceneD grayscale
         static Material _stencilClearMat;
         static Material _stencilMarkMat;
         static Material _outlineMat;     // visible ring (ZTest LessEqual)
@@ -84,8 +83,6 @@ namespace BabyBlocks
         // Cached selection — RefreshSSBufferMatrices() re-records _ssBuffer with
         // fresh Camera.main matrices after Cinemachine LateUpdate has run.
         static IReadOnlyList<LevelEditorObject> _ssLastSelection;
-
-        static bool  _depthDiagPending;
 
         public static bool ScreenSpaceShadersLoaded => _maskMat != null && _ppMat != null;
 
@@ -443,10 +440,6 @@ namespace BabyBlocks
             return m;
         }
 
-        // Call from input handler (F5) to dump the full gizmo/outline pipeline snapshot to the log
-        // on the next recorded SS frame (see DumpDiagnostics). Requires an active selection.
-        internal static void LogDepthDiag() => _depthDiagPending = true;
-
         static void DetachDepthCaptureBuffer()
         {
             if (_depthCaptureCameraTarget != null && _depthCaptureBuffer != null)
@@ -521,11 +514,6 @@ namespace BabyBlocks
             _overlayCam.AddCommandBuffer(CameraEvent.BeforeForwardAlpha, _ssBuffer);
             _ssCameraTarget = _overlayCam;
 
-            if (_depthDiagPending)
-            {
-                _depthDiagPending = false;
-                DumpDiagnostics(mainCam, selection);
-            }
         }
 
         // Called by OverlayCamPreRenderHook right before _overlayCam renders.
@@ -544,93 +532,6 @@ namespace BabyBlocks
             RecordSSBuffer(_ssLastSelection, mainCam);
         }
 
-        // One-shot pipeline dump (triggered by F5 → LogDepthDiag). Prints a compact, copy-pasteable
-        // snapshot of the gizmo/outline render setup: cameras, clear flags, render path, attached
-        // command buffers, and a scene-depth readback. Designed to diagnose outline visibility and
-        // gizmo layering without per-frame log spam.
-        static void DumpDiagnostics(Camera mainCam, IReadOnlyList<LevelEditorObject> selection)
-        {
-            void L(string s) => MelonLoader.MelonLogger.Msg("[GIZMO-DIAG] " + s);
-
-            L("================ Gizmo / Outline pipeline ================");
-            L($"shaders: mask={_maskMat != null} pp={_ppMat != null} depthCapture={_depthCaptureMat != null}  " +
-              $"selection={selection?.Count ?? 0}");
-
-            // Cameras, sorted by render order (depth ascending = renders first).
-            try
-            {
-                var cams = Camera.allCameras;
-                var list = new List<Camera>();
-                if (cams != null) foreach (var c in cams) if (c != null) list.Add(c);
-                list.Sort((a, b) => a.depth.CompareTo(b.depth));
-                L($"camera render order ({list.Count} enabled), first→last:");
-                foreach (var c in list)
-                {
-                    bool isMain    = c == mainCam;
-                    bool isOverlay = c == _overlayCam;
-                    string tag = isOverlay ? " <-- OVERLAY" : isMain ? " <-- MAIN" : "";
-                    L($"  depth={c.depth,6:0.#}  '{c.name}'  clear={c.clearFlags}  " +
-                      $"path={c.actualRenderingPath}  HDR={c.allowHDR}  " +
-                      $"target={(c.targetTexture != null ? c.targetTexture.name : "backbuffer")}{tag}");
-                }
-            }
-            catch (Exception ex) { L($"camera enumerate failed: {ex.Message}"); }
-
-            // Command buffers attached to the overlay cam (where outline + gizmo ztest live).
-            DumpCamBuffers(L, _overlayCam, "overlayCam", CameraEvent.BeforeForwardOpaque);
-            DumpCamBuffers(L, _overlayCam, "overlayCam", CameraEvent.BeforeForwardAlpha);
-            DumpCamBuffers(L, _overlayCam, "overlayCam", CameraEvent.AfterEverything);
-            // Depth capture lives on mainCam.
-            DumpCamBuffers(L, mainCam, "mainCam", CameraEvent.AfterEverything);
-
-            L($"ssTarget={(_ssCameraTarget != null ? _ssCameraTarget.name : "null")}  " +
-              $"depthCaptureTarget={(_depthCaptureCameraTarget != null ? _depthCaptureCameraTarget.name : "null")}");
-            L($"depthCopyRT={(_depthCopyRT != null ? $"{_depthCopyRT.width}x{_depthCopyRT.height} created={_depthCopyRT.IsCreated()}" : "null")}  " +
-              $"mainCam.depthMode={mainCam.depthTextureMode}");
-
-            var globalDepth = Shader.GetGlobalTexture("_CameraDepthTexture");
-            L($"_CameraDepthTexture global={(globalDepth != null ? $"{globalDepth.width}x{globalDepth.height}" : "null")}");
-
-            // Scene-depth readback at the first selected object (verifies depth capture works).
-            if (selection != null && selection.Count > 0 && selection[0] != null && _depthCopyRT != null && _depthCopyRT.IsCreated())
-            {
-                try
-                {
-                    var r = mainCam.rect;
-                    var sp = mainCam.WorldToScreenPoint(selection[0].transform.position);
-                    float depUvX = (sp.x / Screen.width  - r.x) / r.width;
-                    float depUvY = (sp.y / Screen.height - r.y) / r.height;
-                    int px = Mathf.Clamp(Mathf.RoundToInt(depUvX * _depthCopyRT.width),  0, _depthCopyRT.width  - 1);
-                    int py = Mathf.Clamp(Mathf.RoundToInt(depUvY * _depthCopyRT.height), 0, _depthCopyRT.height - 1);
-                    var prev = RenderTexture.active;
-                    RenderTexture.active = _depthCopyRT;
-                    var t2d = new Texture2D(1, 1, TextureFormat.RFloat, false);
-                    t2d.ReadPixels(new Rect(px, py, 1, 1), 0, 0);
-                    t2d.Apply();
-                    RenderTexture.active = prev;
-                    float d = t2d.GetPixel(0, 0).r;
-                    UnityEngine.Object.Destroy(t2d);
-                    L($"sel[0] depthCopyRT[{px},{py}]={d:F4} (reversed-Z: near=1 far=0; 0=capture broken)");
-                }
-                catch (Exception ex) { L($"depth readback failed: {ex.Message}"); }
-            }
-            L("=========================================================");
-        }
-
-        static void DumpCamBuffers(Action<string> L, Camera cam, string label, CameraEvent evt)
-        {
-            if (cam == null) { L($"{label}.{evt}: <cam null>"); return; }
-            try
-            {
-                var bufs = cam.GetCommandBuffers(evt);
-                int n = bufs?.Length ?? 0;
-                string names = "";
-                if (n > 0) foreach (var b in bufs) names += (names.Length > 0 ? ", " : "") + b.name;
-                L($"{label}.{evt}: {n} buffer(s){(n > 0 ? " [" + names + "]" : "")}");
-            }
-            catch (Exception ex) { L($"{label}.{evt}: query failed: {ex.Message}"); }
-        }
-
         // Records (or re-records) _ssBuffer with the given camera's matrices.
         // Caller must ensure _ssBuffer is not null.
         static void RecordSSBuffer(IReadOnlyList<LevelEditorObject> selection, Camera mainCam)
@@ -638,7 +539,7 @@ namespace BabyBlocks
             _ssBuffer.Clear();
             _ppMat.SetFloat("_OccludedAlpha", OutlineOccludedAlpha);
             _ppMat.SetFloat("_OutlineWidth",  OutlineWidth);
-            _ppMat.SetFloat("_DebugMode",     OutlineDebugMode);
+            _ppMat.SetFloat("_DebugMode",     0);
             // Eye-depth occlusion: shaders convert hw_depth → eye_dist via near/hwDepth.
             // Set globally so GizmoOccluded materials (not managed by _ppMat) also get it.
             Shader.SetGlobalFloat("_BabyBlocksCamNear", mainCam.nearClipPlane);
