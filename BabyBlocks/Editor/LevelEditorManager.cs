@@ -155,10 +155,8 @@ namespace BabyBlocks
                     // placeholder capsule mesh is hidden and never needs collision.
                     SpawnPointConfig.Configure(root);
                 }
-                else
-                {
-                    PhysicsObjectManager.ApplyColliderParts(root, info, PropMetadataStore.GetUseRenderMeshCollider(info.id));
-                }
+                // Standard colliders are applied below, after ApplyDisabledRenderersToRoot,
+                // so the render-mesh path sees the correct mr.enabled state.
             }
 
             if (_propsContainer != null)
@@ -170,6 +168,10 @@ namespace BabyBlocks
 
             MaterialCatalog.ApplyMaterialOverridesToRoot(info.id, root);
             PropInstanceServices.ApplyDisabledRenderersToRoot(info.id, root);
+
+            if (!keepHierarchy && !PropLibrary.IsNegativeCollisionProp(info.id) && !PropLibrary.IsSpawnPointProp(info.id))
+                PhysicsObjectManager.ApplyColliderParts(root, info, PropMetadataStore.GetUseRenderMeshCollider(info.id));
+
             PropInstanceServices.ApplyBushColliderToRoot(info.id, root);
 
             // Only one Spawn Point may exist at a time — placing a new one replaces

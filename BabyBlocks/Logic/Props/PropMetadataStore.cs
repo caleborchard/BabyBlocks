@@ -193,7 +193,7 @@ namespace BabyBlocks
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return false;
-            if (!_byId.TryGetValue(id, out var info))
+            if (!TryGetInfoById(id, out var info))
             {
                 var propInfo = PropLibrary.FindById(id);
                 return propInfo == null || !propInfo.HasColliderParts;
@@ -205,7 +205,7 @@ namespace BabyBlocks
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return null;
-            if (!_byId.TryGetValue(id, out var info)) return null;
+            if (!TryGetInfoById(id, out var info)) return null;
             return ParseIntSet(info.colliderIgnoredSubmeshes);
         }
 
@@ -213,7 +213,7 @@ namespace BabyBlocks
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return string.Empty;
-            if (!_byId.TryGetValue(id, out var info)) return string.Empty;
+            if (!TryGetInfoById(id, out var info)) return string.Empty;
             return info.surfaceType ?? string.Empty;
         }
 
@@ -289,27 +289,27 @@ namespace BabyBlocks
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return false;
-            return _byId.TryGetValue(id, out var info) && info.isBush;
+            return TryGetInfoById(id, out var info) && info.isBush;
         }
 
         public static bool GetKeepOriginalHierarchy(string id)
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return false;
-            return _byId.TryGetValue(id, out var info) && info.keepOriginalHierarchy;
+            return TryGetInfoById(id, out var info) && info.keepOriginalHierarchy;
         }
 
         public static bool HasMetadata(string id)
         {
             EnsureLoaded();
-            return !string.IsNullOrEmpty(id) && _byId.ContainsKey(id);
+            return !string.IsNullOrEmpty(id) && TryGetInfoById(id, out _);
         }
 
         public static bool IsExcluded(string id)
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return false;
-            return _byId.TryGetValue(id, out var info) && info.excluded;
+            return TryGetInfoById(id, out var info) && info.excluded;
         }
 
         // Returns true if the prop has been indexed but is only partially filled:
@@ -318,7 +318,7 @@ namespace BabyBlocks
         {
             EnsureLoaded();
             if (string.IsNullOrEmpty(id)) return false;
-            if (!_byId.TryGetValue(id, out var info)) return false;
+            if (!TryGetInfoById(id, out var info)) return false;
             if (info.excluded || info.index <= 0) return false;
             int count = 0;
             if (!string.IsNullOrEmpty(info.displayName)) count++;
@@ -445,6 +445,7 @@ namespace BabyBlocks
                 info.keepOriginalHierarchy = keepOriginalHierarchy;
             }
 
+            _loadedFromJson = true;
             Save();
             return info;
         }
@@ -476,7 +477,6 @@ namespace BabyBlocks
                     {
                         using var fs = File.OpenRead(BinaryExportPath);
                         LoadFromBinaryStream(fs);
-                        BBLog.Msg("[PropMetadata] Loaded from UserData binary.");
                         return;
                     }
                 }
