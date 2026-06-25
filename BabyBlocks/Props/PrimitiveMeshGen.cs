@@ -231,6 +231,7 @@ namespace BabyBlocks
             mesh.triangles = tris.ToArray();
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
+            mesh.hideFlags = HideFlags.HideAndDontSave;
             return mesh;
         }
 
@@ -244,6 +245,9 @@ namespace BabyBlocks
             mesh.uv        = uvs.ToArray();
             mesh.triangles = tris.ToArray();
             mesh.RecalculateBounds();
+            // Not owned by any GameObject — mark as don't-save so Unity doesn't destroy it
+            // when Resources.UnloadUnusedAssets runs between frames.
+            mesh.hideFlags = HideFlags.HideAndDontSave;
             return mesh;
         }
     }

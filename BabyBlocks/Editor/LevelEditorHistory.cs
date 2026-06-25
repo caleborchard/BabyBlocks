@@ -239,6 +239,47 @@ namespace BabyBlocks
         public static void PushSpawn(LevelEditorObject obj)  => Push(new SpawnAction(obj));
         public static void PushDelete(LevelEditorObject obj) => Push(new DeleteAction(obj));
 
+        class GroupRotateAction : IAction
+        {
+            readonly int                 _groupId;
+            readonly GameObject          _groupRoot;
+            readonly LevelEditorObject[] _members;
+            readonly Vector3             _rootPosBefore, _rootPosAfter;
+            readonly Quaternion          _rootRotBefore, _rootRotAfter;
+
+            public GroupRotateAction(int groupId, GameObject groupRoot, LevelEditorObject[] members,
+                Vector3 rootPosBefore, Quaternion rootRotBefore)
+            {
+                _groupId      = groupId;
+                _groupRoot    = groupRoot;
+                _members      = members;
+                _rootPosBefore = rootPosBefore;
+                _rootRotBefore = rootRotBefore;
+                _rootPosAfter  = groupRoot?.transform.position ?? Vector3.zero;
+                _rootRotAfter  = groupRoot?.transform.rotation ?? Quaternion.identity;
+            }
+
+            public bool HasChanges() => _rootPosBefore != _rootPosAfter || _rootRotBefore != _rootRotAfter;
+
+            void Apply(Vector3 pos, Quaternion rot)
+            {
+                if (_groupRoot == null) return;
+                _groupRoot.transform.SetPositionAndRotation(pos, rot);
+                var live = _members.FirstOrDefault(m => m != null);
+                if (live != null) LevelEditor.Select(live);
+            }
+
+            public void Undo() => Apply(_rootPosBefore, _rootRotBefore);
+            public void Redo() => Apply(_rootPosAfter,  _rootRotAfter);
+        }
+
+        public static void PushGroupRotate(int groupId, GameObject groupRoot, LevelEditorObject[] members,
+            Vector3 rootPosBefore, Quaternion rootRotBefore)
+        {
+            var action = new GroupRotateAction(groupId, groupRoot, members, rootPosBefore, rootRotBefore);
+            if (action.HasChanges()) Push(action);
+        }
+
         // Collects member state and pushes an undo entry for a group scale change.
         // Call AFTER the scale has been applied; the before-state is supplied by the caller.
         public static void PushGroupScale(int groupId, GameObject groupRoot,

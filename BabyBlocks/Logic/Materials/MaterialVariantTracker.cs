@@ -80,6 +80,10 @@ namespace BabyBlocks
             MaterialsLoaded = false;
             _lastVariantScanTime = -999f; // force immediate re-scan on next palette open
             SceneCurrentByName.Clear();
+            // Force the next CaptureSceneVariants call to do a full FindObjectsOfTypeAll scan
+            // so materials that came into memory after the previous initial scan (e.g. GPUI
+            // props loaded by ScanGpuiProps) are added to the watched set.
+            _initialVariantScanDone = false;
         }
 
         // Builds a signature string from all texture properties on a material so we can detect
@@ -212,6 +216,9 @@ namespace BabyBlocks
             _ownedMaterialIds.Add(clone.GetInstanceID());
             SceneVariantMats[key] = clone;
             SceneVariantByDisplayName[displayName] = clone;
+
+            if (baseName.IndexOf("New Material", StringComparison.OrdinalIgnoreCase) >= 0)
+                MelonLogger.Msg($"[MatDiag] RegisterVariant \"{displayName}\" shader={source.shader?.name ?? "null"} tex={source.mainTexture?.name ?? "null"} sig={sig?.Replace("\n",";")}");
         }
 
         // Skips entries created by RegisterVariant/CheckMaterialVariant (owned clones) when the

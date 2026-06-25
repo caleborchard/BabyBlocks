@@ -350,13 +350,17 @@ namespace BabyBlocks
         {
             yield return null;
 
+            MelonLogger.Msg($"[DebugScan] ScanGpuiProps start — MaterialsLoaded={MaterialVariantTracker.MaterialsLoaded} SourcesLoaded={MaterialCatalog.MaterialSourcesLoaded}");
             GpuiPropScanner.ScanGpuiProps();
+            MelonLogger.Msg($"[DebugScan] ScanGpuiProps done");
 
             yield return null;
 
             if (!_editorScanDone)
             {
+                MelonLogger.Msg($"[DebugScan] InvalidateMaterialSources — MaterialsLoaded={MaterialVariantTracker.MaterialsLoaded}");
                 MaterialCatalog.InvalidateMaterialSources();
+                MelonLogger.Msg($"[DebugScan] Done — MaterialsLoaded={MaterialVariantTracker.MaterialsLoaded} SourcesLoaded={MaterialCatalog.MaterialSourcesLoaded}");
                 _editorScanDone = true;
             }
         }

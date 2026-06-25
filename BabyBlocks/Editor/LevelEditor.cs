@@ -45,10 +45,11 @@ namespace BabyBlocks
         static readonly List<Quaternion> _dragStartRotations = new();
         // Per-drag-object group root info (populated at drag start; used by ApplyScaleToDragObjects).
         // Parallel to _dragObjects. Entry is null when the object has no group root.
-        static readonly List<GameObject> _dragScaleRoots         = new();
-        static readonly List<Vector3>    _dragStartRootScales    = new();  // display scale, not groupRoot.localScale
+        static readonly List<GameObject> _dragScaleRoots          = new();
+        static readonly List<Vector3>    _dragStartRootScales    = new();  // display scale (== groupRoot.localScale)
         static readonly List<Vector3>    _dragStartRootPositions = new();
-        static readonly List<Vector3>    _dragStartLocalPositions = new(); // member localPos at drag start (for group scale)
+        static readonly List<Quaternion> _dragStartRootRotations = new();
+        static readonly List<Vector3>    _dragStartLocalPositions = new();
 
         // Throttling for SendPropTransform broadcasts during an active drag, mirroring
         // the freecam update cadence (Unreliable at high frequency, periodic
@@ -430,7 +431,8 @@ namespace BabyBlocks
                         // For group-scale drags push one GroupScaleAction per group instead of
                         // per-member PushTransform (which would miss display-scale and root-pos).
                         var processedGroupHistory = new System.Collections.Generic.HashSet<int>();
-                        bool isScaleDrag = currentTool == ToolMode.Scale;
+                        bool isScaleDrag  = currentTool == ToolMode.Scale;
+                        bool isRotateDrag = currentTool == ToolMode.Rotate;
 
                         for (int i = 0; i < _dragObjects.Count; i++)
                         {
@@ -448,7 +450,6 @@ namespace BabyBlocks
                                 // History: once per group.
                                 if (processedGroupHistory.Add(obj.groupId))
                                 {
-                                    // Collect all members in _dragObjects that belong to this group.
                                     var members = new System.Collections.Generic.List<LevelEditorObject>();
                                     var scalesBefore   = new System.Collections.Generic.List<Vector3>();
                                     var localPosBefore = new System.Collections.Generic.List<Vector3>();
@@ -465,6 +466,23 @@ namespace BabyBlocks
                                         obj.groupId, groupRoot, members.ToArray(),
                                         _dragStartRootPositions[i], _dragStartRootScales[i],
                                         scalesBefore.ToArray(), localPosBefore.ToArray());
+                                }
+                            }
+                            else if (isRotateDrag && groupRoot != null)
+                            {
+                                if (obj.netId != 0)
+                                    BabyBlocks.Networking.ModNetworking.SendPropTransform(
+                                        obj.netId, obj.transform.position, obj.transform.rotation, obj.transform.localScale, reliable: true);
+
+                                if (processedGroupHistory.Add(obj.groupId))
+                                {
+                                    var members = _dragObjects
+                                        .Where(m => m != null && m.groupId == obj.groupId)
+                                        .ToArray();
+                                    LevelEditorHistory.PushGroupRotate(
+                                        obj.groupId, groupRoot, members,
+                                        _dragStartRootPositions[i],
+                                        i < _dragStartRootRotations.Count ? _dragStartRootRotations[i] : Quaternion.identity);
                                 }
                             }
                             else
@@ -797,6 +815,7 @@ namespace BabyBlocks
             _dragScaleRoots.Clear();
             _dragStartRootScales.Clear();
             _dragStartRootPositions.Clear();
+            _dragStartRootRotations.Clear();
             _dragStartLocalPositions.Clear();
             for (int i = 0; i < _selection.Count; i++)
             {
@@ -808,9 +827,10 @@ namespace BabyBlocks
                 _dragStartRotations.Add(obj.transform.rotation);
                 var grRoot = obj.groupId > 0 ? GroupManager.GetGroupRoot(obj.groupId) : null;
                 _dragScaleRoots.Add(grRoot);
-                // Store display scale (not groupRoot.localScale) so ratio math works correctly.
+                // Store display scale (== groupRoot.localScale) as start scale for ratio math.
                 _dragStartRootScales.Add(grRoot != null ? GroupManager.GetGroupDisplayScale(obj.groupId) : default);
                 _dragStartRootPositions.Add(grRoot != null ? grRoot.transform.position : default);
+                _dragStartRootRotations.Add(grRoot != null ? grRoot.transform.rotation : default);
                 _dragStartLocalPositions.Add(grRoot != null ? obj.transform.localPosition : Vector3.zero);
             }
 
@@ -825,9 +845,12 @@ namespace BabyBlocks
                     return;
                 }
 
-                _dragPlaneNormal = LocalMode && selectedObject != null
-                    ? selectedObject.transform.rotation * AxisVec(_dragAxis)
-                    : AxisVec(_dragAxis);
+                var rotForPlane = LocalMode && selectedObject != null
+                    ? (selectedObject.groupId > 0
+                        ? GroupManager.GetGroupRoot(selectedObject.groupId)?.transform.rotation ?? Quaternion.identity
+                        : selectedObject.transform.rotation)
+                    : Quaternion.identity;
+                _dragPlaneNormal = rotForPlane * AxisVec(_dragAxis);
                 var plane = new Plane(_dragPlaneNormal, _dragPivot);
                 if (plane.Raycast(ray, out float enter))
                     _dragStartHit = ray.GetPoint(enter);
@@ -927,33 +950,48 @@ namespace BabyBlocks
                     _accumulatedFreeRot = Quaternion.AngleAxis(angle, rotAxis) * _accumulatedFreeRot;
                 }
 
+                var processedFreeRotRoots = new System.Collections.Generic.HashSet<int>();
                 for (int i = 0; i < _dragObjects.Count; i++)
                 {
                     var obj = _dragObjects[i];
                     if (obj == null) continue;
 
-                    Quaternion finalRot;
-                    Quaternion deltaRot;
+                    var groupRoot = i < _dragScaleRoots.Count ? _dragScaleRoots[i] : null;
+                    var startRot  = groupRoot != null
+                        ? (i < _dragStartRootRotations.Count ? _dragStartRootRotations[i] : Quaternion.identity)
+                        : _dragStartRotations[i];
+
+                    Quaternion finalRot, deltaRot;
                     if (_snapEnabled)
                     {
                         // Snap the final world-space Euler angles so the sphere respects snap mode
                         // and normalizes any prior free-rotate angle to the nearest snap boundary.
-                        var euler = (_accumulatedFreeRot * _dragStartRotations[i]).eulerAngles;
+                        var euler = (_accumulatedFreeRot * startRot).eulerAngles;
                         euler.x = SnapAngleValue(euler.x);
                         euler.y = SnapAngleValue(euler.y);
                         euler.z = SnapAngleValue(euler.z);
                         finalRot = Quaternion.Euler(euler);
-                        deltaRot = finalRot * Quaternion.Inverse(_dragStartRotations[i]);
+                        deltaRot = finalRot * Quaternion.Inverse(startRot);
                     }
                     else
                     {
-                        finalRot = _accumulatedFreeRot * _dragStartRotations[i];
+                        finalRot = _accumulatedFreeRot * startRot;
                         deltaRot = _accumulatedFreeRot;
                     }
 
-                    obj.transform.rotation = finalRot;
-                    var rel = _dragStartPositions[i] - _dragPivot;
-                    obj.transform.position = _dragPivot + deltaRot * rel;
+                    if (groupRoot != null)
+                    {
+                        if (!processedFreeRotRoots.Add(groupRoot.GetInstanceID())) continue;
+                        groupRoot.transform.rotation = finalRot;
+                        var rootRel = (i < _dragStartRootPositions.Count ? _dragStartRootPositions[i] : groupRoot.transform.position) - _dragPivot;
+                        groupRoot.transform.position = _dragPivot + deltaRot * rootRel;
+                    }
+                    else
+                    {
+                        obj.transform.rotation = finalRot;
+                        var rel = _dragStartPositions[i] - _dragPivot;
+                        obj.transform.position = _dragPivot + deltaRot * rel;
+                    }
                 }
                 return;
             }
@@ -974,27 +1012,29 @@ namespace BabyBlocks
                 if (_snapEnabled) angle = SnapAngleValue(angle);
                 var deltaRot = Quaternion.AngleAxis(angle, _dragPlaneNormal);
 
-                if (_dragObjects.Count > 1)
+                var processedRingRotRoots = new System.Collections.Generic.HashSet<int>();
+                for (int i = 0; i < _dragObjects.Count; i++)
                 {
-                    for (int i = 0; i < _dragObjects.Count; i++)
+                    var obj = _dragObjects[i];
+                    if (obj == null) continue;
+                    var groupRoot = i < _dragScaleRoots.Count ? _dragScaleRoots[i] : null;
+                    if (groupRoot != null)
                     {
-                        var obj = _dragObjects[i];
-                        if (obj == null) continue;
+                        if (!processedRingRotRoots.Add(groupRoot.GetInstanceID())) continue;
+                        var startRootRot = i < _dragStartRootRotations.Count ? _dragStartRootRotations[i] : groupRoot.transform.rotation;
+                        groupRoot.transform.rotation = deltaRot * startRootRot;
+                        var rootRel = (i < _dragStartRootPositions.Count ? _dragStartRootPositions[i] : groupRoot.transform.position) - _dragPivot;
+                        groupRoot.transform.position = _dragPivot + deltaRot * rootRel;
+                    }
+                    else
+                    {
                         obj.transform.rotation = deltaRot * _dragStartRotations[i];
                         var rel = _dragStartPositions[i] - _dragPivot;
                         obj.transform.position = _dragPivot + deltaRot * rel;
                     }
-
-                    SyncDraggedPhysicsTransforms();
                 }
-                else if (selectedObject != null)
-                {
-                    selectedObject.transform.rotation = deltaRot * _dragStartRot;
-                    var rel = _dragStartPos - _dragPivot;
-                    selectedObject.transform.position = _dragPivot + deltaRot * rel;
 
-                    SyncDraggedPhysicsTransforms();
-                }
+                SyncDraggedPhysicsTransforms();
                 return;
             }
 
@@ -1035,7 +1075,9 @@ namespace BabyBlocks
                     {
                         // Diagonal of the plane handle's two (possibly camera-flipped) axes.
                         // GetEffectivePivotRot already accounts for the per-axis flip state.
-                        var   rot    = selectedObject.transform.rotation; // scale is always local-axis
+                        var   rot    = selectedObject != null && selectedObject.groupId > 0
+                            ? (_dragStartRootRotations.Count > 0 ? _dragStartRootRotations[0] : Quaternion.identity)
+                            : selectedObject.transform.rotation;
                         var   dirA   = GizmoRenderer.GetEffectivePivotRot(aIdx) * Vector3.up;
                         var   dirB   = GizmoRenderer.GetEffectivePivotRot(bIdx) * Vector3.up;
                         var   localDiag = rot * (dirA + dirB).normalized;
@@ -1056,9 +1098,13 @@ namespace BabyBlocks
                     // Translate: screen-space 2-D solve for natural diagonal movement at any angle.
                     if (TryGetPlaneAxes(_dragAxis, out int aIdx, out int bIdx))
                     {
-                        var objRot = selectedObject.transform.rotation;
-                        var   axA  = LocalMode ? objRot * AxisVec(aIdx) : AxisVec(aIdx);
-                        var   axB  = LocalMode ? objRot * AxisVec(bIdx) : AxisVec(bIdx);
+                        var objRot = LocalMode
+                            ? (selectedObject.groupId > 0
+                                ? GroupManager.GetGroupRoot(selectedObject.groupId)?.transform.rotation ?? Quaternion.identity
+                                : selectedObject.transform.rotation)
+                            : Quaternion.identity;
+                        var axA = objRot * AxisVec(aIdx);
+                        var axB = objRot * AxisVec(bIdx);
                         var   oScreen = cam.WorldToScreenPoint(_dragPivot);
                         var   screenA = new Vector2(cam.WorldToScreenPoint(_dragPivot + axA).x - oScreen.x,
                                                     cam.WorldToScreenPoint(_dragPivot + axA).y - oScreen.y);
@@ -1094,7 +1140,9 @@ namespace BabyBlocks
             {
                 // Project onto the effective arrow direction (accounts for camera-side flip).
                 // In local mode the gizmo inherits obj.rotation, so we apply it here too.
-                var   scaleObjRot    = selectedObject.transform.rotation; // scale is always local-axis
+                var   scaleObjRot    = selectedObject != null && selectedObject.groupId > 0
+                    ? (_dragStartRootRotations.Count > 0 ? _dragStartRootRotations[0] : Quaternion.identity)
+                    : selectedObject.transform.rotation;
                 var   localAxis      = scaleObjRot * (GizmoRenderer.GetEffectivePivotRot(_dragAxis) * Vector3.up);
                 var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
                 float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localAxis, cam);
@@ -1109,8 +1157,12 @@ namespace BabyBlocks
                 return;
             }
 
-            var ax = LocalMode ? selectedObject.transform.rotation * AxisVec(_dragAxis)
-                               : AxisVec(_dragAxis);
+            var axRot = LocalMode
+                ? (selectedObject.groupId > 0
+                    ? GroupManager.GetGroupRoot(selectedObject.groupId)?.transform.rotation ?? Quaternion.identity
+                    : selectedObject.transform.rotation)
+                : Quaternion.identity;
+            var ax = axRot * AxisVec(_dragAxis);
             ApplyTranslation(ax * Vector3.Dot(delta, ax));
         }
 
@@ -1526,10 +1578,9 @@ namespace BabyBlocks
                 var groupRoot = i < _dragScaleRoots.Count ? _dragScaleRoots[i] : null;
                 if (groupRoot != null)
                 {
-                    // Grouped object: apply scale as a ratio to each member's own localScale and
-                    // localPosition. The group root's localScale stays (1,1,1) so non-uniform
-                    // scale of a rotated child never causes Unity's implicit shear/cant artifact.
-                    var start = _dragStartRootScales[i]; // display scale at drag start
+                    // Grouped object: set the group root's localScale directly and let Unity's
+                    // hierarchy distribute it to all children. Member transforms are untouched.
+                    var start = _dragStartRootScales[i];
                     var final = new Vector3(
                         scaleX ? Mathf.Max(0.001f, start.x * xFactor) : start.x,
                         scaleY ? Mathf.Max(0.001f, start.y * yFactor) : start.y,
@@ -1540,31 +1591,20 @@ namespace BabyBlocks
                     float ry = SafeScaleRatio(start.y, final.y);
                     float rz = SafeScaleRatio(start.z, final.z);
 
-                    // Scale this member from its captured start values.
-                    var memberStart = _dragStartScales[i];
-                    obj.transform.localScale = new Vector3(
-                        scaleX ? Mathf.Max(0.001f, memberStart.x * rx) : memberStart.x,
-                        scaleY ? Mathf.Max(0.001f, memberStart.y * ry) : memberStart.y,
-                        scaleZ ? Mathf.Max(0.001f, memberStart.z * rz) : memberStart.z);
-                    var memberLocalStart = i < _dragStartLocalPositions.Count ? _dragStartLocalPositions[i] : obj.transform.localPosition;
-                    obj.transform.localPosition = new Vector3(
-                        scaleX ? memberLocalStart.x * rx : memberLocalStart.x,
-                        scaleY ? memberLocalStart.y * ry : memberLocalStart.y,
-                        scaleZ ? memberLocalStart.z * rz : memberLocalStart.z);
-
-                    // Per-group: update display scale and move the group root (once per root).
+                    // Per-group: update display scale (which also sets groupRoot.localScale) and move the group root (once per root).
                     int rootId = groupRoot.GetInstanceID();
                     if (processedGroupRoots.Add(rootId))
                     {
                         GroupManager.SetGroupDisplayScale(obj.groupId, final);
 
-                        // Group root is world-aligned (identity rotation), so adjust in world space.
-                        var startPos = _dragStartRootPositions[i];
-                        var rel      = startPos - _dragPivot;
-                        if (scaleX) rel.x *= rx;
-                        if (scaleY) rel.y *= ry;
-                        if (scaleZ) rel.z *= rz;
-                        groupRoot.transform.position = _dragPivot + rel;
+                        // Scale the pivot offset in the group root's local space so the
+                        // position correctly follows the group's orientation after rotation.
+                        var startRootRot = i < _dragStartRootRotations.Count ? _dragStartRootRotations[i] : Quaternion.identity;
+                        var localRel     = Quaternion.Inverse(startRootRot) * (_dragStartRootPositions[i] - _dragPivot);
+                        if (scaleX) localRel.x *= rx;
+                        if (scaleY) localRel.y *= ry;
+                        if (scaleZ) localRel.z *= rz;
+                        groupRoot.transform.position = _dragPivot + startRootRot * localRel;
                     }
                 }
                 else

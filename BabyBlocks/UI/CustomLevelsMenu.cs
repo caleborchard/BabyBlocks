@@ -151,16 +151,44 @@ namespace BabyBlocks.UI
 
             string path = _levelFiles[index];
             LevelEditor.EnsureManager();
+            MelonLoader.MelonLogger.Msg($"[CustomLevels] Loading \"{System.IO.Path.GetFileName(path)}\"" +
+                $"  MaterialsLoaded={MaterialVariantTracker.MaterialsLoaded}" +
+                $"  SourcesLoaded={MaterialCatalog.MaterialSourcesLoaded}" +
+                $"  SourcesLoading={MaterialCatalog.IsLoadingMaterialSources}");
+            GpuiPropScanner.ScanGpuiProps();
+            MaterialCatalog.InvalidateMaterialSourcesSync();
+            MelonLoader.MelonLogger.Msg($"[CustomLevels] After InvalidateMaterialSources:" +
+                $"  MaterialsLoaded={MaterialVariantTracker.MaterialsLoaded}" +
+                $"  SourcesLoaded={MaterialCatalog.MaterialSourcesLoaded}" +
+                $"  SourcesLoading={MaterialCatalog.IsLoadingMaterialSources}");
             var (ok, _, _) = LevelSaveLoad.Load(path);
+            MelonLoader.MelonLogger.Msg($"[CustomLevels] After Load ok={ok}:" +
+                $"  MaterialsLoaded={MaterialVariantTracker.MaterialsLoaded}" +
+                $"  SourcesLoaded={MaterialCatalog.MaterialSourcesLoaded}");
             if (ok)
             {
-                // Reload shaders after the level-load teleport, which triggers a Unity GC
-                // event that destroys any shaders loaded before this point. SetTintShader
-                // (called inside LoadScreenSpaceShaders) then retroactively re-applies tints
-                // to all props whose materialTint was set but _tintMaterial wasn't created.
-                GizmoRenderer.LoadScreenSpaceShaders();
+                MaterialVariantTracker.InvalidateMaterialCache();
+                MelonLoader.MelonLogger.Msg($"[CustomLevels] After InvalidateMaterialCache, calling ReapplyAllMaterialOverrides");
+                MaterialCatalog.ReapplyAllMaterialOverrides();
                 Core.LastSavePath = path;
                 Networking.ModNetworking.BroadcastLevelLoad();
+                // GPUI assigns textures to prop materials asynchronously after placement.
+                // Retry reapply so hash-variant materials (e.g. "New Material [70608036]")
+                // are findable once GPUI has loaded them into CPU memory.
+                MelonLoader.MelonCoroutines.Start(DeferredMaterialReapplyCo());
+            }
+        }
+
+        static System.Collections.IEnumerator DeferredMaterialReapplyCo()
+        {
+            float[] delays = { 2f, 4f };
+            foreach (float delay in delays)
+            {
+                float until = UnityEngine.Time.realtimeSinceStartup + delay;
+                while (UnityEngine.Time.realtimeSinceStartup < until) yield return null;
+                MelonLoader.MelonLogger.Msg($"[CustomLevels] DeferredReapply after {delay}s");
+                MaterialVariantTracker.InvalidateMaterialCache();
+                MaterialCatalog.ReapplyAllMaterialOverrides();
             }
         }
 

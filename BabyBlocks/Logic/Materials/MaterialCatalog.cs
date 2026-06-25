@@ -130,6 +130,7 @@ namespace BabyBlocks
 
             if (MaterialVariantTracker.MaterialsLoaded) return;
             MaterialVariantTracker.MaterialsLoaded = true;
+            MelonLogger.Msg($"[MatList] EnsureMaterialList REBUILD — SourcesLoaded={MaterialSourcesLoaded} SourcesLoading={MaterialSourcesLoading}");
             MaterialNames.Clear();
             MaterialLabels.Clear();
             MaterialByName.Clear();
@@ -205,9 +206,15 @@ namespace BabyBlocks
                         var grp      = kvp.Value;
                         sceneVarCounts.TryGetValue(kvp.Key, out int svCount);
                         bool hasVars = grp.Count > 1 || svCount >= 2;
+                        // Log any name that collides (multiple instances or known variants) — these
+                        // produce hashed display names and are the source of variant-resolution issues.
+                        if (hasVars || kvp.Key.IndexOf("New Material", StringComparison.OrdinalIgnoreCase) >= 0)
+                            MelonLogger.Msg($"[MatList] Pass3 \"{kvp.Key}\": count={grp.Count} svCount={svCount} hasVars={hasVars}");
                         foreach (var (m, sig) in grp)
                         {
                             string displayName = hasVars ? $"{m.name} [{MaterialPathCatalog.ComputeStableHash(sig)}]" : m.name;
+                            if (hasVars || kvp.Key.IndexOf("New Material", StringComparison.OrdinalIgnoreCase) >= 0)
+                                MelonLogger.Msg($"[MatList]   displayName=\"{displayName}\" sig={sig.Replace("\n",";")} tex={m.mainTexture?.name ?? "null"}");
                             if (MaterialByName.ContainsKey(displayName)) continue;
                             string shaderName = m.shader != null ? m.shader.name : string.Empty;
                             string label = string.IsNullOrEmpty(shaderName) ? displayName : $"{displayName}  [{shaderName}]";
@@ -890,6 +897,57 @@ namespace BabyBlocks
             BBLog.Msg($"[PropMetadata] Refreshed {MicroSplatLayerMats.Count} MicroSplat layer materials.");
         }
 
+        // Resolves a variant-style override ("Base [hash]") straight from the owning prop's own
+        // loaded parts. The authoritative instance for such an override is the prop's native
+        // material whose texture signature hashes to the same value — and GPUI props' materials
+        // don't reliably appear in Resources.FindObjectsOfTypeAll, so ResolveMaterial's hash-scan
+        // misses them while a drag ghost is being built (before the async source scan has run) and
+        // falls back to a generic same-named catalog placeholder. The prop's parts always hold the
+        // real refs, so resolving from them makes the drag ghost show the correct material
+        // immediately in both debug and non-debug mode. The hash match guarantees we only ever
+        // substitute the exact same texture state, never a wrongly-textured same-named instance.
+        static Material TryResolveOverrideFromOwnParts(string propId, string overrideName)
+        {
+            if (string.IsNullOrEmpty(overrideName)) return null;
+
+            int bracket = overrideName.LastIndexOf(" [", StringComparison.Ordinal);
+            if (bracket <= 0 || !overrideName.EndsWith("]", StringComparison.Ordinal)) return null;
+            string baseName = overrideName.Substring(0, bracket);
+            string wantHash = overrideName.Substring(bracket + 2, overrideName.Length - bracket - 3);
+
+            var propInfo = PropLibrary.FindById(propId);
+            if (propInfo?.parts == null || propInfo.parts.Count == 0)
+            {
+                MelonLogger.Msg($"[MatDiag] OwnParts \"{propId}\" override=\"{overrideName}\" — propInfo={(propInfo == null ? "null" : "found")} loaded={propInfo?.isLoaded} parts={propInfo?.parts?.Count ?? -1}");
+                return null;
+            }
+
+            MelonLogger.Msg($"[MatDiag] OwnParts \"{propId}\" override=\"{overrideName}\" wantBase=\"{baseName}\" wantHash={wantHash} — dumping {propInfo.parts.Count} part(s):");
+            foreach (var part in propInfo.parts)
+            {
+                if (part?.materials == null) continue;
+                foreach (var mat in part.materials)
+                {
+                    if (mat == null || string.IsNullOrEmpty(mat.name)) continue;
+                    string psig = MaterialVariantTracker.GetTextureSig(mat);
+                    string phash = string.IsNullOrEmpty(psig) ? "(nosig)" : MaterialPathCatalog.ComputeStableHash(psig);
+                    MelonLogger.Msg($"[MatDiag]    part-mat name=\"{mat.name}\" hash={phash} shader={mat.shader?.name ?? "null"} tex={mat.mainTexture?.name ?? "null"} sig={psig?.Replace("\n",";")}");
+
+                    if (!string.Equals(mat.name, baseName, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (string.IsNullOrEmpty(psig)) continue;
+                    if (!string.Equals(phash, wantHash, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    // Cache so subsequent resolves (and the placed object, after the drag ghost)
+                    // reuse this exact instance and stay consistent.
+                    MelonLogger.Msg($"[MatDiag]    -> MATCH, using own part material");
+                    MaterialByName[overrideName] = mat;
+                    return mat;
+                }
+            }
+            MelonLogger.Msg($"[MatDiag]    -> no own-part match");
+            return null;
+        }
+
         public static void ApplyMaterialOverridesToRoot(string propId, GameObject root)
         {
             PropMetadataStore.EnsureLoaded();
@@ -917,7 +975,8 @@ namespace BabyBlocks
                         || string.Equals(matName, PropMetadataStore.NoOverrideLabel, StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    var mat = ResolveMaterial(matName, info.materialSourcePropId);
+                    var mat = TryResolveOverrideFromOwnParts(propId, matName)
+                              ?? ResolveMaterial(matName, info.materialSourcePropId);
                     if (mat == null)
                     {
                         MelonLogger.Warning(
@@ -968,7 +1027,13 @@ namespace BabyBlocks
                 return;
 
             {
-                var singleMat = ResolveMaterial(singleOverride, info.materialSourcePropId);
+                string diagTag = root.name != null && root.name.StartsWith("__PropGhost__", StringComparison.Ordinal) ? "GHOST" : "PLACED";
+                var ownPartMat = TryResolveOverrideFromOwnParts(propId, singleOverride);
+                var singleMat = ownPartMat ?? ResolveMaterial(singleOverride, info.materialSourcePropId);
+                string singleSig = singleMat != null ? MaterialVariantTracker.GetTextureSig(singleMat) : null;
+                string singleHash = string.IsNullOrEmpty(singleSig) ? "(nosig)" : MaterialPathCatalog.ComputeStableHash(singleSig);
+                MelonLogger.Msg($"[MatDiag] {diagTag} \"{propId}\" override=\"{singleOverride}\" fromOwnParts={(ownPartMat != null)} " +
+                    $"-> resolved name=\"{singleMat?.name ?? "null"}\" id={(singleMat != null ? singleMat.GetInstanceID() : 0)} HASH={singleHash} shader={singleMat?.shader?.name ?? "null"} sig={singleSig?.Replace("\n",";")}");
                 if (singleMat == null)
                 {
                     bool inByName   = MaterialByName.ContainsKey(singleOverride);
@@ -1065,26 +1130,35 @@ namespace BabyBlocks
         {
             if (string.IsNullOrEmpty(matName)) return null;
 
+            bool isVariantName = matName.LastIndexOf(" [", StringComparison.Ordinal) > 0
+                && matName.EndsWith("]", StringComparison.Ordinal);
+
             // A material verified-loaded from its recorded materialSourcePropId is the canonical,
             // correctly-textured instance — it wins over whatever same-named instance happens to
             // be resident in the current scene (which may be a broken/textureless area-local copy).
             if (VerifiedSourceMaterials.TryGetValue(matName, out var verifiedMat) && verifiedMat != null)
             {
+                if (isVariantName) MelonLogger.Msg($"[MatResolve] EARLY-Verified \"{matName}\" shader={verifiedMat.shader?.name ?? "null"} tex={verifiedMat.mainTexture?.name ?? "null"}");
                 MaterialByName[matName] = verifiedMat;
                 return verifiedMat;
             }
 
             if (MaterialVariantTracker.SceneCurrentByName.TryGetValue(matName, out var liveMat) && liveMat != null)
             {
+                if (isVariantName) MelonLogger.Msg($"[MatResolve] EARLY-SceneCurrent \"{matName}\" shader={liveMat.shader?.name ?? "null"} tex={liveMat.mainTexture?.name ?? "null"}");
                 MaterialByName[matName] = liveMat;
                 return liveMat;
             }
             if (MaterialByName.TryGetValue(matName, out var mat) && mat != null)
+            {
+                if (isVariantName) MelonLogger.Msg($"[MatResolve] EARLY-ByName \"{matName}\" shader={mat.shader?.name ?? "null"} tex={mat.mainTexture?.name ?? "null"}");
                 return mat;
+            }
 
             // Scene-variant clones are looked up by display name — no .name access on Il2Cpp objects.
             if (MaterialVariantTracker.SceneVariantByDisplayName.TryGetValue(matName, out var clone) && clone != null)
             {
+                if (isVariantName) MelonLogger.Msg($"[MatResolve] EARLY-SceneVariant \"{matName}\" shader={clone.shader?.name ?? "null"} tex={clone.mainTexture?.name ?? "null"}");
                 MaterialByName[matName] = clone;
                 return clone;
             }
@@ -1105,14 +1179,51 @@ namespace BabyBlocks
             }
 
             // If the name looks like a variant display name ("Base [hash]" — see RegisterVariant,
-            // which always uses square brackets) but isn't in SceneVariantByDisplayName, skip the
-            // catalog scan and fall back to the base name. Native material names can legitimately
-            // contain parenthesized suffixes (e.g. "Spruce_Norway_BarkMat (TVE Material)"), so we
-            // must only strip the square-bracket variant pattern, not any "(...)" suffix.
+            // which always uses square brackets) but isn't in SceneVariantByDisplayName yet
+            // (e.g. the variant scan hasn't captured it this session, or GPUI materials weren't
+            // in memory when the initial scan ran), fall back to the base name so the prop still
+            // gets a material rather than going magenta.
             int lastBracket = matName.LastIndexOf(" [", StringComparison.Ordinal);
             if (lastBracket > 0 && matName.EndsWith("]", StringComparison.Ordinal))
             {
+                string expectedHash = matName.Substring(lastBracket + 2, matName.Length - lastBracket - 3);
                 string baseName = matName.Substring(0, lastBracket);
+
+                // Scan all materials in memory for base-name instances with matching hash.
+                // GPUI materials have the correct textures but may not be in MaterialByName yet
+                // (they enter CPU memory asynchronously as GPUI processes placed prop instances).
+                try
+                {
+                    var allMats = Resources.FindObjectsOfTypeAll<Material>();
+                    if (allMats != null)
+                    {
+                        int baseCount = 0;
+                        for (int i = 0; i < allMats.Length; i++)
+                        {
+                            var m = allMats[i];
+                            if (m == null) continue;
+                            if (!string.Equals(m.name, baseName, StringComparison.OrdinalIgnoreCase)) continue;
+                            if (MaterialVariantTracker.IsOwnedMaterial(m.GetInstanceID())) continue;
+                            string sig = MaterialVariantTracker.GetTextureSig(m);
+                            string h = string.IsNullOrEmpty(sig) ? "(nosig)" : MaterialPathCatalog.ComputeStableHash(sig);
+                            baseCount++;
+                            MelonLogger.Msg($"[MatDiag] HASH-CAND #{baseCount} \"{baseName}\" id={m.GetInstanceID()} hash={h} shader={m.shader?.name ?? "null"} tex={m.mainTexture?.name ?? "null"} sig={sig?.Replace("\n",";")}");
+                            if (string.IsNullOrEmpty(sig)) continue;
+                            if (!string.Equals(h, expectedHash, StringComparison.OrdinalIgnoreCase)) continue;
+                            MelonLogger.Msg($"[MatResolve] HASH-SCAN found \"{matName}\" in Resources");
+                            MaterialByName[matName] = m;
+                            if (!MaterialByName.ContainsKey(baseName)) MaterialByName[baseName] = m;
+                            return m;
+                        }
+                        MelonLogger.Msg($"[MatDiag] HASH-SCAN \"{matName}\": {baseCount} resident \"{baseName}\" instance(s), none matched hash {expectedHash}");
+                    }
+                }
+                catch { }
+
+                MelonLogger.Msg($"[MatResolve] variant-fallback: \"{matName}\" → base \"{baseName}\"" +
+                    $"  inByName[base]={MaterialByName.ContainsKey(baseName)}" +
+                    $"  MaterialsLoaded={MaterialVariantTracker.MaterialsLoaded}" +
+                    $"  SourcesLoaded={MaterialSourcesLoaded}");
                 if (MaterialByName.TryGetValue(baseName, out mat) && mat != null)
                     return mat;
                 mat = MaterialPathCatalog.TryLoadMaterialByName(baseName, sourcePropId);
@@ -1174,6 +1285,35 @@ namespace BabyBlocks
             EnsureMaterialList();
             MaterialSourcesLoading = false;
 
+            StartMaterialSourcesScanAsync();
+        }
+
+        // Synchronous variant of InvalidateMaterialSources for use before level load. Unlike the
+        // async path, this runs EnsureMaterialSources() in-line so that self-discovery candidate
+        // props (e.g. GPUI Stone Walls with materialSourcePropId="") are loaded before the level
+        // file spawns props and calls ApplyMaterialOverridesToRoot. Without this, those props' GPUI
+        // visual assets aren't in memory yet during the initial EnsureMaterialList scan, so
+        // MaterialByName["New Material"] ends up pointing at a wrong catalog-loaded placeholder
+        // instead of the correct Stone Wall asset. The sync scan loads each source prop once,
+        // populating MaterialByName with the correct instance, so Branch B fallback resolves right.
+        public static void InvalidateMaterialSourcesSync()
+        {
+            VerifiedSourceMaterials.Clear();
+            MaterialSourcesLoaded = false;
+            MaterialVariantTracker.InvalidateMaterialCache();
+
+            // Build material list synchronously (Stone Wall GPUI assets not in memory yet —
+            // that's OK, EnsureMaterialSources below will load them).
+            MaterialSourcesLoading = true;
+            EnsureMaterialList();
+            MaterialSourcesLoading = false;
+
+            // Run source scan synchronously. Self-discovery calls PropLibrary.LoadPropData for
+            // each unresolved override, loading GPUI visuals and putting the correct "New Material"
+            // (and similar per-prop materials) into MaterialByName before the level loads.
+            EnsureMaterialSources();
+
+            // Start the async scan for any candidates that came in via source-prop loading.
             StartMaterialSourcesScanAsync();
         }
     }

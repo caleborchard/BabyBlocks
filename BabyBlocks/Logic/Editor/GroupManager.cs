@@ -27,10 +27,10 @@ namespace BabyBlocks
 
         static void RemoveGroupRoot(int groupId) => LevelEditorManager.Instance._groupRoots.Remove(groupId);
 
-        // Display scale: the "virtual" group scale shown in the Properties Panel text boxes.
-        // The group root GO's localScale is always (1,1,1) to avoid Unity's shear artifact
-        // (non-uniform parent scale + rotated children = implicit skew). Scale is instead
-        // applied directly to each member's localScale and localPosition.
+        // Display scale: the group's world-space scale, stored in the dictionary and mirrored onto
+        // the group root's localScale so Unity's hierarchy distributes it to all children automatically.
+        // Rotated children experience implicit shear under non-uniform group scale — this is intentional,
+        // as it keeps all members scaling together consistently regardless of their individual rotations.
         static readonly Dictionary<int, Vector3> _groupDisplayScales = new();
 
         public static Vector3 GetGroupDisplayScale(int groupId)
@@ -39,8 +39,12 @@ namespace BabyBlocks
             return Vector3.one;
         }
 
-        public static void SetGroupDisplayScale(int groupId, Vector3 scale) =>
+        public static void SetGroupDisplayScale(int groupId, Vector3 scale)
+        {
             _groupDisplayScales[groupId] = scale;
+            var root = GetGroupRoot(groupId);
+            if (root != null) root.transform.localScale = scale;
+        }
 
         public static void RemoveGroupDisplayScale(int groupId) =>
             _groupDisplayScales.Remove(groupId);
@@ -389,6 +393,7 @@ namespace BabyBlocks
                 var propsContainer = LevelEditorManager.PropsContainer;
                 if (propsContainer != null) root.transform.SetParent(propsContainer.transform, true);
                 SetGroupRoot(groupId, root);
+                root.transform.localScale = GetGroupDisplayScale(groupId);
             }
             foreach (var m in members)
             {

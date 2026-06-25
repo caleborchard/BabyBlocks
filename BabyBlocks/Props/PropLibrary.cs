@@ -29,6 +29,10 @@ namespace BabyBlocks
         static readonly Dictionary<string, float> _zeroRefTime  = new(StringComparer.Ordinal); // propId → Time.realtimeSinceStartup when count hit 0
         const float UnloadDelay = 30f; // seconds after last instance removed before mesh data is freed
 
+        // Keeps primitive meshes alive: prevents managed-GC collection of Il2Cpp Mesh wrappers
+        // and stops Resources.UnloadUnusedAssets from destroying procedural meshes.
+        static readonly List<Mesh> _primitiveMeshHolder = new();
+
         public static IReadOnlyList<PropInfo> AllProps => _all;
         public static IReadOnlyList<PropInfo> FilteredProps => _filtered;
 
@@ -706,6 +710,34 @@ namespace BabyBlocks
                     if (visualGO != null)
                     {
                         info._addressableAsset = visualGO;
+
+                        // DIAG: dump materials on the loaded ASSET prefab's renderers (before
+                        // instantiation / GPUI stripping) to see whether the correct material is
+                        // reachable directly from the asset.
+                        if (info.id != null && info.id.IndexOf("Drystone", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            try
+                            {
+                                var assetMrs = visualGO.GetComponentsInChildren<MeshRenderer>(true);
+                                MelonLoader.MelonLogger.Msg($"[MatDiag] ASSET \"{info.id}\" visualPath=\"{info.visualPath}\" rendererCount={assetMrs.Length}");
+                                foreach (var amr in assetMrs)
+                                {
+                                    if (amr == null) continue;
+                                    var sm = amr.sharedMaterials;
+                                    int n = sm?.Length ?? 0;
+                                    for (int k = 0; k < n; k++)
+                                    {
+                                        var am = sm[k];
+                                        if (am == null) { MelonLoader.MelonLogger.Msg($"[MatDiag]   asset-mat [{k}] null"); continue; }
+                                        string asig = MaterialVariantTracker.GetTextureSig(am);
+                                        string ah = string.IsNullOrEmpty(asig) ? "(nosig)" : MaterialPathCatalog.ComputeStableHash(asig);
+                                        MelonLoader.MelonLogger.Msg($"[MatDiag]   asset-mat [{k}] name=\"{am.name}\" id={am.GetInstanceID()} hash={ah} shader={am.shader?.name ?? "null"} sig={asig?.Replace("\n",";")}");
+                                    }
+                                }
+                            }
+                            catch (Exception ex) { MelonLoader.MelonLogger.Msg($"[MatDiag] ASSET dump threw: {ex.Message}"); }
+                        }
+
                         var instance = UnityEngine.Object.Instantiate(
                             visualGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
                         try   { ExtractPartsFromInstance(instance, info); }
@@ -1150,6 +1182,10 @@ namespace BabyBlocks
 
                 if (proceduralMesh != null)
                 {
+                    // Procedural meshes are not owned by any GameObject; HideAndDontSave prevents
+                    // Resources.UnloadUnusedAssets from destroying them between frames.
+                    proceduralMesh.hideFlags = HideFlags.HideAndDontSave;
+
                     // Steal a default material from a temporary Unity sphere.
                     var tempGo  = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                     var tempMr  = tempGo.GetComponent<MeshRenderer>();
@@ -1165,6 +1201,7 @@ namespace BabyBlocks
                         localScale    = Vector3.one,
                     });
 
+                    _primitiveMeshHolder.Add(proceduralMesh);
                     info.isLoaded  = true;
                     info.isInvalid = false;
                     return;
@@ -1184,15 +1221,18 @@ namespace BabyBlocks
                 var mr = go.GetComponent<MeshRenderer>();
                 if (mf != null && mf.sharedMesh != null)
                 {
+                    var mesh = mf.sharedMesh;
                     var part = new PropMeshPart
                     {
-                        mesh          = mf.sharedMesh,
+                        mesh          = mesh,
                         materials     = mr != null ? mr.sharedMaterials : null,
                         localPosition = Vector3.zero,
                         localRotation = Quaternion.identity,
                         localScale    = go.transform.localScale,
                     };
                     info.parts.Add(part);
+                    // Keep a managed-side reference so the Il2Cpp Mesh wrapper isn't collected.
+                    _primitiveMeshHolder.Add(mesh);
                 }
 
                 UnityEngine.Object.Destroy(go);

@@ -56,6 +56,7 @@ namespace BabyBlocks.UI
         Vector3              _grpScSnapDisplayScale;
         Vector3[]            _grpScSnapMemberScales;
         Vector3[]            _grpScSnapMemberLocalPos;
+        Vector3[]            _grpScSnapMemberWorldPos;
         float      _lastClickTime  = -1f;
         int        _lastClickField = -1;
 
@@ -1418,8 +1419,8 @@ namespace BabyBlocks.UI
                 var r0 = workT.rotation;
                 float parsed = TryParse(ef.Component.text, GetVal(_editId));
 
-                // Snapshot before-state for group scale edits.
-                bool isGroupScaleEdit = _editId >= 3 && _editId <= 5 && grpGO != null && _target.groupId > 0;
+                // Snapshot before-state for group scale edits (root may be null for loaded groups).
+                bool isGroupScaleEdit = _editId >= 3 && _editId <= 5 && _target.groupId > 0;
                 if (isGroupScaleEdit) BeginGroupScaleSnapshot(_target.groupId, grpGO);
 
                 SetVal(_editId, parsed, clampMax: _editId < 15);
@@ -1516,7 +1517,11 @@ namespace BabyBlocks.UI
                 float stuckMoved = mp.x - _dragStartMx;
                 if (Mathf.Abs(stuckMoved) >= 3f)
                 {
-                    if (grpGO == null)
+                    if (_dragId >= 3 && _dragId <= 5 && _grpScSnapGroupId > 0)
+                    {
+                        CommitGroupScaleSnapshot();
+                    }
+                    else if (grpGO == null)
                     {
                         LevelEditorHistory.PushTransform(_target, _dragPos0, _dragScale0, _dragRot0);
                         if (_target.netId != 0)
@@ -1563,8 +1568,8 @@ namespace BabyBlocks.UI
                     _dragScale0    = workT.localScale;
                     _dragRot0      = workT.rotation;
                     _dragRot0Euler = workT.eulerAngles;
-                    // Snapshot before-state for group scale drags.
-                    if (clickedField >= 3 && clickedField <= 5 && grpGO != null && _target?.groupId > 0)
+                    // Snapshot before-state for group scale drags (root may be null for loaded groups).
+                    if (clickedField >= 3 && clickedField <= 5 && _target?.groupId > 0)
                         BeginGroupScaleSnapshot(_target.groupId, grpGO);
                     else
                         _grpScSnapGroupId = 0;
@@ -1677,7 +1682,7 @@ namespace BabyBlocks.UI
             var t = grpGO != null ? grpGO.transform : _target.transform;
             // Use hat offsets when in Hat mode AND head mode; grab offsets otherwise.
             bool useHat = _target.physicsMode == PhysicsMode.Hat && _hatModeIsHead;
-            // For groups: read display scale rather than groupRoot.localScale (which is always 1,1,1).
+            // For groups: read display scale (== groupRoot.localScale) rather than a member's localScale.
             var grpDispScale = (grpGO != null && _target.groupId > 0)
                 ? GroupManager.GetGroupDisplayScale(_target.groupId) : (Vector3?)null;
             return i switch
@@ -1713,31 +1718,59 @@ namespace BabyBlocks.UI
                 case 3:
                     if (grpGO != null && _target.groupId > 0)
                     {
-                        var ds = GroupManager.GetGroupDisplayScale(_target.groupId);
-                        float r = ds.x > 0.0001f ? v / ds.x : 1f;
-                        ApplyGroupScaleRatio(_target.groupId, new Vector3(r, 1f, 1f));
-                        GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(v, ds.y, ds.z));
+                        // Use snapshot start values so repeated SetVal calls during drag don't compound the orbit.
+                        bool hasSnap3 = _grpScSnapGroupId == _target.groupId;
+                        var  startDs3 = hasSnap3 ? _grpScSnapDisplayScale : GroupManager.GetGroupDisplayScale(_target.groupId);
+                        float r3      = startDs3.x > 0.0001f ? v / startDs3.x : 1f;
+                        var pivot3    = GizmoRenderer.PivotPosition;
+                        var rot3      = grpGO.transform.rotation;
+                        var startPos3 = hasSnap3 ? _grpScSnapRootPos : grpGO.transform.position;
+                        var localRel3 = Quaternion.Inverse(rot3) * (startPos3 - pivot3);
+                        var curDs3    = GroupManager.GetGroupDisplayScale(_target.groupId);
+                        GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(v, curDs3.y, curDs3.z));
+                        localRel3.x  *= r3;
+                        grpGO.transform.position = pivot3 + rot3 * localRel3;
                     }
+                    else if (_target.groupId > 0 && _grpScSnapGroupId == _target.groupId)
+                        ApplyMemberPathScale(0, v);
                     else t.localScale = new Vector3(v, t.localScale.y, t.localScale.z);
                     break;
                 case 4:
                     if (grpGO != null && _target.groupId > 0)
                     {
-                        var ds = GroupManager.GetGroupDisplayScale(_target.groupId);
-                        float r = ds.y > 0.0001f ? v / ds.y : 1f;
-                        ApplyGroupScaleRatio(_target.groupId, new Vector3(1f, r, 1f));
-                        GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(ds.x, v, ds.z));
+                        bool hasSnap4 = _grpScSnapGroupId == _target.groupId;
+                        var  startDs4 = hasSnap4 ? _grpScSnapDisplayScale : GroupManager.GetGroupDisplayScale(_target.groupId);
+                        float r4      = startDs4.y > 0.0001f ? v / startDs4.y : 1f;
+                        var pivot4    = GizmoRenderer.PivotPosition;
+                        var rot4      = grpGO.transform.rotation;
+                        var startPos4 = hasSnap4 ? _grpScSnapRootPos : grpGO.transform.position;
+                        var localRel4 = Quaternion.Inverse(rot4) * (startPos4 - pivot4);
+                        var curDs4    = GroupManager.GetGroupDisplayScale(_target.groupId);
+                        GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(curDs4.x, v, curDs4.z));
+                        localRel4.y  *= r4;
+                        grpGO.transform.position = pivot4 + rot4 * localRel4;
                     }
+                    else if (_target.groupId > 0 && _grpScSnapGroupId == _target.groupId)
+                        ApplyMemberPathScale(1, v);
                     else t.localScale = new Vector3(t.localScale.x, v, t.localScale.z);
                     break;
                 case 5:
                     if (grpGO != null && _target.groupId > 0)
                     {
-                        var ds = GroupManager.GetGroupDisplayScale(_target.groupId);
-                        float r = ds.z > 0.0001f ? v / ds.z : 1f;
-                        ApplyGroupScaleRatio(_target.groupId, new Vector3(1f, 1f, r));
-                        GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(ds.x, ds.y, v));
+                        bool hasSnap5 = _grpScSnapGroupId == _target.groupId;
+                        var  startDs5 = hasSnap5 ? _grpScSnapDisplayScale : GroupManager.GetGroupDisplayScale(_target.groupId);
+                        float r5      = startDs5.z > 0.0001f ? v / startDs5.z : 1f;
+                        var pivot5    = GizmoRenderer.PivotPosition;
+                        var rot5      = grpGO.transform.rotation;
+                        var startPos5 = hasSnap5 ? _grpScSnapRootPos : grpGO.transform.position;
+                        var localRel5 = Quaternion.Inverse(rot5) * (startPos5 - pivot5);
+                        var curDs5    = GroupManager.GetGroupDisplayScale(_target.groupId);
+                        GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(curDs5.x, curDs5.y, v));
+                        localRel5.z  *= r5;
+                        grpGO.transform.position = pivot5 + rot5 * localRel5;
                     }
+                    else if (_target.groupId > 0 && _grpScSnapGroupId == _target.groupId)
+                        ApplyMemberPathScale(2, v);
                     else t.localScale = new Vector3(t.localScale.x, t.localScale.y, v);
                     break;
                 case 6: { var e = t.eulerAngles; t.eulerAngles = new Vector3(v, e.y, e.z);  } break;
@@ -1780,9 +1813,10 @@ namespace BabyBlocks.UI
             var members = LevelEditorManager.Instance?.Objects
                 .Where(o => o != null && o.groupId == groupId).ToArray()
                 ?? System.Array.Empty<LevelEditorObject>();
-            _grpScSnapMembers      = members;
+            _grpScSnapMembers        = members;
             _grpScSnapMemberScales   = members.Select(m => m.transform.localScale).ToArray();
             _grpScSnapMemberLocalPos = members.Select(m => m.transform.localPosition).ToArray();
+            _grpScSnapMemberWorldPos = members.Select(m => m.transform.position).ToArray();
         }
 
         // Commits the snapshot as an undo entry and networks the changes to peers.
@@ -1798,20 +1832,6 @@ namespace BabyBlocks.UI
                         BabyBlocks.Networking.ModNetworking.SendPropTransform(
                             m.netId, m.transform.position, m.transform.rotation, m.transform.localScale, reliable: true);
             _grpScSnapGroupId = 0;
-        }
-
-        // Multiplies each group member's localScale and localPosition by the given ratio vector.
-        // Members are children of the group root (identity scale), so this avoids the Unity
-        // shear artifact that occurs when a parent has non-uniform scale and children have rotations.
-        void ApplyGroupScaleRatio(int groupId, Vector3 ratio)
-        {
-            if (LevelEditorManager.Instance == null) return;
-            foreach (var m in LevelEditorManager.Instance.Objects)
-            {
-                if (m == null || m.groupId != groupId) continue;
-                m.transform.localScale    = Vector3.Scale(m.transform.localScale,    ratio);
-                m.transform.localPosition = Vector3.Scale(m.transform.localPosition, ratio);
-            }
         }
 
         void SetOffsetPos(float v, int axis)
@@ -1862,9 +1882,71 @@ namespace BabyBlocks.UI
             if (_target == null) return;
             var grpGO = GetGroupRoot();
             var workT = grpGO != null ? grpGO.transform : _target.transform;
-            workT.position   = pos;
-            workT.localScale = scale;
-            workT.rotation   = rot;
+            workT.position = pos;
+            workT.rotation = rot;
+            if (grpGO != null && _target.groupId > 0)
+            {
+                GroupManager.SetGroupDisplayScale(_target.groupId, scale);
+            }
+            else if (_target.groupId > 0 && _grpScSnapGroupId == _target.groupId
+                     && _grpScSnapMembers != null && _grpScSnapMemberScales != null
+                     && _grpScSnapMemberLocalPos != null)
+            {
+                // No root: restore all members from snapshot so the abort is clean.
+                for (int mi = 0; mi < _grpScSnapMembers.Length; mi++)
+                {
+                    var m = _grpScSnapMembers[mi];
+                    if (m == null) continue;
+                    m.transform.localScale    = _grpScSnapMemberScales[mi];
+                    m.transform.localPosition = _grpScSnapMemberLocalPos[mi];
+                }
+            }
+            else
+            {
+                workT.localScale = scale;
+            }
+        }
+
+        // Mirror of the gizmo's member path for groups with no group root (e.g. loaded static groups).
+        // All members are scaled by the same ratio (newValue / target's snapshot value for that axis)
+        // and their world positions are orbited around the gizmo pivot, exactly as ApplyScaleToDragObjects does.
+        void ApplyMemberPathScale(int axis, float v)
+        {
+            if (_grpScSnapMembers == null || _grpScSnapMemberScales == null
+                || _grpScSnapMemberWorldPos == null) return;
+
+            // Find target's start scale for this axis to compute the ratio.
+            int targetIdx = -1;
+            for (int mi = 0; mi < _grpScSnapMembers.Length; mi++)
+                if (_grpScSnapMembers[mi] == _target) { targetIdx = mi; break; }
+
+            float startAxis = 1f;
+            if (targetIdx >= 0)
+            {
+                var ts = _grpScSnapMemberScales[targetIdx];
+                startAxis = axis == 0 ? ts.x : axis == 1 ? ts.y : ts.z;
+            }
+            float ratio = startAxis > 0.0001f ? v / startAxis : 1f;
+            var pivot = GizmoRenderer.PivotPosition;
+
+            for (int mi = 0; mi < _grpScSnapMembers.Length; mi++)
+            {
+                var m = _grpScSnapMembers[mi];
+                if (m == null) continue;
+                // Scale
+                var s = _grpScSnapMemberScales[mi];
+                m.transform.localScale = axis == 0 ? new Vector3(s.x * ratio, s.y, s.z)
+                                       : axis == 1 ? new Vector3(s.x, s.y * ratio, s.z)
+                                                   : new Vector3(s.x, s.y, s.z * ratio);
+                // Orbit position around pivot (world-aligned, matches gizmo world-mode member path)
+                var startWorldPos = mi < _grpScSnapMemberWorldPos.Length
+                    ? _grpScSnapMemberWorldPos[mi] : m.transform.position;
+                var rel = startWorldPos - pivot;
+                if (axis == 0) rel.x *= ratio;
+                else if (axis == 1) rel.y *= ratio;
+                else rel.z *= ratio;
+                m.transform.position = pivot + rel;
+            }
         }
 
         static float FieldSens(int i) =>

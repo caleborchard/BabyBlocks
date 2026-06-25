@@ -397,13 +397,22 @@ namespace BabyBlocks
                 {
                     var construction = MaterialConstructionLibrary.FindById(materialConstructionId);
                     if (construction != null)
+                    {
+                        MelonLogger.Msg($"[SaveLoad] Applying construction id={materialConstructionId} name=\"{construction.name}\" matName=\"{construction.materialName}\" to {leo.addressableKey}");
                         MaterialConstructionPanel.ApplyToInstance(leo, construction, pushHistory: false);
+                    }
                     else
                     {
                         MelonLogger.Warning($"[SaveLoad] Material construction {materialConstructionId} not found for {leo.addressableKey}");
                         leo.materialConstructionId = -1;
                     }
                 }
+                else if (propId.IndexOf("Stone", System.StringComparison.OrdinalIgnoreCase) >= 0
+                      || propId.IndexOf("Drystone", System.StringComparison.OrdinalIgnoreCase) >= 0
+                      || propId.IndexOf("Wall", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    MelonLogger.Msg($"[SaveLoad] No construction (id={materialConstructionId}) for {propId}");}
+
 
                 leo.sunglassesNeeded  = (instanceFlags & 0x01) != 0;
                 leo.playerPassthrough = (instanceFlags & 0x02) != 0;

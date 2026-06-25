@@ -14,7 +14,7 @@ namespace BabyBlocks
 {
     public class Core : MelonMod
     {
-        public static bool DebugMode = false; // for categorizing props and materials in the library
+        public static bool DebugMode = true; // for categorizing props and materials in the library
         public static MelonLogger.Instance Logger { get; private set; }
 
         static MelonPreferences_Category _prefs;
@@ -215,29 +215,9 @@ namespace BabyBlocks
         // catch it once and stop calling in so the rest of the editor keeps working.
         static bool _networkingDisabled;
 
-        // One-shot eager init so Custom Levels can load GPUI props without the
-        // editor having been opened first. Mirrors what ModNetworking does on connect.
-        static bool _startupEditorInitDone;
-
-        static void TryStartupEditorInit()
-        {
-            if (_startupEditorInitDone) return;
-            var loaded = PropLibrary.TryGetLoadedProps();
-            if (loaded == null || loaded.Length == 0) return;
-
-            _startupEditorInitDone = true;
-            LevelEditor.EnsureManager();
-            if (GpuiPropScanner.GpuiScannedNames.Count == 0)
-            {
-                GpuiPropScanner.ScanGpuiProps();
-                MaterialCatalog.InvalidateMaterialSources();
-            }
-        }
-
         public override void OnUpdate()
         {
             UI.CustomLevelsMenu.Update();
-            TryStartupEditorInit();
             WatchSomebodyLoading();
             WatchMenuTeleporting();
 
