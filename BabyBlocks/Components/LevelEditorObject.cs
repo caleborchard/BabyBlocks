@@ -1,4 +1,5 @@
 using System;
+using BabyBlocks.Networking;
 using Il2Cpp;
 using UnityEngine;
 
@@ -52,6 +53,11 @@ namespace BabyBlocks
         // Per-instance overrides independent of any material construction entry.
         public bool sunglassesNeeded;   // adds BbSunglassesChecker (prop invisible without sunglasses hat)
         public bool playerPassthrough;  // makes all colliders triggers so player walks through the prop
+        public bool freezeUntilHit;     // Rigidbody stays kinematic until something collides with it
+
+        // Mirrors the surface tag applied via ApplySurfaceType so the UI can read it back
+        // without relying on gameObject.tag (Il2Cpp can return stale cached values).
+        public string surfaceTypeTag = "";
 
         // Material tint; (255,255,255) = no tint (white).
         public Vector3 materialTint = new Vector3(255f, 255f, 255f);
@@ -66,5 +72,17 @@ namespace BabyBlocks
         // same logical prop so transform updates apply in-place instead of
         // respawning a duplicate. 0 = not network-tracked.
         public ulong netId = 0;
+
+        // Fired by Unity when this Rigidbody prop is struck by another physics object.
+        // Handles the freezeUntilHit gameplay unfreeze; no-ops for all other props.
+        public void OnCollisionEnter(Collision collision)
+        {
+            if (!freezeUntilHit || !PhysicsObjectManager.HasFreezeUntilHit(this)) return;
+            if (collision.collider.gameObject.layer != LayerCache.RagdollLayer) return;
+            PhysicsObjectManager.OnFreezeUntilHitTriggered(this);
+            PhysicsObjectManager.UnfreezeHitProp(this, collision);
+            if (netId != 0)
+                ModNetworking.SendPropFreezeReleased(netId);
+        }
     }
 }

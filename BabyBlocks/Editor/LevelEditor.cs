@@ -81,6 +81,7 @@ namespace BabyBlocks
             public PhysicsMode physicsMode;
             public bool sunglassesNeeded;
             public bool playerPassthrough;
+            public bool freezeUntilHit;
         }
 
         static readonly List<CopyEntry> _copyEntries = new();
@@ -1323,6 +1324,7 @@ namespace BabyBlocks
                     physicsMode       = obj.physicsMode,
                     sunglassesNeeded  = obj.sunglassesNeeded,
                     playerPassthrough = obj.playerPassthrough,
+                    freezeUntilHit    = obj.freezeUntilHit,
                 };
 
                 if (!entry.isAddressable)
@@ -1392,6 +1394,7 @@ namespace BabyBlocks
 
                 obj.sunglassesNeeded  = entry.sunglassesNeeded;
                 obj.playerPassthrough = entry.playerPassthrough;
+                obj.freezeUntilHit    = entry.freezeUntilHit;
                 if (entry.sunglassesNeeded && obj.GetComponent<BbSunglassesChecker>() == null)
                     obj.gameObject.AddComponent<BbSunglassesChecker>();
                 if (entry.playerPassthrough)

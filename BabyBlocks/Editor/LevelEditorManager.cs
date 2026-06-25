@@ -189,6 +189,12 @@ namespace BabyBlocks
             leo.objectType     = "Addressable";
             leo.addressableKey = info.id;
 
+            // Mirror the metadata default so the Properties Panel can read it without
+            // relying on gameObject.tag (ApplySurfaceTypeToRoot above ran before this LEO existed).
+            string metaSurfTag = PropMetadataStore.GetSurfaceType(info.id);
+            if (!string.IsNullOrEmpty(metaSurfTag) && metaSurfTag != "Untagged")
+                leo.surfaceTypeTag = metaSurfTag;
+
             // If the native prefab already contains a Rigidbody (e.g. the Toy Wagon),
             // freeze it immediately so it doesn't fall while in editor mode. The normal
             // ExitEditorPhysicsMode path unfreezes it when gameplay starts.

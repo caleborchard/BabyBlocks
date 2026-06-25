@@ -319,7 +319,7 @@ namespace BabyBlocks
         }
 
 
-        static void LoadScreenSpaceShaders()
+        internal static void LoadScreenSpaceShaders()
         {
             try
             {

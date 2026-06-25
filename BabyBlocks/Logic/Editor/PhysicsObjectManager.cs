@@ -24,6 +24,37 @@ namespace BabyBlocks
         static readonly List<LevelEditorObject> _heldObjectsToRestore = new();
         static readonly List<Vector3> _heldScalesToRestore = new();
 
+        // Tracks LevelEditorObject GO instance IDs that are currently waiting for their
+        // first collision in gameplay ("freeze until hit" pending state).
+        // Uses a HashSet instead of a component to avoid Il2CppInterop's generic
+        // AddComponent<T>/GetComponent<T> static-constructor crash for mod-defined types
+        // (same pattern as BbHatSunglassesFlag).  OnCollisionEnter is handled directly
+        // on LevelEditorObject, which is already registered and working.
+        static readonly HashSet<int> _freezeUntilHitPending = new();
+
+        internal static bool HasFreezeUntilHit(LevelEditorObject obj)
+            => obj?.gameObject != null && _freezeUntilHitPending.Contains(obj.gameObject.GetInstanceID());
+
+        static void AddFreezeUntilHit(LevelEditorObject obj)
+        {
+            if (obj?.gameObject != null)
+                _freezeUntilHitPending.Add(obj.gameObject.GetInstanceID());
+        }
+
+        static void RemoveFreezeUntilHit(LevelEditorObject obj)
+        {
+            if (obj?.gameObject != null)
+                _freezeUntilHitPending.Remove(obj.gameObject.GetInstanceID());
+        }
+
+        // Called by LevelEditorObject.OnCollisionEnter when the prop is first hit.
+        internal static void OnFreezeUntilHitTriggered(LevelEditorObject obj)
+            => RemoveFreezeUntilHit(obj);
+
+        // Called by ModNetworking when a peer's freeze-until-hit prop was hit.
+        internal static void RemoveFreezeUntilHitForNetworkPeer(LevelEditorObject obj)
+            => RemoveFreezeUntilHit(obj);
+
         // Behaviour components disabled on keepHierarchy props when entering editor
         // mode (keyed by LEO instance ID). Re-enabled when gameplay resumes.
         static readonly Dictionary<int, List<Behaviour>> _frozenKHBehaviours = new();
@@ -283,6 +314,9 @@ namespace BabyBlocks
             if (rb == null) return;
             if (control.GetComponent<Grabable>() != null) return; // grabables manage their own kinematic state
 
+            // Props waiting for their first collision manage their own kinematic state.
+            if (HasFreezeUntilHit(obj)) return;
+
             float distSqr = (control.transform.position - playerPos).sqrMagnitude;
             bool active = distSqr <= PhysicsActiveRadiusSqr;
             if (active)
@@ -444,7 +478,19 @@ namespace BabyBlocks
                 {
                     if (IsKeepHierarchyRigidbody(obj))
                         ReEnableKeepHierarchyBehaviours(obj);
-                    FreezeRigidBodyObject(obj, false);
+                    if (obj.freezeUntilHit)
+                    {
+                        // Stay kinematic but on the dynamic layer with convex colliders so
+                        // player Rigidbodies can generate OnCollisionEnter on this LEO.
+                        obj.editorFreezeStateValid = false;
+                        SetMeshCollidersConvex(obj.gameObject, true);
+                        SetColliderLayers(obj.gameObject, LevelEditorManager.PropsDynamicLayer);
+                        AddFreezeUntilHit(obj);
+                    }
+                    else
+                    {
+                        FreezeRigidBodyObject(obj, false);
+                    }
                 }
                 obj.isPhysicsManaged = true;
             }
@@ -459,6 +505,9 @@ namespace BabyBlocks
 
             if (freeze)
             {
+                // Remove any pending freeze-until-hit watcher from a previous gameplay session.
+                RemoveFreezeUntilHit(obj);
+
                 if (!obj.editorFreezeStateValid)
                 {
                     obj.editorFreezeVelocity        = Vector3.zero;
@@ -501,6 +550,24 @@ namespace BabyBlocks
                     SetColliderLayers(obj.gameObject, LevelEditorManager.PropsDynamicLayer);
                 }
             }
+        }
+
+        // Called when a freeze-until-hit prop is struck during gameplay.
+        // collision is null for the network peer path (no collision data is sent over the wire).
+        internal static void UnfreezeHitProp(LevelEditorObject obj, Collision collision = null)
+        {
+            if (obj == null) return;
+            var rb = obj.GetComponent<Rigidbody>();
+            if (rb == null) return;
+            rb.constraints = RigidbodyConstraints.None;
+            rb.isKinematic = false;
+            rb.useGravity  = true;
+            SetMeshCollidersConvex(obj.gameObject, true);
+            SetColliderLayers(obj.gameObject, LevelEditorManager.PropsDynamicLayer);
+            // The collision was resolved against a kinematic body (infinite mass), so no impulse
+            // was transferred. Apply the impact velocity manually so the prop reacts immediately.
+            if (collision != null)
+                rb.AddForce(-collision.relativeVelocity, ForceMode.VelocityChange);
         }
 
         internal static void FreezeRigidBodyGameObject(GameObject go, bool freeze)

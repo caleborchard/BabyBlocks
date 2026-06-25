@@ -184,6 +184,7 @@ namespace BabyBlocks.UI
             if (_propertiesPanel?.UIRoot?.activeSelf == true && _propertiesPanel.Rect != null &&
                 RectTransformUtility.RectangleContainsScreenPoint(_propertiesPanel.Rect, pos, null))
                 return true;
+            if (_propertiesPanel?.IsPointerOverOpenDropdown() == true) return true;
             return false;
         }
 

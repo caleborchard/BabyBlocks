@@ -88,6 +88,9 @@ namespace BabyBlocks.UI
         Text      _sunglassesLabel;
         ButtonRef _passthroughBtn;
         Text      _passthroughLabel;
+        ButtonRef _freezeUntilHitBtn;
+        Text      _freezeUntilHitLabel;
+        GameObject _freezeUntilHitBtnGO;
 
         // Group / Ungroup button (top of panel)
         ButtonRef  _groupBtn;
@@ -238,6 +241,14 @@ namespace BabyBlocks.UI
             PropBrowserUI.ApplyButtonColors(_passthroughBtn);
             _passthroughLabel = _passthroughBtn.Component.GetComponentInChildren<Text>();
             _passthroughBtn.OnClick += TogglePassthrough;
+
+            _freezeUntilHitBtn = UIFactory.CreateButton(ContentRoot, "FreezeUntilHitBtn", "");
+            UIFactory.SetLayoutElement(_freezeUntilHitBtn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
+            PropBrowserUI.ApplyButtonColors(_freezeUntilHitBtn);
+            _freezeUntilHitLabel = _freezeUntilHitBtn.Component.GetComponentInChildren<Text>();
+            _freezeUntilHitBtn.OnClick += ToggleFreezeUntilHit;
+            _freezeUntilHitBtnGO = _freezeUntilHitBtn.Component.gameObject;
+            _freezeUntilHitBtnGO.SetActive(false);
 
             // ── Offsets (Hat / Grabable) ──────────────────────────────────────
             _offsetRoot = UIFactory.CreateUIObject("OffsetSection", ContentRoot);
@@ -668,29 +679,25 @@ namespace BabyBlocks.UI
             UIFactory.SetLayoutGroup<VerticalLayoutGroup>(_surfDDGO,
                 forceWidth: true, forceHeight: false,
                 childControlWidth: true, childControlHeight: true,
-                spacing: 0, padTop: 0, padBottom: 0, padLeft: 0, padRight: 0);
+                spacing: 1, padTop: 3, padBottom: 3, padLeft: 3, padRight: 3);
 
-            var scroll = UIFactory.CreateScrollView(_surfDDGO, "List",
-                out var surfContent, out _, new Color(0.09f, 0.09f, 0.11f));
-            UIFactory.SetLayoutElement(scroll, minHeight: 200, flexibleWidth: 9999);
-            UIFactory.SetLayoutGroup<VerticalLayoutGroup>(surfContent,
-                forceWidth: true, forceHeight: false,
-                childControlWidth: true, childControlHeight: true,
-                spacing: 1, padTop: 2, padBottom: 2, padLeft: 4, padRight: 4);
-
+            // Buttons sit directly in the dropdown (no ScrollRect) so onClick fires
+            // reliably — ScrollRect intercepts pointer-drag events and swallows clicks.
             foreach (var tag in PropMetadataEditor.KnownSurfaceTags)
             {
                 var cap   = tag;
                 string lbl = string.IsNullOrEmpty(tag) ? "(none)" : tag;
-                var btn = UIFactory.CreateButton(surfContent, $"SI_{lbl}", lbl);
+                var btn = UIFactory.CreateButton(_surfDDGO, $"SI_{lbl}", lbl);
                 UIFactory.SetLayoutElement(btn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
                 PropBrowserUI.ApplyButtonColors(btn);
                 btn.OnClick += () =>
                 {
                     var grpGO2 = GetGroupRoot();
                     if (grpGO2 != null)
+                    {
                         foreach (var m in GetGroupMembers())
                             if (m != null) PropInstanceServices.ApplySurfaceType(m, cap);
+                    }
                     else if (_target != null)
                         PropInstanceServices.ApplySurfaceType(_target, cap);
                     CloseAllDds();
@@ -708,13 +715,39 @@ namespace BabyBlocks.UI
             if (!want) return;
             _surfOpen = true;
             _surfDDGO.SetActive(true);
-            PositionDd(_surfDDGO, _surfBtn.Component.GetComponent<RectTransform>(), 200f);
+            int n = PropMetadataEditor.KnownSurfaceTags.Length;
+            float surfH = n * 24f + (n - 1) * 1f + 6f; // items + gaps + top/bottom padding
+            PositionDd(_surfDDGO, _surfBtn.Component.GetComponent<RectTransform>(), surfH);
             _surfDDGO.transform.SetAsLastSibling();
         }
 
         // ─────────────────────────────────────────────────────────────────────
         //  Dropdown helpers
         // ─────────────────────────────────────────────────────────────────────
+
+        // Returns true when the pointer is over any of our floating dropdown panels.
+        // Called by PropBrowserUI.IsPointerOverPanel so the GraphicRaycaster stays
+        // enabled even when a dropdown extends outside the PropertiesPanel rect.
+        internal bool IsPointerOverOpenDropdown()
+        {
+            var pos = Input.mousePosition;
+            if (_physOpen && _physDDGO != null)
+            {
+                var rt = _physDDGO.GetComponent<RectTransform>();
+                if (rt != null && RectTransformUtility.RectangleContainsScreenPoint(rt, pos, null)) return true;
+            }
+            if (_matOpen && _matDDGO != null)
+            {
+                var rt = _matDDGO.GetComponent<RectTransform>();
+                if (rt != null && RectTransformUtility.RectangleContainsScreenPoint(rt, pos, null)) return true;
+            }
+            if (_surfOpen && _surfDDGO != null)
+            {
+                var rt = _surfDDGO.GetComponent<RectTransform>();
+                if (rt != null && RectTransformUtility.RectangleContainsScreenPoint(rt, pos, null)) return true;
+            }
+            return false;
+        }
 
         void CloseAllDds()
         {
@@ -730,10 +763,15 @@ namespace BabyBlocks.UI
             else if (_matOpen)
                 PositionDd(_matDDGO, _matBtn.Component.GetComponent<RectTransform>(), 218f);
             else if (_surfOpen)
-                PositionDd(_surfDDGO, _surfBtn.Component.GetComponent<RectTransform>(), 200f);
+            {
+                int n2 = PropMetadataEditor.KnownSurfaceTags.Length;
+                float surfH2 = n2 * 24f + (n2 - 1) * 1f + 6f;
+                PositionDd(_surfDDGO, _surfBtn.Component.GetComponent<RectTransform>(), surfH2);
+            }
         }
 
         // Position a dropdown GO so its top-left aligns with the bottom-left of the anchor button.
+        // Flips to open upward when the dropdown would extend below the canvas bottom.
         // Uses TransformPoint→InverseTransformPoint instead of GetWorldCorners to avoid IL2CPP
         // array-marshaling issues that silently leave the corners array at zero.
         void PositionDd(GameObject dd, RectTransform anchor, float height)
@@ -743,18 +781,31 @@ namespace BabyBlocks.UI
             if (rt == null) return;
             var canvasRT = Owner.RootObject.GetComponent<RectTransform>();
             var ar = anchor.rect;
-            // Convert button BL/BR from button-local → world → canvas-local.
+            // Convert button corners from button-local → world → canvas-local.
             Vector2 blLocal = canvasRT.InverseTransformPoint(
                 anchor.TransformPoint(new Vector3(ar.xMin, ar.yMin, 0f)));
             Vector2 brLocal = canvasRT.InverseTransformPoint(
                 anchor.TransformPoint(new Vector3(ar.xMax, ar.yMin, 0f)));
+            Vector2 tlLocal = canvasRT.InverseTransformPoint(
+                anchor.TransformPoint(new Vector3(ar.xMin, ar.yMax, 0f)));
             float w = Mathf.Max(250f, brLocal.x - blLocal.x);
-            // anchor (0.5,0.5) = canvas center → anchoredPosition is canvas-local directly.
-            rt.anchorMin        = new Vector2(0.5f, 0.5f);
-            rt.anchorMax        = new Vector2(0.5f, 0.5f);
-            rt.pivot            = new Vector2(0f, 1f);   // top-left: opens downward
-            rt.sizeDelta        = new Vector2(w, height);
-            rt.anchoredPosition = blLocal;
+            float canvasBottom = -canvasRT.rect.height * 0.5f;
+
+            rt.anchorMin = new Vector2(0.5f, 0.5f);
+            rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(w, height);
+
+            if (blLocal.y - height < canvasBottom)
+            {
+                // Not enough room below — open upward from the button's top edge.
+                rt.pivot            = new Vector2(0f, 0f);  // bottom-left: opens upward
+                rt.anchoredPosition = tlLocal;
+            }
+            else
+            {
+                rt.pivot            = new Vector2(0f, 1f);  // top-left: opens downward
+                rt.anchoredPosition = blLocal;
+            }
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1190,17 +1241,17 @@ namespace BabyBlocks.UI
                 var members = GetGroupMembers();
                 if (members.Count > 1)
                 {
-                    string first  = members[0]?.gameObject.tag ?? "";
+                    string first  = members[0]?.surfaceTypeTag ?? "";
                     bool   differ = false;
                     for (int i = 1; i < members.Count; i++)
-                        if (members[i] != null && members[i].gameObject.tag != first) { differ = true; break; }
+                        if (members[i] != null && members[i].surfaceTypeTag != first) { differ = true; break; }
                     if (differ) { _surfLabel.text = "Multiple"; return; }
                     _surfLabel.text = string.IsNullOrEmpty(first) || first == "Untagged" ? "(none)" : first;
                     return;
                 }
             }
 
-            string tag = _target.gameObject.tag;
+            string tag = _target.surfaceTypeTag;
             _surfLabel.text = string.IsNullOrEmpty(tag) || tag == "Untagged" ? "(none)" : tag;
         }
 
@@ -1264,6 +1315,20 @@ namespace BabyBlocks.UI
             RefreshFlagLabels();
         }
 
+        void ToggleFreezeUntilHit()
+        {
+            if (_target == null) return;
+            bool newVal = !_target.freezeUntilHit;
+            foreach (var m in GetGroupMembers())
+            {
+                if (m == null || m.physicsMode != PhysicsMode.Rigidbody) continue;
+                m.freezeUntilHit = newVal;
+                if (m.netId != 0)
+                    BabyBlocks.Networking.ModNetworking.SendPropFlagsApplied(m.netId, newVal);
+            }
+            RefreshFlagLabels();
+        }
+
         void RefreshFlagLabels()
         {
             if (_target == null) return;
@@ -1298,6 +1363,24 @@ namespace BabyBlocks.UI
                 _passthroughLabel.text = (isGroup && passthroughDiffer)
                     ? "[---] No Player Collision"
                     : (firstPassthrough ? "[ON]  " : "[OFF] ") + "No Player Collision";
+
+            // Freeze Until Hit — only relevant for Rigidbody props; hide for other modes.
+            bool isRigidbody = _target.physicsMode == PhysicsMode.Rigidbody;
+            if (_freezeUntilHitBtnGO != null && _freezeUntilHitBtnGO.activeSelf != isRigidbody)
+                _freezeUntilHitBtnGO.SetActive(isRigidbody);
+
+            if (isRigidbody && _freezeUntilHitLabel != null)
+            {
+                bool firstFrozen = members[0]?.freezeUntilHit ?? false;
+                bool frozenDiffer = false;
+                if (isGroup)
+                    for (int i = 1; i < members.Count; i++)
+                        if (members[i] != null && members[i].physicsMode == PhysicsMode.Rigidbody && members[i].freezeUntilHit != firstFrozen)
+                        { frozenDiffer = true; break; }
+                _freezeUntilHitLabel.text = (isGroup && frozenDiffer)
+                    ? "[---] Freeze Until Hit"
+                    : (firstFrozen ? "[ON]  " : "[OFF] ") + "Freeze Until Hit";
+            }
         }
 
         // ─────────────────────────────────────────────────────────────────────

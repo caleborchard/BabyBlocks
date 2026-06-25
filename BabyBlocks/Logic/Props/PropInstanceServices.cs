@@ -116,9 +116,10 @@ namespace BabyBlocks
         public static void ApplySurfaceType(LevelEditorObject leo, string surfaceTag)
         {
             if (leo == null) return;
+            string tag = string.IsNullOrEmpty(surfaceTag) ? "Untagged" : surfaceTag;
+            leo.surfaceTypeTag = tag;
             try
             {
-                string tag = string.IsNullOrEmpty(surfaceTag) ? "Untagged" : surfaceTag;
                 SetTagSafe(leo.gameObject, tag);
                 foreach (var col in leo.GetComponentsInChildren<Collider>(true))
                 {
@@ -138,6 +139,8 @@ namespace BabyBlocks
             {
                 string tag = string.IsNullOrEmpty(surfaceTag) ? "Untagged" : surfaceTag;
                 SetTagSafe(root, tag);
+                var leo = root.GetComponent<LevelEditorObject>();
+                if (leo != null) leo.surfaceTypeTag = tag;
                 foreach (var col in root.GetComponentsInChildren<Collider>(true))
                 {
                     if (col != null) SetTagSafe(col.gameObject, tag);
@@ -151,7 +154,8 @@ namespace BabyBlocks
 
         static void SetTagSafe(GameObject go, string tag)
         {
-            try { go.tag = tag; } catch { }
+            try { go.tag = tag; }
+            catch (Exception e) { MelonLogger.Warning($"[BabyBlocks][SetTag] Failed to set '{tag}' on '{go?.name}': {e.Message}"); }
         }
 
         public static void ApplyDisabledRenderersToRoot(string propId, GameObject root)

@@ -407,6 +407,7 @@ namespace BabyBlocks
 
                 leo.sunglassesNeeded  = (instanceFlags & 0x01) != 0;
                 leo.playerPassthrough = (instanceFlags & 0x02) != 0;
+                leo.freezeUntilHit    = (instanceFlags & 0x08) != 0;
                 if (leo.sunglassesNeeded && leo.GetComponent<BbSunglassesChecker>() == null)
                     leo.gameObject.AddComponent<BbSunglassesChecker>();
                 if (leo.playerPassthrough)
@@ -542,7 +543,7 @@ namespace BabyBlocks
                     hatOffsetPos     = leo.hatOffsetPos,
                     hatOffsetRot     = leo.hatOffsetRot,
                     materialConstructionId = leo.materialConstructionId,
-                    instanceFlags = (byte)((leo.sunglassesNeeded ? 0x01 : 0) | (leo.playerPassthrough ? 0x02 : 0) | (BbHatSunglassesFlag.Has(leo) ? 0x04 : 0)),
+                    instanceFlags = (byte)((leo.sunglassesNeeded ? 0x01 : 0) | (leo.playerPassthrough ? 0x02 : 0) | (BbHatSunglassesFlag.Has(leo) ? 0x04 : 0) | (leo.freezeUntilHit ? 0x08 : 0)),
                     materialTint  = leo.materialTint,
                 });
             }

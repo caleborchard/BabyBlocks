@@ -33,6 +33,8 @@ namespace BabyBlocks.Networking
         private const byte LevelTransferRequestMarker = 0xC1; // a peer is asking for the current level
         private const byte LevelTransferDataMarker = 0xC2; // level payload (BBB without baked data) in response
         private const byte TintAppliedMarker = 0xC3; // a peer applied a material tint to a networked prop
+        private const byte PropFlagsAppliedMarker = 0xC4; // a peer toggled per-instance flags (e.g. freezeUntilHit) on a networked prop
+        private const byte PropFreezeReleasedMarker = 0xC5; // a peer's freeze-until-hit prop was just hit and went dynamic
         private const float AnnounceIntervalSeconds = 5f;
         private const float FreecamSendIntervalSeconds = 0.15f;
 
@@ -638,6 +640,14 @@ namespace BabyBlocks.Networking
                     HandleTintApplied(senderUuid, payload);
                     break;
 
+                case PropFlagsAppliedMarker:
+                    HandlePropFlagsApplied(senderUuid, payload);
+                    break;
+
+                case PropFreezeReleasedMarker:
+                    HandlePropFreezeReleased(senderUuid, payload);
+                    break;
+
                 case LevelClearedMarker:
                     HandleLevelCleared(senderUuid, payload);
                     break;
@@ -1238,6 +1248,89 @@ namespace BabyBlocks.Networking
             catch (Exception ex)
             {
                 MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleTintApplied failed: {ex.Message}");
+            }
+        }
+
+        // Payload layout: [marker][netId:ulong LE][flags:byte]
+        // flags bit 0x01 = freezeUntilHit
+        public static void SendPropFlagsApplied(ulong netId, bool freezeUntilHit)
+        {
+            if (_channel == null || netId == 0) return;
+            try
+            {
+                var payload = new byte[1 + 8 + 1];
+                int o = 0;
+                payload[o++] = PropFlagsAppliedMarker;
+                WriteULong(payload, ref o, netId);
+                payload[o] = (byte)(freezeUntilHit ? 0x01 : 0);
+                ChannelSend(payload, reliable: true);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendPropFlagsApplied failed: {ex.Message}");
+            }
+        }
+
+        private static void HandlePropFlagsApplied(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                int o = 1;
+                ulong netId = ReadULong(payload, ref o);
+                byte flags = payload[o];
+
+                if (!_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
+                {
+                    _networkedObjects.Remove(netId);
+                    return;
+                }
+
+                obj.freezeUntilHit = (flags & 0x01) != 0;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandlePropFlagsApplied failed: {ex.Message}");
+            }
+        }
+
+        // Payload layout: [marker][netId:ulong LE]
+        public static void SendPropFreezeReleased(ulong netId)
+        {
+            if (_channel == null || netId == 0) return;
+            try
+            {
+                var payload = new byte[1 + 8];
+                int o = 0;
+                payload[o++] = PropFreezeReleasedMarker;
+                WriteULong(payload, ref o, netId);
+                ChannelSend(payload, reliable: true);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendPropFreezeReleased failed: {ex.Message}");
+            }
+        }
+
+        private static void HandlePropFreezeReleased(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                int o = 1;
+                ulong netId = ReadULong(payload, ref o);
+
+                if (!_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
+                {
+                    _networkedObjects.Remove(netId);
+                    return;
+                }
+
+                // Remove the local watcher and unfreeze; the remote peer already triggered it.
+                PhysicsObjectManager.RemoveFreezeUntilHitForNetworkPeer(obj);
+                PhysicsObjectManager.UnfreezeHitProp(obj);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandlePropFreezeReleased failed: {ex.Message}");
             }
         }
 

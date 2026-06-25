@@ -677,6 +677,13 @@
 		</Reference>
 	</ItemGroup>
 
+	<ItemGroup>
+		<Reference Include="BabyStepsMenuLib">
+			<HintPath>C:\Program Files (x86)\Steam\steamapps\common\Baby Steps\Mods\BabyStepsMenuLib.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
+	</ItemGroup>
+
 	<!-- UniverseLib ships in UserLibs on some MelonLoader versions, Mods on others. -->
 	<Choose>
 		<When Condition="Exists('$(RetailGameDir)\UserLibs\UniverseLib.ML.IL2CPP.Interop.dll')">
@@ -749,6 +756,7 @@
 		<Compile Include="UI\FileBrowserPanel.cs" />
 		<Compile Include="UI\HatPreviewRenderer.cs" />
 		<Compile Include="UI\PropertiesPanel.cs" />
+		<Compile Include="UI\CustomLevelsMenu.cs" />
 		<Compile Include="UI\SaveLoadWindow.cs" />
 		<Compile Include="UI\GuiStyleHelpers.cs" />
 		<Compile Include="UI\PropPalette.cs" />
