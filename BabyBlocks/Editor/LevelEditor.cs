@@ -146,6 +146,17 @@ namespace BabyBlocks
 
         public static void HideGizmo() => GizmoRenderer.SetActive(false);
 
+        public static void SelectAll()
+        {
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null) return;
+            _selection.Clear();
+            foreach (var leo in mgr.Objects)
+                if (leo != null) _selection.Add(leo);
+            selectedObject = _selection.Count > 0 ? _selection[_selection.Count - 1] : null;
+            if (_selection.Count > 0 && !GizmoRenderer.IsReady) GizmoRenderer.Init();
+        }
+
         public static void Select(LevelEditorObject obj)
         {
             _selection.Clear();

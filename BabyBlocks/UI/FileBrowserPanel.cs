@@ -18,7 +18,7 @@ namespace BabyBlocks.UI
             Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "levels");
 
         public static FileBrowserPanel Instance { get; private set; }
-        internal bool IsTypingInUI => _nameInput?.Component?.isFocused == true;
+        internal bool IsTypingInUI => _nameInputActive;
 
         public override string  Name             => "Level Files";
         public override int     MinWidth         => 360;
@@ -40,6 +40,15 @@ namespace BabyBlocks.UI
         const float ConfirmTimeout = 3f;
         const float StatusDuration = 5f;
 
+        // FileSystemWatcher monitors LevelsDir while the panel is open so a newly
+        // dragged-in .bbb file shows up without requiring a reopen.
+        FileSystemWatcher _watcher;
+        volatile bool     _pendingRefresh;
+
+        // Explicit focus tracking for the name input — same pattern as the search bar.
+        // Unity's isFocused and the EventSystem are unreliable in the Il2Cpp context.
+        bool _nameInputActive;
+
         public FileBrowserPanel(UIBase owner) : base(owner)
         {
             Instance = this;
@@ -54,18 +63,81 @@ namespace BabyBlocks.UI
             Instance._confirmPath = null;
             Instance.Refresh();
             Instance.UIRoot.SetActive(true);
+            Instance.StartWatcher();
         }
 
         public static void ClosePanel()
         {
             if (Instance == null) return;
+            Instance.StopWatcher();
             Instance.UIRoot.SetActive(false);
+        }
+
+        void StartWatcher()
+        {
+            StopWatcher();
+            try
+            {
+                Directory.CreateDirectory(LevelsDir);
+                _watcher = new FileSystemWatcher(LevelsDir, "*.bbb")
+                {
+                    NotifyFilter        = NotifyFilters.FileName,
+                    EnableRaisingEvents = true,
+                };
+                _watcher.Created += (_, _) => _pendingRefresh = true;
+                _watcher.Renamed += (_, _) => _pendingRefresh = true;
+                _watcher.Deleted += (_, _) => _pendingRefresh = true;
+            }
+            catch { }
+        }
+
+        void StopWatcher()
+        {
+            if (_watcher == null) return;
+            _watcher.EnableRaisingEvents = false;
+            _watcher.Dispose();
+            _watcher = null;
         }
 
         // Called from PropBrowserUI.OnUpdate every frame while panel is open.
         public void Tick()
         {
             if (UIRoot == null || !UIRoot.activeSelf) return;
+
+            // Refresh triggered by FileSystemWatcher (runs on a background thread — flag
+            // is read here on the main thread to rebuild the list safely).
+            if (_pendingRefresh)
+            {
+                _pendingRefresh = false;
+                RebuildFileList();
+            }
+
+            // Track name-input focus explicitly via mouse clicks (same pattern as the
+            // search bar) — isFocused / EventSystem are unreliable under Il2Cpp.
+            if (_nameInput?.Component != null)
+            {
+                if (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1))
+                {
+                    var rt = _nameInput.Component.GetComponent<RectTransform>();
+                    bool onField = rt != null && RectTransformUtility.RectangleContainsScreenPoint(rt, Input.mousePosition, null);
+                    if (onField)
+                        _nameInputActive = true;
+                    else if (_nameInputActive)
+                    {
+                        _nameInputActive = false;
+                        _nameInput.Component.DeactivateInputField();
+                        UnityEngine.EventSystems.EventSystem.current?.SetSelectedGameObject(null);
+                        UniversalUI.EventSys?.SetSelectedGameObject(null);
+                    }
+                }
+                // If Unity re-focused the field without an explicit user click, force it back out.
+                if (!_nameInputActive && _nameInput.Component.isFocused)
+                {
+                    _nameInput.Component.DeactivateInputField();
+                    UnityEngine.EventSystems.EventSystem.current?.SetSelectedGameObject(null);
+                    UniversalUI.EventSys?.SetSelectedGameObject(null);
+                }
+            }
 
             // Expire pending confirmation after timeout
             if (_confirmPath != null && Time.realtimeSinceStartup - _confirmTime > ConfirmTimeout)

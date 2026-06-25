@@ -32,6 +32,7 @@ namespace BabyBlocks.Networking
         private const byte BaseMapStateMarker = 0xC0; // a peer toggled the Base Map on/off
         private const byte LevelTransferRequestMarker = 0xC1; // a peer is asking for the current level
         private const byte LevelTransferDataMarker = 0xC2; // level payload (BBB without baked data) in response
+        private const byte TintAppliedMarker = 0xC3; // a peer applied a material tint to a networked prop
         private const float AnnounceIntervalSeconds = 5f;
         private const float FreecamSendIntervalSeconds = 0.15f;
 
@@ -587,7 +588,7 @@ namespace BabyBlocks.Networking
                 byte marker = payload[0];
                 if (marker == PropPlacedMarker   || marker == PropDeletedMarker ||
                     marker == LevelClearedMarker  || marker == MaterialAppliedMarker ||
-                    marker == GroupSyncMarker)
+                    marker == TintAppliedMarker   || marker == GroupSyncMarker)
                 {
                     _bufferedLivePackets.Add((senderUuid, payload));
                     return;
@@ -631,6 +632,10 @@ namespace BabyBlocks.Networking
 
                 case MaterialAppliedMarker:
                     HandleMaterialApplied(senderUuid, payload);
+                    break;
+
+                case TintAppliedMarker:
+                    HandleTintApplied(senderUuid, payload);
                     break;
 
                 case LevelClearedMarker:
@@ -1190,6 +1195,49 @@ namespace BabyBlocks.Networking
             catch (Exception ex)
             {
                 MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleMaterialApplied failed: {ex.Message}");
+            }
+        }
+
+        // Payload layout: [marker][netId:ulong LE][r:byte][g:byte][b:byte]
+        public static void SendTintApplied(ulong netId, Vector3 tint)
+        {
+            if (_channel == null || netId == 0) return;
+            try
+            {
+                var payload = new byte[1 + 8 + 3];
+                int o = 0;
+                payload[o++] = TintAppliedMarker;
+                WriteULong(payload, ref o, netId);
+                payload[o++] = (byte)UnityEngine.Mathf.Clamp(UnityEngine.Mathf.RoundToInt(tint.x), 0, 255);
+                payload[o++] = (byte)UnityEngine.Mathf.Clamp(UnityEngine.Mathf.RoundToInt(tint.y), 0, 255);
+                payload[o++] = (byte)UnityEngine.Mathf.Clamp(UnityEngine.Mathf.RoundToInt(tint.z), 0, 255);
+                ChannelSend(payload, reliable: true);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendTintApplied failed: {ex.Message}");
+            }
+        }
+
+        private static void HandleTintApplied(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                int o = 1;
+                ulong netId = ReadULong(payload, ref o);
+                var tint = new Vector3(payload[o], payload[o + 1], payload[o + 2]);
+
+                if (!_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
+                {
+                    _networkedObjects.Remove(netId);
+                    return;
+                }
+
+                PropInstanceServices.ApplyTint(obj, tint);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleTintApplied failed: {ex.Message}");
             }
         }
 

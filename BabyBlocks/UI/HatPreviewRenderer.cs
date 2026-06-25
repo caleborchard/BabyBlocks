@@ -83,6 +83,7 @@ namespace BabyBlocks.UI
                 }
             }
 
+            inst.RenderTintOverlay();
             inst._cam.Render();
             GUI.DrawTexture(contentRect, inst._rt);
         }
@@ -298,6 +299,20 @@ namespace BabyBlocks.UI
                 : new Vector4(0f, 1f, 1f, 0f);
             hairMat.SetFloat("_HatMax", amt);
             hairMat.SetVector("_HatUp", up);
+        }
+
+        void RenderTintOverlay()
+        {
+            if (_propClone == null || _target?._tintMaterial == null) return;
+            foreach (var r in _propClone.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
+                var mf = r.GetComponent<MeshFilter>();
+                if (mf?.sharedMesh == null) continue;
+                var mesh = mf.sharedMesh;
+                for (int s = 0; s < mesh.subMeshCount; s++)
+                    Graphics.DrawMesh(mesh, r.transform.localToWorldMatrix, _target._tintMaterial, r.gameObject.layer, _cam, s);
+            }
         }
 
         public void Teardown()

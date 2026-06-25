@@ -9,6 +9,110 @@ namespace BabyBlocks
     // renderers, bush colliders) onto a spawned instance's GameObject hierarchy.
     internal static class PropInstanceServices
     {
+        // --- Tint overlay (BabyBlocks/TintOverlay shader, injected from the shared bundle) ---
+
+        static readonly List<LevelEditorObject> _tintedObjects = new();
+        static Shader _overlayShader;
+
+        // Called by GizmoRenderer.LoadScreenSpaceShaders once the shared bundle is loaded.
+        // Also retroactively applies tint to any props that were loaded before the shader
+        // was available (e.g. level loaded before the first prop was selected/gizmo inited).
+        internal static void SetTintShader(Shader s)
+        {
+            _overlayShader = s;
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null) return;
+            foreach (var leo in mgr.Objects)
+            {
+                if (leo == null || leo._tintMaterial != null) continue;
+                var t = leo.materialTint;
+                if (!Mathf.Approximately(t.x, 255f) || !Mathf.Approximately(t.y, 255f) || !Mathf.Approximately(t.z, 255f))
+                    ApplyTint(leo, t);
+            }
+        }
+
+        // Called from Core.OnUpdate — submits DrawMesh calls for every tinted prop.
+        // Graphics.DrawMesh is collected by Unity and rendered at the correct point
+        // in the frame (queue 2999 = after all opaques, before transparents).
+        public static void RenderTints()
+        {
+            if (_tintedObjects.Count == 0) return;
+            for (int idx = _tintedObjects.Count - 1; idx >= 0; idx--)
+            {
+                var leo = _tintedObjects[idx];
+                if (leo == null || leo._tintMaterial == null || leo._tintRenderers == null)
+                {
+                    _tintedObjects.RemoveAt(idx);
+                    continue;
+                }
+                foreach (var r in leo._tintRenderers)
+                {
+                    if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
+                    Mesh mesh = null;
+                    var mf = r.GetComponent<MeshFilter>();
+                    if (mf != null)
+                        mesh = mf.sharedMesh;
+                    else
+                    {
+                        var smr = r.TryCast<SkinnedMeshRenderer>();
+                        if (smr != null) mesh = smr.sharedMesh;
+                    }
+                    if (mesh == null) continue;
+                    var mat = leo._tintMaterial;
+                    int layer = r.gameObject.layer;
+                    for (int s = 0; s < mesh.subMeshCount; s++)
+                        Graphics.DrawMesh(mesh, r.transform.localToWorldMatrix, mat, layer, null, s);
+                }
+            }
+        }
+
+        // Applies a material tint (RGB 0-255) using an overlay shader via DrawMesh.
+        // The overlay shader uses Blend DstColor Zero (multiply) at queue 2999, so it
+        // composites on top of whatever the original shaders already rendered — works
+        // regardless of the original material or shader.  (255,255,255) = no tint.
+        public static void ApplyTint(LevelEditorObject leo, Vector3 tint)
+        {
+            if (leo == null) return;
+            leo.materialTint = tint;
+            bool isWhite = Mathf.Approximately(tint.x, 255f)
+                        && Mathf.Approximately(tint.y, 255f)
+                        && Mathf.Approximately(tint.z, 255f);
+
+            if (isWhite)
+            {
+                if (leo._tintMaterial != null)
+                {
+                    UnityEngine.Object.Destroy(leo._tintMaterial);
+                    leo._tintMaterial = null;
+                }
+                leo._tintRenderers = null;
+                _tintedObjects.Remove(leo);
+                return;
+            }
+
+            var shader = _overlayShader;
+            if (shader == null) return;
+
+            var color = new Color(tint.x / 255f, tint.y / 255f, tint.z / 255f, 1f);
+
+            // Create or reuse the per-prop overlay material and just update the color.
+            if (leo._tintMaterial == null)
+                leo._tintMaterial = new Material(shader);
+            leo._tintMaterial.SetColor("_TintColor", color);
+
+            // Snapshot renderers on first call (or after a reset).
+            if (leo._tintRenderers == null)
+            {
+                var rs = leo.GetComponentsInChildren<Renderer>(true);
+                leo._tintRenderers = new Renderer[rs.Length];
+                for (int i = 0; i < rs.Length; i++)
+                    leo._tintRenderers[i] = rs[i];
+
+                if (!_tintedObjects.Contains(leo))
+                    _tintedObjects.Add(leo);
+            }
+        }
+
         public static void ApplySurfaceType(LevelEditorObject leo, string surfaceTag)
         {
             if (leo == null) return;

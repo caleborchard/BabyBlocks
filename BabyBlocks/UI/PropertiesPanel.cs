@@ -31,9 +31,10 @@ namespace BabyBlocks.UI
             name = "Reset to Default",
         };
 
-        // Transform fields 0-8: pos X/Y/Z, scale X/Y/Z, rot X/Y/Z
-        // Offset fields 9-14:  offsetPos X/Y/Z, offsetRot X/Y/Z  (Hat / Grabable only)
-        readonly InputFieldRef[] _fields = new InputFieldRef[15];
+        // Transform fields 0-8:  pos X/Y/Z, scale X/Y/Z, rot X/Y/Z
+        // Offset fields  9-14:  offsetPos X/Y/Z, offsetRot X/Y/Z  (Hat / Grabable only)
+        // Tint fields   15-17:  R, G, B (0-255)
+        readonly InputFieldRef[] _fields = new InputFieldRef[18];
 
         // Drag-to-edit state
         int        _dragId     = -1;
@@ -72,6 +73,9 @@ namespace BabyBlocks.UI
         InputFieldRef _matSearch;
         GameObject    _matListContent;
         string        _matQuery = "";
+
+        // Material tint color preview (fields 15-17 live in _fields[])
+        Image _tintPreview;
 
         // Surface type dropdown
         ButtonRef  _surfBtn;
@@ -207,6 +211,9 @@ namespace BabyBlocks.UI
             _matLabel = _matBtn.Component.GetComponentInChildren<Text>();
             _matBtn.OnClick += ToggleMatDd;
             BuildMatDd();
+
+            // ── Material Tint ──────────────────────────────────────────────────
+            BuildTintSection();
 
             // ── Surface Type ───────────────────────────────────────────────────
             SectionHdr("Surface Type");
@@ -569,6 +576,88 @@ namespace BabyBlocks.UI
         }
 
         // ─────────────────────────────────────────────────────────────────────
+        //  Material tint
+        // ─────────────────────────────────────────────────────────────────────
+
+        void BuildTintSection()
+        {
+            // RGB row (reuses the same visual style as Vec3Row)
+            var row = UIFactory.CreateHorizontalGroup(ContentRoot, "TintRow",
+                false, false, true, true, spacing: 2);
+            UIFactory.SetLayoutElement(row, minHeight: 24, flexibleWidth: 9999);
+
+            var lbl = UIFactory.CreateLabel(row, "Lbl", "Tint",
+                TextAnchor.MiddleLeft, Color.white, fontSize: 13);
+            UIFactory.SetLayoutElement(lbl.gameObject, minWidth: 64, preferredWidth: 64, flexibleWidth: 0);
+
+            Color[] axCol = {
+                new Color(0.95f, 0.35f, 0.35f),
+                new Color(0.35f, 0.92f, 0.35f),
+                new Color(0.35f, 0.55f, 0.95f),
+            };
+            string[] axes = { "R", "G", "B" };
+            for (int i = 0; i < 3; i++)
+            {
+                var al = UIFactory.CreateLabel(row, $"A{axes[i]}", axes[i],
+                    TextAnchor.MiddleCenter, axCol[i], fontSize: 11);
+                UIFactory.SetLayoutElement(al.gameObject, minWidth: 12, minHeight: 22, flexibleWidth: 0);
+
+                var f = UIFactory.CreateInputField(row, $"FTint{axes[i]}", "255");
+                UIFactory.SetLayoutElement(f.Component.gameObject,
+                    flexibleWidth: 1, minHeight: 22, minWidth: 44, preferredWidth: 55);
+                f.Component.characterLimit = 3;
+                f.Component.contentType    = InputField.ContentType.IntegerNumber;
+                var csf = f.Component.GetComponent<ContentSizeFitter>();
+                if (csf != null) csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+                _fields[15 + i] = f;
+            }
+
+            // Color preview box — same height (24 px) as a standard row
+            var previewGO = UIFactory.CreateUIObject("TintPreview", ContentRoot);
+            UIFactory.SetLayoutElement(previewGO, minHeight: 24, flexibleWidth: 9999);
+            _tintPreview = previewGO.AddComponent<Image>();
+            _tintPreview.color = Color.white;
+
+            // Reset Tint button
+            var resetBtn = UIFactory.CreateButton(ContentRoot, "ResetTintBtn", "Reset Tint");
+            UIFactory.SetLayoutElement(resetBtn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
+            PropBrowserUI.ApplyButtonColors(resetBtn);
+            resetBtn.OnClick += ResetTint;
+        }
+
+        void ResetTint()
+        {
+            if (_target == null) return;
+            var white = new Vector3(255f, 255f, 255f);
+            foreach (var m in GetGroupMembers())
+                if (m != null) ApplyTint(m, white);
+            RefreshTintFields();
+        }
+
+        static void ApplyTint(LevelEditorObject leo, Vector3 tint)
+        {
+            PropInstanceServices.ApplyTint(leo, tint);
+            if (leo.netId != 0)
+                Networking.ModNetworking.SendTintApplied(leo.netId, tint);
+        }
+
+        void RefreshTintFields()
+        {
+            if (_target == null) return;
+            var tint = _target.materialTint;
+            for (int i = 0; i < 3; i++)
+            {
+                int fi = 15 + i;
+                var f = _fields[fi];
+                if (f?.Component == null || fi == _editId || fi == _dragId) continue;
+                float v = i == 0 ? tint.x : i == 1 ? tint.y : tint.z;
+                f.Component.text = Mathf.RoundToInt(Mathf.Max(0f, v)).ToString();
+            }
+            if (_tintPreview != null)
+                _tintPreview.color = new Color(tint.x / 255f, tint.y / 255f, tint.z / 255f, 1f);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
         //  Surface type dropdown
         // ─────────────────────────────────────────────────────────────────────
 
@@ -817,6 +906,7 @@ namespace BabyBlocks.UI
             RefreshTransform();
             RefreshPhysLabel();
             RefreshMatLabel();
+            RefreshTintFields();
             RefreshSurfLabel();
             RefreshFlagLabels();
             TickOffsets();
@@ -834,6 +924,7 @@ namespace BabyBlocks.UI
             RefreshTransform();
             RefreshPhysLabel();
             RefreshMatLabel();
+            RefreshTintFields();
             RefreshSurfLabel();
             RefreshFlagLabels();
             RefreshHatModeLabel();
@@ -964,7 +1055,9 @@ namespace BabyBlocks.UI
         {
             var f = _fields[i];
             if (f?.Component == null || i == _editId) return;
-            f.Component.text = v.ToString("F3", CultureInfo.InvariantCulture);
+            f.Component.text = i >= 15
+                ? Mathf.RoundToInt(Mathf.Max(0f, v)).ToString()
+                : v.ToString("F3", CultureInfo.InvariantCulture);
         }
 
         void RefreshPhysLabel()
@@ -1241,7 +1334,7 @@ namespace BabyBlocks.UI
                 bool isGroupScaleEdit = _editId >= 3 && _editId <= 5 && grpGO != null && _target.groupId > 0;
                 if (isGroupScaleEdit) BeginGroupScaleSnapshot(_target.groupId, grpGO);
 
-                SetVal(_editId, parsed);
+                SetVal(_editId, parsed, clampMax: _editId < 15);
                 if (_editId < 3)
                 {
                     var mgr = LevelEditorManager.Instance;
@@ -1260,6 +1353,12 @@ namespace BabyBlocks.UI
                             _target.transform.position, _target.transform.rotation,
                             _target.transform.localScale, reliable: true);
                 }
+                else if (_editId >= 15)
+                {
+                    foreach (var m in GetGroupMembers())
+                        if (m != null && m.netId != 0)
+                            Networking.ModNetworking.SendTintApplied(m.netId, m.materialTint);
+                }
             }
             DeactivateEditField();
         }
@@ -1271,7 +1370,9 @@ namespace BabyBlocks.UI
             if (ef?.Component != null)
             {
                 ef.Component.DeactivateInputField();
-                ef.Component.text = GetVal(_editId).ToString("F3", CultureInfo.InvariantCulture);
+                ef.Component.text = _editId >= 15
+                    ? Mathf.RoundToInt(Mathf.Max(0f, GetVal(_editId))).ToString()
+                    : GetVal(_editId).ToString("F3", CultureInfo.InvariantCulture);
             }
             _editId = -1;
             _editWasFocused = false;
@@ -1335,6 +1436,12 @@ namespace BabyBlocks.UI
                                 _target.transform.position, _target.transform.rotation,
                                 _target.transform.localScale, reliable: true);
                     }
+                    if (_dragId >= 15)
+                    {
+                        foreach (var m in GetGroupMembers())
+                            if (m != null && m.netId != 0)
+                                Networking.ModNetworking.SendTintApplied(m.netId, m.materialTint);
+                    }
                 }
                 else
                     RestoreVec(_dragPos0, _dragScale0, _dragRot0);
@@ -1346,9 +1453,10 @@ namespace BabyBlocks.UI
             if (_dragId < 0 && dn && _editId < 0)
             {
                 int clickedField = -1;
-                int fieldCount = _offsetRoot != null && _offsetRoot.activeSelf ? 15 : 9;
-                for (int i = 0; i < fieldCount; i++)
+                bool offsetsVisible = _offsetRoot != null && _offsetRoot.activeSelf;
+                for (int i = 0; i < 18; i++)
                 {
+                    if (i >= 9 && i < 15 && !offsetsVisible) continue;
                     var f = _fields[i];
                     if (f?.Component == null) continue;
                     var rt = f.Component.GetComponent<RectTransform>();
@@ -1362,7 +1470,7 @@ namespace BabyBlocks.UI
                 {
                     _dragId        = clickedField;
                     _dragStartMx   = mp.x;
-                    _dragStartVal  = GetVal(clickedField);
+                    _dragStartVal  = clickedField >= 15 ? Mathf.Min(GetVal(clickedField), 255f) : GetVal(clickedField);
                     _dragPos0      = workT.position;
                     _dragScale0    = workT.localScale;
                     _dragRot0      = workT.rotation;
@@ -1401,7 +1509,9 @@ namespace BabyBlocks.UI
                 }
                 var f = _fields[_dragId];
                 if (f?.Component != null)
-                    f.Component.text = v.ToString("F3", CultureInfo.InvariantCulture);
+                    f.Component.text = _dragId >= 15
+                        ? Mathf.RoundToInt(Mathf.Clamp(v, 0f, 255f)).ToString()
+                        : v.ToString("F3", CultureInfo.InvariantCulture);
             }
 
             // End drag.
@@ -1416,7 +1526,9 @@ namespace BabyBlocks.UI
                     if (isDouble)
                     {
                         _editId = _dragId;
-                        _editOriginalText = GetVal(_editId).ToString("F3", CultureInfo.InvariantCulture);
+                        _editOriginalText = _dragId >= 15
+                            ? Mathf.RoundToInt(Mathf.Max(0f, GetVal(_editId))).ToString()
+                            : GetVal(_editId).ToString("F3", CultureInfo.InvariantCulture);
                         _editWasFocused = false;
                         var f = _fields[_editId];
                         if (f?.Component != null)
@@ -1447,6 +1559,12 @@ namespace BabyBlocks.UI
                             Networking.ModNetworking.SendPropTransform(_target.netId,
                                 _target.transform.position, _target.transform.rotation,
                                 _target.transform.localScale, reliable: true);
+                    }
+                    else if (_dragId >= 15)
+                    {
+                        foreach (var m in GetGroupMembers())
+                            if (m != null && m.netId != 0)
+                                Networking.ModNetworking.SendTintApplied(m.netId, m.materialTint);
                     }
                     _lastClickField = -1;
                 }
@@ -1487,11 +1605,14 @@ namespace BabyBlocks.UI
                 12 => useHat ? _target.hatOffsetRot.x : _target.grabOffsetRot.x,
                 13 => useHat ? _target.hatOffsetRot.y : _target.grabOffsetRot.y,
                 14 => useHat ? _target.hatOffsetRot.z : _target.grabOffsetRot.z,
+                15 => Mathf.Max(0f, _target.materialTint.x),
+                16 => Mathf.Max(0f, _target.materialTint.y),
+                17 => Mathf.Max(0f, _target.materialTint.z),
                 _ => 0f,
             };
         }
 
-        void SetVal(int i, float v)
+        void SetVal(int i, float v, bool clampMax = true)
         {
             if (_target == null) return;
             var grpGO = GetGroupRoot();
@@ -1543,6 +1664,21 @@ namespace BabyBlocks.UI
                 case 12: SetOffsetRot(v, 0); break;
                 case 13: SetOffsetRot(v, 1); break;
                 case 14: SetOffsetRot(v, 2); break;
+                // Material tint (15-17) — local apply only; network sent at drag/edit end
+                case 15: case 16: case 17:
+                {
+                    float clamped = Mathf.Round(clampMax ? Mathf.Clamp(v, 0f, 255f) : Mathf.Max(0f, v));
+                    foreach (var m in GetGroupMembers())
+                    {
+                        if (m == null) continue;
+                        var tint = m.materialTint;
+                        if (i == 15) tint.x = clamped;
+                        else if (i == 16) tint.y = clamped;
+                        else tint.z = clamped;
+                        PropInstanceServices.ApplyTint(m, tint);
+                    }
+                    break;
+                }
             }
         }
 
@@ -1648,7 +1784,8 @@ namespace BabyBlocks.UI
             i < 6  ? SensScale :
             i < 9  ? SensRot :
             i < 12 ? SensOffsetPos :
-                     SensRot;
+            i < 15 ? SensRot :
+                     1f; // tint channels (0-255, 1 unit per pixel)
 
         static float TryParse(string s, float fallback) =>
             float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;

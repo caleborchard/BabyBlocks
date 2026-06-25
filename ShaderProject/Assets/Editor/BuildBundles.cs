@@ -15,6 +15,7 @@ public static class BuildBundles
             "Assets/Shaders/GizmoSolid.shader",
             "Assets/Shaders/GizmoOccluded.shader",
             "Assets/Shaders/GizmoOnTop.shader",
+            "Assets/Shaders/TintOverlay.shader",
         };
 
         // Verify every shader exists in the asset database before building.

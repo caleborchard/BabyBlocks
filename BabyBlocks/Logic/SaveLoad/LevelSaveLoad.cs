@@ -76,10 +76,15 @@ namespace BabyBlocks
     //   For each:
     //     GroupId  : int32
     //     Scale.xyz: 3 × float32
+    //
+    // Version 12 adds, at the end of each per-object record (after instanceFlags):
+    //   TintR : byte    (material tint red,   0-255; 255=no tint)
+    //   TintG : byte    (material tint green, 0-255; 255=no tint)
+    //   TintB : byte    (material tint blue,  0-255; 255=no tint)
     static class LevelSaveLoad
     {
         static readonly byte[] Magic = { 0x42, 0x42, 0x42 };
-        const byte FormatVersion = 11;
+        const byte FormatVersion = 12;
 
         // Reserved MetaIndex value identifying the Spawn Point — it isn't registered in
         // PropMetadataPanel (no per-instance metadata needed), so a sentinel outside the
@@ -103,7 +108,8 @@ namespace BabyBlocks
             public Vector3 hatOffsetPos;
             public Vector3 hatOffsetRot;
             public int materialConstructionId;
-            public byte instanceFlags; // 0x01=sunglassesNeeded  0x02=playerPassthrough
+            public byte instanceFlags; // 0x01=sunglassesNeeded  0x02=playerPassthrough  0x04=hatSunglasses
+            public Vector3 materialTint; // RGB 0-255; (255,255,255) = no tint
         }
 
         public static bool Save(string path)
@@ -307,6 +313,9 @@ namespace BabyBlocks
                         {
                             for (int k = 0; k < 12; k++) r.ReadSingle(); // grab/hat offsets
                         }
+                        if (version >= 8) r.ReadInt32();  // materialConstructionId
+                        if (version >= 10) r.ReadByte();  // instanceFlags
+                        if (version >= 12) { r.ReadByte(); r.ReadByte(); r.ReadByte(); } // tint
                         continue;
                     }
                 }
@@ -343,6 +352,9 @@ namespace BabyBlocks
 
                 int  materialConstructionId = version >= 8  ? r.ReadInt32() : -1;
                 byte instanceFlags          = version >= 10 ? r.ReadByte()  : (byte)0;
+                var  materialTint           = version >= 12
+                    ? new Vector3(r.ReadByte(), r.ReadByte(), r.ReadByte())
+                    : new Vector3(255f, 255f, 255f);
 
                 var info = PropLibrary.FindById(propId);
                 if (info == null)
@@ -401,6 +413,7 @@ namespace BabyBlocks
                     PropInstanceServices.SetBushPassthrough(leo.gameObject, true);
                 if ((instanceFlags & 0x04) != 0)
                     BbHatSunglassesFlag.Set(leo, true);
+                PropInstanceServices.ApplyTint(leo, materialTint);
                 leos[i] = leo;
                 spawned++;
 
@@ -530,6 +543,7 @@ namespace BabyBlocks
                     hatOffsetRot     = leo.hatOffsetRot,
                     materialConstructionId = leo.materialConstructionId,
                     instanceFlags = (byte)((leo.sunglassesNeeded ? 0x01 : 0) | (leo.playerPassthrough ? 0x02 : 0) | (BbHatSunglassesFlag.Has(leo) ? 0x04 : 0)),
+                    materialTint  = leo.materialTint,
                 });
             }
 
@@ -571,6 +585,9 @@ namespace BabyBlocks
             w.Write(record.hatOffsetRot.x);  w.Write(record.hatOffsetRot.y);  w.Write(record.hatOffsetRot.z);
             w.Write(record.materialConstructionId);
             w.Write(record.instanceFlags);
+            w.Write((byte)Mathf.Clamp(Mathf.RoundToInt(record.materialTint.x), 0, 255));
+            w.Write((byte)Mathf.Clamp(Mathf.RoundToInt(record.materialTint.y), 0, 255));
+            w.Write((byte)Mathf.Clamp(Mathf.RoundToInt(record.materialTint.z), 0, 255));
         }
 
         // Persists every physics-enabled object's already-baked mesh+atlas (see

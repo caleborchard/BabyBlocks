@@ -53,6 +53,14 @@ namespace BabyBlocks
         public bool sunglassesNeeded;   // adds BbSunglassesChecker (prop invisible without sunglasses hat)
         public bool playerPassthrough;  // makes all colliders triggers so player walks through the prop
 
+        // Material tint; (255,255,255) = no tint (white).
+        public Vector3 materialTint = new Vector3(255f, 255f, 255f);
+
+        // Backing store for tint overlay: renderers snapshotted on first tint;
+        // per-prop Material instance from the BabyBlocks/TintOverlay shader.
+        internal Renderer[] _tintRenderers;
+        internal Material   _tintMaterial;
+
         // Non-zero once this object has been synced over the network (placed or
         // received via ModNetworking). Shared between both clients' copies of the
         // same logical prop so transform updates apply in-place instead of

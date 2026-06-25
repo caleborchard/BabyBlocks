@@ -13,7 +13,7 @@ namespace BabyBlocks
 {
     public class Core : MelonMod
     {
-        public static bool DebugMode = true; // for categorizing props and materials in the library
+        public static bool DebugMode = false; // for categorizing props and materials in the library
 
         static MelonPreferences_Category _prefs;
         static MelonPreferences_Entry<string> _lastSavePath;
@@ -222,6 +222,7 @@ namespace BabyBlocks
 
             FlyCamController.OnUpdate();
             UI.PropBrowserUI.UpdateVisibility();
+            PropInstanceServices.RenderTints();
 
             BaseMapController.TickWeatherPreset();
 

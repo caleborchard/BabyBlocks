@@ -205,6 +205,10 @@ namespace BabyBlocks
                 SaveLoadWindow.TriggerSave();
 
             if (FlyCamActive && CursorMode && !LevelEditor.IsTypingInUI && !Core.IsKeyboardCaptured
+                && Input.GetKey(KeyCode.LeftControl) && Input.GetKeyDown(KeyCode.A))
+                LevelEditor.SelectAll();
+
+            if (FlyCamActive && CursorMode && !LevelEditor.IsTypingInUI && !Core.IsKeyboardCaptured
                 && Input.GetKeyDown(KeyCode.M))
                 MaterialInspectorPanel.Toggle();
 

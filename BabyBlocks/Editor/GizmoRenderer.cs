@@ -345,7 +345,7 @@ namespace BabyBlocks
                 }
 
                 Shader maskShader = null, ppShader = null, depthCaptureShader = null;
-                Shader gizmoOccShader = null;
+                Shader gizmoOccShader = null, tintOverlayShader = null;
                 var allAssets = bundle.LoadAllAssets();
                 if (allAssets != null)
                 {
@@ -358,8 +358,11 @@ namespace BabyBlocks
                         if (s.name.Contains("SelectionOutline")) ppShader           = s;
                         if (s.name.Contains("DepthCapture"))     depthCaptureShader = s;
                         if (s.name.Contains("GizmoOccluded"))    gizmoOccShader     = s;
+                        if (s.name.Contains("TintOverlay"))      tintOverlayShader  = s;
                     }
                 }
+                if (tintOverlayShader != null)
+                    PropInstanceServices.SetTintShader(tintOverlayShader);
                 bundle.Unload(false);
 
                 if (maskShader == null || ppShader == null || depthCaptureShader == null)
