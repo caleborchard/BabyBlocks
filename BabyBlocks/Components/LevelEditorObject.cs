@@ -78,7 +78,18 @@ namespace BabyBlocks
         public void OnCollisionEnter(Collision collision)
         {
             if (!freezeUntilHit || !PhysicsObjectManager.HasFreezeUntilHit(this)) return;
-            if (collision.collider.gameObject.layer != LayerCache.RagdollLayer) return;
+            var  otherRb      = collision.rigidbody;
+            int  otherLayer   = collision.collider.gameObject.layer;
+            bool isPlayer     = otherLayer == LayerCache.RagdollLayer;
+            bool isActiveProp = otherRb != null
+                                && !otherRb.isKinematic
+                                && otherRb.GetComponentInParent<LevelEditorObject>(true) != null;
+            MelonLoader.MelonLogger.Msg(
+                $"[FUH] '{name}' hit by '{collision.collider.gameObject.name}' " +
+                $"layer={otherLayer} rb={(otherRb == null ? "null" : otherRb.isKinematic ? "kinematic" : "dynamic")} " +
+                $"hasLEO={(otherRb != null ? (otherRb.GetComponentInParent<LevelEditorObject>(true) != null ? "yes" : "no") : "n/a")} " +
+                $"isPlayer={isPlayer} isActiveProp={isActiveProp} → {(isPlayer || isActiveProp ? "UNFREEZE" : "ignore")}");
+            if (!isPlayer && !isActiveProp) return;
             PhysicsObjectManager.OnFreezeUntilHitTriggered(this);
             PhysicsObjectManager.UnfreezeHitProp(this, collision);
             if (netId != 0)

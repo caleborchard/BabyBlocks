@@ -905,20 +905,6 @@ namespace BabyBlocks.UI
                 }
             }
 
-            // Clamp panel to screen bounds so it can't be dragged off-screen.
-            if (Rect != null)
-            {
-                float hw = Rect.sizeDelta.x * 0.5f;
-                float hh = Rect.sizeDelta.y * 0.5f;
-                float sw = Screen.width;
-                float sh = Screen.height;
-                var ap = Rect.anchoredPosition;
-                float cx = Mathf.Clamp(sw * 0.5f + ap.x, hw, sw - hw) - sw * 0.5f;
-                float cy = Mathf.Clamp(sh * 0.5f + ap.y, hh, sh - hh) - sh * 0.5f;
-                if (cx != ap.x || cy != ap.y)
-                    Rect.anchoredPosition = new Vector2(cx, cy);
-            }
-
             // Keep line hidden when panel is not showing (handles X-button close too).
             bool panelActive = UIRoot != null && UIRoot.activeSelf;
             if (_lineRT != null && (!panelActive || _target == null))
@@ -962,6 +948,25 @@ namespace BabyBlocks.UI
             RefreshFlagLabels();
             TickOffsets();
             UpdateLine();
+
+            // Clamp AFTER TickOffsets so Dragger.OnEndResize() can't override us.
+            if (Rect != null)
+            {
+                float hw = Rect.sizeDelta.x * 0.5f;
+                float hh = Rect.sizeDelta.y * 0.5f;
+                float sw = Screen.width;
+                float sh = Screen.height;
+                var ap = Rect.anchoredPosition;
+                // X: original formula — panel always fits horizontally, no oscillation risk.
+                float cx = Mathf.Clamp(sw * 0.5f + ap.x, hw, sw - hw) - sw * 0.5f;
+                // Y: when panel > screen, Mathf.Clamp(min > max) oscillates every frame.
+                // ±|hh − sh/2| gives a valid range in both cases:
+                //   panel fits   → same result as original formula
+                //   panel taller → scrollable range so user can reach top and bottom
+                float cy = Mathf.Clamp(ap.y, -(Mathf.Abs(hh - sh * 0.5f)), Mathf.Abs(hh - sh * 0.5f));
+                if (cx != ap.x || cy != ap.y)
+                    Rect.anchoredPosition = new Vector2(cx, cy);
+            }
         }
 
         // ─────────────────────────────────────────────────────────────────────

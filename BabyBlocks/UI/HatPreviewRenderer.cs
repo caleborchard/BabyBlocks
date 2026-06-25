@@ -53,8 +53,9 @@ namespace BabyBlocks.UI
             float anchorWidth = worldTR.x - worldTL.x;
             float imguiTop    = Screen.height - worldTL.y;
 
-            float previewX  = anchorLeft + (anchorWidth - PreviewSize) * 0.5f;
-            var contentRect = new Rect(previewX, imguiTop, PreviewSize, PreviewSize);
+            float drawSize  = Mathf.Min(inst._rt.width, anchorWidth);
+            float previewX  = anchorLeft + (anchorWidth - drawSize) * 0.5f;
+            var contentRect = new Rect(previewX, imguiTop, drawSize, drawSize);
 
             var e = Event.current;
             if (e != null)

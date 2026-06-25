@@ -315,7 +315,17 @@ namespace BabyBlocks
             if (control.GetComponent<Grabable>() != null) return; // grabables manage their own kinematic state
 
             // Props waiting for their first collision manage their own kinematic state.
-            if (HasFreezeUntilHit(obj)) return;
+            if (HasFreezeUntilHit(obj))
+            {
+                // Defensive: native scripts re-enabled at gameplay start may later flip isKinematic.
+                if (!rb.isKinematic)
+                {
+                    MelonLoader.MelonLogger.Msg($"[FUH] UpdatePhysics: '{obj.name}' in pending set but not kinematic — re-asserting");
+                    rb.isKinematic = true;
+                    rb.useGravity  = false;
+                }
+                return;
+            }
 
             float distSqr = (control.transform.position - playerPos).sqrMagnitude;
             bool active = distSqr <= PhysicsActiveRadiusSqr;
@@ -483,6 +493,18 @@ namespace BabyBlocks
                         // Stay kinematic but on the dynamic layer with convex colliders so
                         // player Rigidbodies can generate OnCollisionEnter on this LEO.
                         obj.editorFreezeStateValid = false;
+                        // Explicitly re-assert kinematic state. ReEnableKeepHierarchyBehaviours above may
+                        // have triggered OnEnable on native scripts (e.g. ConductedDynamicPhysicsProp)
+                        // that call rb.isKinematic = false. We must win that race.
+                        var rbFuh = obj.GetComponent<Rigidbody>();
+                        if (rbFuh != null)
+                        {
+                            if (!rbFuh.isKinematic)
+                                MelonLoader.MelonLogger.Msg($"[FUH] ExitEditor: '{obj.name}' was DYNAMIC — re-asserting kinematic (native script overrode it)");
+                            rbFuh.isKinematic = true;
+                            rbFuh.useGravity  = false;
+                            rbFuh.constraints = RigidbodyConstraints.FreezeAll;
+                        }
                         SetMeshCollidersConvex(obj.gameObject, true);
                         SetColliderLayers(obj.gameObject, LevelEditorManager.PropsDynamicLayer);
                         AddFreezeUntilHit(obj);
