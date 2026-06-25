@@ -761,12 +761,22 @@ namespace BabyBlocks
                 while (p != null && g == null) { g = p.GetComponent<Grabable>(); p = p.parent; }
             }
             if (g == null) return;
+            // grabLocPtsR is consumed by native ToWorld as a prop-local (pre-scale) position via
+            // prop.TransformPoint(-pt). grabOffsetPos is in world-scale units (set by the user in
+            // world space via the preview), so divide by localScale to convert to local space.
+            // PlaceInHandPatch re-multiplies by scale so hand.TransformPoint gets the right offset.
+            var s = g.transform.localScale;
+            var localPos = new Vector3(
+                s.x != 0f ? leo.grabOffsetPos.x / s.x : leo.grabOffsetPos.x,
+                s.y != 0f ? leo.grabOffsetPos.y / s.y : leo.grabOffsetPos.y,
+                s.z != 0f ? leo.grabOffsetPos.z / s.z : leo.grabOffsetPos.z
+            );
             var ptsR  = new Il2CppSystem.Collections.Generic.List<Vector3>();
             var rotsR = new Il2CppSystem.Collections.Generic.List<Quaternion>();
             var ptsL  = new Il2CppSystem.Collections.Generic.List<Vector3>();
             var rotsL = new Il2CppSystem.Collections.Generic.List<Quaternion>();
-            ptsR.Add(leo.grabOffsetPos); rotsR.Add(Quaternion.Euler(leo.grabOffsetRot));
-            ptsL.Add(leo.grabOffsetPos); rotsL.Add(Quaternion.Euler(leo.grabOffsetRot));
+            ptsR.Add(localPos); rotsR.Add(Quaternion.Euler(leo.grabOffsetRot));
+            ptsL.Add(localPos); rotsL.Add(Quaternion.Euler(leo.grabOffsetRot));
             g.grabLocPtsR = ptsR; g.grabLocRotsR = rotsR;
             g.grabLocPtsL = ptsL; g.grabLocRotsL = rotsL;
         }
@@ -993,12 +1003,26 @@ namespace BabyBlocks
             // at indices 1+ and are still body-collision-ignored by IgnoreBodyCollisions.
             if (isHat)
             {
-                var bc     = go.AddComponent<BoxCollider>();
-                bc.size    = new Vector3(0.01f, 0.01f, 0.01f);
+                // Reuse or create the stub trigger BC that WearHat expects at hat.colls[0].
+                // Using a named child (like Crusher/Floater) prevents accumulation across
+                // play/edit/play cycles; RemoveGrabableComponents cleans it up each time.
+                var htChild = go.transform.Find("HatBoxTrigger");
+                if (htChild == null)
+                {
+                    var htGo = new GameObject("HatBoxTrigger");
+                    htGo.transform.SetParent(go.transform, false);
+                    htChild = htGo.transform;
+                }
+                var bc       = htChild.GetComponent<BoxCollider>() ?? htChild.gameObject.AddComponent<BoxCollider>();
+                bc.size      = new Vector3(0.01f, 0.01f, 0.01f);
                 bc.isTrigger = true;
-                var hatColls = new Il2CppReferenceArray<Collider>(colls.Length + 1);
+                // Build hat.colls: bc at [0], then physics colliders (excluding the stub itself).
+                int n = 0;
+                for (int i = 0; i < colls.Length; i++) if (colls[i] != null && colls[i] != bc) n++;
+                var hatColls = new Il2CppReferenceArray<Collider>(n + 1);
                 hatColls[0] = bc;
-                for (int i = 0; i < colls.Length; i++) if (colls[i] != null) hatColls[i + 1] = colls[i];
+                int j = 1;
+                for (int i = 0; i < colls.Length; i++) if (colls[i] != null && colls[i] != bc) hatColls[j++] = colls[i];
                 g.colls = hatColls;
             }
             else
@@ -1125,6 +1149,13 @@ namespace BabyBlocks
             if (crusher != null) UnityEngine.Object.DestroyImmediate(crusher.gameObject);
             var floater = go.transform.Find("Floater");
             if (floater != null) UnityEngine.Object.DestroyImmediate(floater.gameObject);
+            var hatBoxTrigger = go.transform.Find("HatBoxTrigger");
+            if (hatBoxTrigger != null) UnityEngine.Object.DestroyImmediate(hatBoxTrigger.gameObject);
+            // Purge any root-level stub BCs that accumulated before this fix was in place.
+            var stubSize = new Vector3(0.01f, 0.01f, 0.01f);
+            foreach (var bc in go.GetComponents<BoxCollider>())
+                if (bc.isTrigger && bc.size == stubSize)
+                    UnityEngine.Object.DestroyImmediate(bc);
         }
     }
 }
