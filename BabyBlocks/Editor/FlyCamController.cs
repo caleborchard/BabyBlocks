@@ -97,6 +97,24 @@ namespace BabyBlocks
         static bool _farTeleportActive;
         internal static bool FarTeleportActive => _farTeleportActive;
 
+        // Reusable anchor used to point BestRegionLoader.loadingTransform at a teleport
+        // target while we pre-converge the chunk grid (see FlyCamTeleportCo). Never
+        // rendered; created lazily and kept alive across scene loads.
+        static Transform _teleportLoadAnchor;
+        static Transform TeleportLoadAnchor
+        {
+            get
+            {
+                if (_teleportLoadAnchor == null)
+                {
+                    var go = new GameObject("BB_TeleportLoadAnchor");
+                    UnityEngine.Object.DontDestroyOnLoad(go);
+                    _teleportLoadAnchor = go.transform;
+                }
+                return _teleportLoadAnchor;
+            }
+        }
+
         // Player freeze state
         static bool _freezeActive;
         static PlayerMovement _frozenPlayer;
@@ -517,6 +535,43 @@ namespace BabyBlocks
                     crestWater.SetActive(true);
                 else
                     crestWater = null;
+            }
+
+            // --- Pre-converge the chunk-position grid toward target ---
+            // BestRegionLoader.LoopChunkMapPositions (run from br.Update()) recenters the
+            // chunkPositions[] grid toward loadingTransform.position by shifting whole
+            // columns/rows ONE world-width per call, only once they drift >~60% of the
+            // world size away. While Base Map is off, Core.OnUpdate keeps brl.off=true so
+            // br.Update() short-circuits and the grid is frozen wherever streaming last
+            // ran — so flying far and then teleporting leaves the grid centered on the OLD
+            // area. Native TeleportCo only calls br.Update() once before waiting on
+            // fullyLoaded, so for a far target the grid never covers it: every cell reads
+            // unloaded/shouldn't-load, fullyLoaded goes vacuously true on the first check,
+            // TeleportCo's raycast finds no terrain at target and drops the player into the
+            // void (camera "stuck") while the grid slowly converges 1 width/frame. Drive
+            // that recentering to completion here, synchronously, before handing off.
+            //
+            // LoopChunkMapPositions shifts each column/row independently (not in lockstep),
+            // so a single cell can report "converged" while others are still mid-shift —
+            // compare the WHOLE chunkPositions[] array each pass. Point loadingTransform at
+            // a throwaway anchor rather than the fly cam so the camera doesn't snap to the
+            // target (line ~611 resets loadingTransform back to the fly cam afterward).
+            if (brl != null && brl.chunkPositions != null && !brl.off)
+            {
+                var anchor = TeleportLoadAnchor;
+                anchor.position = target;
+                brl.loadingTransform = anchor;
+                var chunkPositions = brl.chunkPositions;
+                var prevPositions  = new Vector3[chunkPositions.Length];
+                for (int i = 0; i < 64; i++)
+                {
+                    for (int j = 0; j < chunkPositions.Length; j++) prevPositions[j] = chunkPositions[j];
+                    brl.Update();
+                    bool changed = false;
+                    for (int j = 0; j < chunkPositions.Length; j++)
+                        if (chunkPositions[j] != prevPositions[j]) { changed = true; break; }
+                    if (!changed) break;
+                }
             }
 
             SaveGod.me.stopSaving = true;
