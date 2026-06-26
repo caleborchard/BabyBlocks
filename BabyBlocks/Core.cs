@@ -7,7 +7,7 @@ using Il2CppInterop.Runtime.Injection;
 using MelonLoader;
 using UnityEngine;
 
-[assembly: MelonInfo(typeof(BabyBlocks.Core), "Baby Blocks", "1.0.0", "Caleb Orchard", null)]
+[assembly: MelonInfo(typeof(BabyBlocks.Core), "Baby Blocks", "1.0.1", "Caleb Orchard", null)]
 [assembly: MelonGame("DefaultCompany", "BabySteps")]
 
 namespace BabyBlocks
