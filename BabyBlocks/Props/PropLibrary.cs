@@ -710,34 +710,6 @@ namespace BabyBlocks
                     if (visualGO != null)
                     {
                         info._addressableAsset = visualGO;
-
-                        // DIAG: dump materials on the loaded ASSET prefab's renderers (before
-                        // instantiation / GPUI stripping) to see whether the correct material is
-                        // reachable directly from the asset.
-                        if (info.id != null && info.id.IndexOf("Drystone", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            try
-                            {
-                                var assetMrs = visualGO.GetComponentsInChildren<MeshRenderer>(true);
-                                MelonLoader.MelonLogger.Msg($"[MatDiag] ASSET \"{info.id}\" visualPath=\"{info.visualPath}\" rendererCount={assetMrs.Length}");
-                                foreach (var amr in assetMrs)
-                                {
-                                    if (amr == null) continue;
-                                    var sm = amr.sharedMaterials;
-                                    int n = sm?.Length ?? 0;
-                                    for (int k = 0; k < n; k++)
-                                    {
-                                        var am = sm[k];
-                                        if (am == null) { MelonLoader.MelonLogger.Msg($"[MatDiag]   asset-mat [{k}] null"); continue; }
-                                        string asig = MaterialVariantTracker.GetTextureSig(am);
-                                        string ah = string.IsNullOrEmpty(asig) ? "(nosig)" : MaterialPathCatalog.ComputeStableHash(asig);
-                                        MelonLoader.MelonLogger.Msg($"[MatDiag]   asset-mat [{k}] name=\"{am.name}\" id={am.GetInstanceID()} hash={ah} shader={am.shader?.name ?? "null"} sig={asig?.Replace("\n",";")}");
-                                    }
-                                }
-                            }
-                            catch (Exception ex) { MelonLoader.MelonLogger.Msg($"[MatDiag] ASSET dump threw: {ex.Message}"); }
-                        }
-
                         var instance = UnityEngine.Object.Instantiate(
                             visualGO, new Vector3(0f, -99999f, 0f), Quaternion.identity);
                         try   { ExtractPartsFromInstance(instance, info); }

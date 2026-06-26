@@ -216,9 +216,6 @@ namespace BabyBlocks
             _ownedMaterialIds.Add(clone.GetInstanceID());
             SceneVariantMats[key] = clone;
             SceneVariantByDisplayName[displayName] = clone;
-
-            if (baseName.IndexOf("New Material", StringComparison.OrdinalIgnoreCase) >= 0)
-                MelonLogger.Msg($"[MatDiag] RegisterVariant \"{displayName}\" shader={source.shader?.name ?? "null"} tex={source.mainTexture?.name ?? "null"} sig={sig?.Replace("\n",";")}");
         }
 
         // Skips entries created by RegisterVariant/CheckMaterialVariant (owned clones) when the

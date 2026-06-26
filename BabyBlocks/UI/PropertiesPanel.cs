@@ -1826,6 +1826,27 @@ namespace BabyBlocks.UI
         void CommitGroupScaleSnapshot()
         {
             if (_grpScSnapGroupId <= 0 || _grpScSnapMembers == null) return;
+
+            // ── TEMP DIAGNOSTIC: group-scale "stay apart" glitch ──────────────────
+            // Logs which path ran (rootNull => member path; otherwise display-scale path)
+            // and each member's position/scale BEFORE vs AFTER the gesture, so we can see
+            // whether the props actually moved together. Remove once the glitch is fixed.
+            MelonLoader.MelonLogger.Msg(
+                $"[GrpScaleDbg] gid={_grpScSnapGroupId} rootNull={_grpScSnapRoot == null} " +
+                $"pivot={GizmoRenderer.PivotPosition} startDispScale={_grpScSnapDisplayScale} " +
+                $"curDispScale={GroupManager.GetGroupDisplayScale(_grpScSnapGroupId)}");
+            for (int dbg = 0; dbg < _grpScSnapMembers.Length; dbg++)
+            {
+                var dm = _grpScSnapMembers[dbg];
+                if (dm == null) continue;
+                var sPos = dbg < (_grpScSnapMemberWorldPos?.Length ?? 0) ? _grpScSnapMemberWorldPos[dbg] : Vector3.zero;
+                var sScl = dbg < (_grpScSnapMemberScales?.Length   ?? 0) ? _grpScSnapMemberScales[dbg]   : Vector3.zero;
+                MelonLoader.MelonLogger.Msg(
+                    $"[GrpScaleDbg]   m{dbg} pos {sPos} -> {dm.transform.position} | " +
+                    $"localScale {sScl} -> {dm.transform.localScale}");
+            }
+            // ──────────────────────────────────────────────────────────────────────
+
             LevelEditorHistory.PushGroupScale(_grpScSnapGroupId, _grpScSnapRoot, _grpScSnapMembers,
                 _grpScSnapRootPos, _grpScSnapDisplayScale,
                 _grpScSnapMemberScales, _grpScSnapMemberLocalPos);
