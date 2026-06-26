@@ -14,7 +14,7 @@ namespace BabyBlocks
 {
     public class Core : MelonMod
     {
-        public static bool DebugMode = true; // for categorizing props and materials in the library
+        public static bool DebugMode = false; // for categorizing props and materials in the library
         public static MelonLogger.Instance Logger { get; private set; }
 
         static MelonPreferences_Category _prefs;

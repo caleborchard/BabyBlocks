@@ -149,6 +149,24 @@ namespace BabyBlocks.UI
             Rect.anchoredPosition = new Vector2(250f, 0f);
         }
 
+        // UniverseLib's EnsureValidPosition uses raw Screen pixels as if they were canvas units,
+        // which breaks dragging at non-1080p resolutions. Override to use the actual canvas rect.
+        public override void EnsureValidPosition()
+        {
+            var canvasRT = Owner.RootObject.GetComponent<RectTransform>();
+            if (canvasRT == null) { base.EnsureValidPosition(); return; }
+
+            float hw  = Rect.sizeDelta.x * 0.5f;
+            float hh  = Rect.sizeDelta.y * 0.5f;
+            float sw  = canvasRT.rect.width;
+            float sh  = canvasRT.rect.height;
+            var   ap  = Rect.anchoredPosition;
+
+            float cx = Mathf.Clamp(sw * 0.5f + ap.x, hw, sw - hw) - sw * 0.5f;
+            float cy = Mathf.Clamp(ap.y, -(Mathf.Abs(hh - sh * 0.5f)), Mathf.Abs(hh - sh * 0.5f));
+            Rect.anchoredPosition = new Vector2(cx, cy);
+        }
+
         // ─────────────────────────────────────────────────────────────────────
         //  Panel construction
         // ─────────────────────────────────────────────────────────────────────
@@ -950,24 +968,9 @@ namespace BabyBlocks.UI
             TickOffsets();
             UpdateLine();
 
-            // Clamp AFTER TickOffsets so Dragger.OnEndResize() can't override us.
+            // Re-clamp after TickOffsets so a resize can't push the panel out of bounds.
             if (Rect != null)
-            {
-                float hw = Rect.sizeDelta.x * 0.5f;
-                float hh = Rect.sizeDelta.y * 0.5f;
-                float sw = Screen.width;
-                float sh = Screen.height;
-                var ap = Rect.anchoredPosition;
-                // X: original formula — panel always fits horizontally, no oscillation risk.
-                float cx = Mathf.Clamp(sw * 0.5f + ap.x, hw, sw - hw) - sw * 0.5f;
-                // Y: when panel > screen, Mathf.Clamp(min > max) oscillates every frame.
-                // ±|hh − sh/2| gives a valid range in both cases:
-                //   panel fits   → same result as original formula
-                //   panel taller → scrollable range so user can reach top and bottom
-                float cy = Mathf.Clamp(ap.y, -(Mathf.Abs(hh - sh * 0.5f)), Mathf.Abs(hh - sh * 0.5f));
-                if (cx != ap.x || cy != ap.y)
-                    Rect.anchoredPosition = new Vector2(cx, cy);
-            }
+                EnsureValidPosition();
         }
 
         // ─────────────────────────────────────────────────────────────────────

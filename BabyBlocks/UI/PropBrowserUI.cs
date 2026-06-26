@@ -1149,7 +1149,9 @@ namespace BabyBlocks.UI
             const int FixedBase   = 56 + 20 + 26 + 2 + 2 + 2; // 108
             const int TargetCardH = 80;
             const int MinLabelW   = 100; // always leave this many px for the name label
-            int available = Screen.height - TopBarPanel.BarHeight;
+            var canvasRT = Owner.RootObject.GetComponent<RectTransform>();
+            float canvasH = canvasRT != null ? canvasRT.rect.height : Screen.height;
+            int available = Mathf.RoundToInt(canvasH) - TopBarPanel.BarHeight;
 
             int n = Mathf.Clamp(
                 Mathf.FloorToInt((available - FixedBase) / (float)(TargetCardH + 2)),
