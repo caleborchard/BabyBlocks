@@ -1174,6 +1174,25 @@ namespace BabyBlocks
             var targets = _selection.Where(o => o != null).Distinct().ToList();
             if (targets.Count == 0) return;
 
+            ApplyPhysicsModeToTargets(targets, mode);
+
+            // Broadcast to peers so their copies of these props switch mode too. Only the
+            // user-initiated entry point broadcasts; the network receiver calls the core
+            // ApplyPhysicsModeToTargets directly (no echo).
+            var netIds = targets.Where(o => o != null && o.netId != 0).Select(o => o.netId).ToList();
+            if (netIds.Count > 0)
+                BabyBlocks.Networking.ModNetworking.SendPropPhysicsMode(netIds, mode);
+        }
+
+        // Applies a physics-mode change to an explicit target list (used by SetPhysicsMode for
+        // the local selection, and by ModNetworking when a peer changed a prop's mode). Group
+        // ids are allocated locally on each client, mirroring how GroupSync works.
+        internal static void ApplyPhysicsModeToTargets(List<LevelEditorObject> targets, PhysicsMode mode)
+        {
+            if (targets == null) return;
+            targets = targets.Where(o => o != null).Distinct().ToList();
+            if (targets.Count == 0) return;
+
             foreach (var obj in targets)
                 if (obj.physicsMode != PhysicsMode.Static) PhysicsObjectManager.ClearPhysics(obj, restoreMaterial: mode == PhysicsMode.Static);
             if (mode == PhysicsMode.Static) return;
@@ -1230,6 +1249,7 @@ namespace BabyBlocks
                 if (obj == null || obj.physicsMode != PhysicsMode.Hat) continue;
                 obj.hatHairAmt = hairAmount;
                 PhysicsObjectManager.SyncHatHairAmount(obj);
+                if (obj.netId != 0) BabyBlocks.Networking.ModNetworking.MarkPropPropertiesDirty(obj.netId);
             }
         }
 
@@ -1243,6 +1263,7 @@ namespace BabyBlocks
                 obj.grabOffsetPos = pos;
                 obj.grabOffsetRot = rotEuler;
                 PhysicsObjectManager.SyncGrabOffset(obj);
+                if (obj.netId != 0) BabyBlocks.Networking.ModNetworking.MarkPropPropertiesDirty(obj.netId);
             }
         }
 
@@ -1254,6 +1275,7 @@ namespace BabyBlocks
                 if (obj == null || obj.physicsMode != PhysicsMode.Hat) continue;
                 obj.hatOffsetPos = pos;
                 obj.hatOffsetRot = rotEuler;
+                if (obj.netId != 0) BabyBlocks.Networking.ModNetworking.MarkPropPropertiesDirty(obj.netId);
             }
         }
 

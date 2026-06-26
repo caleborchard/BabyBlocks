@@ -35,8 +35,28 @@ namespace BabyBlocks.Networking
         private const byte TintAppliedMarker = 0xC3; // a peer applied a material tint to a networked prop
         private const byte PropFlagsAppliedMarker = 0xC4; // a peer toggled per-instance flags (e.g. freezeUntilHit) on a networked prop
         private const byte PropFreezeReleasedMarker = 0xC5; // a peer's freeze-until-hit prop was just hit and went dynamic
+        private const byte CustomAccessoryDonMarker = 0xC6; // a peer donned/grabbed a custom (editor) hat or grabable
+        private const byte CustomAccessoryRemoveMarker = 0xC7; // a peer doffed/dropped a custom (editor) hat or grabable
+        private const byte PropPropertiesMarker = 0xC8; // a peer changed a networked prop's per-instance properties (hair, hat/grab offsets, sunglasses/passthrough flags, surface type)
+        private const byte PropPhysicsModeMarker = 0xC9; // a peer changed a networked prop's physics mode (Static/Rigidbody/Grabable/Hat)
         private const float AnnounceIntervalSeconds = 5f;
         private const float FreecamSendIntervalSeconds = 0.15f;
+
+        // Custom worn/held accessories are re-announced on this interval (in addition to
+        // the immediate broadcast on pick-up) so peers who join mid-session learn what
+        // everyone is already wearing, and so a missed reliable "remove" self-heals.
+        private const float AccessoryRebroadcastInterval = 2.5f;
+        private static float _nextAccRebroadcastTime;
+        // Per accessory slot (0=hat, 1=right hand, 2=left hand): GameObject instance id of
+        // the custom prop last broadcast as worn, or 0 for none. Drives change detection.
+        private static readonly int[] _lastAccInstId = new int[3];
+
+        // Per-instance prop properties (hair/offsets/flags/surface) are coalesced: UI edits
+        // mark a netId dirty; the dirty set is flushed (latest live values sent) at most this
+        // often, so dragging a slider doesn't spam one reliable packet per frame.
+        private const float PropPropsFlushInterval = 0.12f;
+        private static float _nextPropPropsFlushTime;
+        private static readonly HashSet<ulong> _dirtyPropProps = new();
 
         // Snapshot of the level taken immediately before TryCreateChannel clears it on
         // connect. Held so we can respond to a LevelTransferRequest from a peer that
@@ -103,6 +123,16 @@ namespace BabyBlocks.Networking
         private static FieldInfo _nicknameEntryField;  // PlayerConfig.Nickname
         private static PropertyInfo _suitColorValueProp; // MelonPreferences_Entry<Color>.Value
         private static PropertyInfo _nicknameValueProp;  // MelonPreferences_Entry<string>.Value
+
+        // Resolved so custom worn/held accessories can be attached to the right bone on the
+        // right player. Best-effort: if any are unresolved, accessory sync silently no-ops
+        // while the rest of ModNetworking keeps working.
+        private static FieldInfo _localPlayerInstanceField;  // LocalPlayer.Instance (static)
+        private static FieldInfo _basePlayerHeadBoneField;   // BasePlayer.headBone (Transform)
+        private static FieldInfo _basePlayerHandBonesField;  // BasePlayer.handBones (ValueTuple<Transform,Transform>)
+        private static FieldInfo _handBonesItem1Field;       // ValueTuple.Item1 (right hand)
+        private static FieldInfo _handBonesItem2Field;       // ValueTuple.Item2 (left hand)
+        private static FieldInfo _playersField;              // NetworkManager.players (IDictionary<byte, RemotePlayer>)
 
         // BabyStepsNetworking channel (object so no hard type dependency)
         private static object   _channel;
@@ -176,6 +206,9 @@ namespace BabyBlocks.Networking
                         SendFreecamUpdate(false);
                     }
                     _wasFlyCamActive = flyActive;
+
+                    PollLocalAccessories();
+                    FlushDirtyPropProperties();
                 }
             }
             else if (_channel != null)
@@ -186,6 +219,7 @@ namespace BabyBlocks.Networking
             RemoteFreecamManager.Update();
             RemotePropHighlightManager.Update();
             RemotePropGhostManager.Update();
+            RemoteAccessoryManager.Update();
         }
 
         private static void EnsureReflection()
@@ -219,6 +253,40 @@ namespace BabyBlocks.Networking
 
                 _reflectionOk = true;
                 BBLog.Msg("[BabyBlocks][ModNetworking] Reflection bridge to BabyStepsMultiplayerClient established");
+
+                // Resolve the player-bone fields used to attach custom worn/held accessories.
+                // BasePlayer.headBone/handBones are inherited by both LocalPlayer and
+                // RemotePlayer, and NetworkManager.players maps uuid -> RemotePlayer.
+                try
+                {
+                    _playersField = networkManagerType.GetField("players",
+                        BindingFlags.Public | BindingFlags.Instance);
+
+                    var basePlayerType  = mpAsm.GetType("BabyStepsMultiplayerClient.Player.BasePlayer");
+                    var localPlayerType = mpAsm.GetType("BabyStepsMultiplayerClient.Player.LocalPlayer");
+
+                    _localPlayerInstanceField = localPlayerType?.GetField("Instance",
+                        BindingFlags.Public | BindingFlags.Static);
+                    _basePlayerHeadBoneField  = basePlayerType?.GetField("headBone",
+                        BindingFlags.Public | BindingFlags.Instance);
+                    _basePlayerHandBonesField = basePlayerType?.GetField("handBones",
+                        BindingFlags.Public | BindingFlags.Instance);
+                    if (_basePlayerHandBonesField != null)
+                    {
+                        _handBonesItem1Field = _basePlayerHandBonesField.FieldType.GetField("Item1");
+                        _handBonesItem2Field = _basePlayerHandBonesField.FieldType.GetField("Item2");
+                    }
+
+                    if (_playersField != null && _localPlayerInstanceField != null
+                        && _basePlayerHeadBoneField != null && _basePlayerHandBonesField != null)
+                        BBLog.Msg("[BabyBlocks][ModNetworking] Accessory-bone reflection resolved");
+                    else
+                        MelonLogger.Warning("[BabyBlocks][ModNetworking] Accessory-bone reflection incomplete — custom hat/grabable sync disabled");
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"[BabyBlocks][ModNetworking] Accessory-bone reflection failed: {ex.Message}");
+                }
 
                 // Resolve BabyStepsNetworking channel types (optional — absent = no channel sync)
                 try
@@ -402,6 +470,11 @@ namespace BabyBlocks.Networking
             RemoteFreecamManager.ClearAll();
             RemotePropHighlightManager.ClearAll();
             RemotePropGhostManager.ClearAll();
+            RemoteAccessoryManager.ClearAll();
+            Array.Clear(_lastAccInstId, 0, _lastAccInstId.Length);
+            _nextAccRebroadcastTime = 0f;
+            _dirtyPropProps.Clear();
+            _nextPropPropsFlushTime = 0f;
         }
 
         private static void Announce()
@@ -590,7 +663,8 @@ namespace BabyBlocks.Networking
                 byte marker = payload[0];
                 if (marker == PropPlacedMarker   || marker == PropDeletedMarker ||
                     marker == LevelClearedMarker  || marker == MaterialAppliedMarker ||
-                    marker == TintAppliedMarker   || marker == GroupSyncMarker)
+                    marker == TintAppliedMarker   || marker == GroupSyncMarker ||
+                    marker == PropPropertiesMarker || marker == PropPhysicsModeMarker)
                 {
                     _bufferedLivePackets.Add((senderUuid, payload));
                     return;
@@ -646,6 +720,22 @@ namespace BabyBlocks.Networking
 
                 case PropFreezeReleasedMarker:
                     HandlePropFreezeReleased(senderUuid, payload);
+                    break;
+
+                case CustomAccessoryDonMarker:
+                    HandleCustomAccessoryDon(senderUuid, payload);
+                    break;
+
+                case CustomAccessoryRemoveMarker:
+                    HandleCustomAccessoryRemove(senderUuid, payload);
+                    break;
+
+                case PropPropertiesMarker:
+                    HandlePropProperties(senderUuid, payload);
+                    break;
+
+                case PropPhysicsModeMarker:
+                    HandlePropPhysicsMode(senderUuid, payload);
                     break;
 
                 case LevelClearedMarker:
@@ -1480,6 +1570,441 @@ namespace BabyBlocks.Networking
             {
                 MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandlePropGhostUpdate failed: {ex.Message}");
             }
+        }
+
+        // ─── Custom worn/held accessories ────────────────────────────────────────────
+        //
+        // The multiplayer client's native accessory sync can only rebuild base-game
+        // hats/grabables (by name, from the game's Savables loaders). Custom editor props
+        // have no such loader, so we detect local pick-ups of them here and broadcast a
+        // prop id + bone-relative offset; peers rebuild a cosmetic copy on the matching
+        // RemotePlayer bone via RemoteAccessoryManager. The multiplayer client is taught
+        // (in LocalPlayer.Update) to ignore custom props so its name-based path doesn't
+        // also fire for them.
+
+        // Polls the local player's worn hat and two hand items, broadcasting don/remove for
+        // any custom (editor) prop as it changes, plus a periodic re-announce of whatever
+        // is currently worn so mid-session joiners catch up.
+        private static void PollLocalAccessories()
+        {
+            var player = PlayerMovement.me;
+            if (player == null)
+            {
+                for (int s = 0; s < 3; s++)
+                {
+                    if (_lastAccInstId[s] != 0)
+                    {
+                        SendCustomAccessoryRemove(s);
+                        _lastAccInstId[s] = 0;
+                    }
+                }
+                return;
+            }
+
+            bool rebroadcast = Time.unscaledTime >= _nextAccRebroadcastTime;
+            if (rebroadcast) _nextAccRebroadcastTime = Time.unscaledTime + AccessoryRebroadcastInterval;
+
+            for (int slot = 0; slot < 3; slot++)
+            {
+                var leo = GetLocalCustomAccessory(player, slot);
+                int cur = leo != null ? leo.gameObject.GetInstanceID() : 0;
+
+                if (cur != _lastAccInstId[slot])
+                {
+                    if (cur != 0)
+                    {
+                        // Commit only on a successful send; if the local bone isn't ready
+                        // yet, leave the slot uncommitted so the next poll retries.
+                        if (SendCustomAccessoryDon(slot, leo)) _lastAccInstId[slot] = cur;
+                    }
+                    else
+                    {
+                        SendCustomAccessoryRemove(slot);
+                        _lastAccInstId[slot] = 0;
+                    }
+                }
+                else if (cur != 0 && rebroadcast)
+                {
+                    SendCustomAccessoryDon(slot, leo);
+                }
+            }
+        }
+
+        // Returns the custom, network-reconstructable LevelEditorObject occupying the given
+        // accessory slot, or null if the slot is empty / holds a base-game or non-addressable
+        // (primitive) prop that peers couldn't rebuild.
+        private static LevelEditorObject GetLocalCustomAccessory(PlayerMovement player, int slot)
+        {
+            try
+            {
+                LevelEditorObject leo;
+                if (slot == 0)
+                {
+                    var hat = player.currentHat;
+                    leo = hat != null ? hat.GetComponent<LevelEditorObject>() : null;
+                }
+                else
+                {
+                    var items = player.handItems;
+                    int idx = slot - 1; // slot 1 -> right (index 0), slot 2 -> left (index 1)
+                    if (items == null || idx >= items.Length) return null;
+                    var g = items[idx];
+                    leo = g != null ? g.GetComponent<LevelEditorObject>() : null;
+                }
+                return (leo != null && !string.IsNullOrEmpty(leo.addressableKey)) ? leo : null;
+            }
+            catch { return null; }
+        }
+
+        // Payload: [marker][slot:byte][idLen:ushort LE][idBytes UTF8][pos.xyz][rot.xyzw][scale.xyz] (floats LE)
+        // pos/rot are the prop's pose relative to the local player's matching bone; scale is
+        // world scale. Returns false if the local bone couldn't be resolved (caller retries).
+        private static bool SendCustomAccessoryDon(int slot, LevelEditorObject leo)
+        {
+            if (_channel == null || leo == null) return false;
+            try
+            {
+                var bone = GetLocalAccessoryBone(slot);
+                if (bone == null) return false;
+
+                string propId = leo.addressableKey;
+                if (string.IsNullOrEmpty(propId)) return false;
+
+                var t = leo.transform;
+                Vector3 localPos = bone.InverseTransformPoint(t.position);
+                Quaternion localRot = Quaternion.Inverse(bone.rotation) * t.rotation;
+                Vector3 scale = t.lossyScale;
+
+                var idBytes = System.Text.Encoding.UTF8.GetBytes(propId);
+                var payload = new byte[1 + 1 + 2 + idBytes.Length + 4 * (3 + 4 + 3)];
+                int o = 0;
+                payload[o++] = CustomAccessoryDonMarker;
+                payload[o++] = (byte)slot;
+                payload[o++] = (byte)(idBytes.Length & 0xFF);
+                payload[o++] = (byte)((idBytes.Length >> 8) & 0xFF);
+                Buffer.BlockCopy(idBytes, 0, payload, o, idBytes.Length);
+                o += idBytes.Length;
+
+                WriteFloat(payload, ref o, localPos.x);
+                WriteFloat(payload, ref o, localPos.y);
+                WriteFloat(payload, ref o, localPos.z);
+                WriteFloat(payload, ref o, localRot.x);
+                WriteFloat(payload, ref o, localRot.y);
+                WriteFloat(payload, ref o, localRot.z);
+                WriteFloat(payload, ref o, localRot.w);
+                WriteFloat(payload, ref o, scale.x);
+                WriteFloat(payload, ref o, scale.y);
+                WriteFloat(payload, ref o, scale.z);
+
+                ChannelSend(payload, reliable: true);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendCustomAccessoryDon failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        // Payload: [marker][slot:byte]
+        private static void SendCustomAccessoryRemove(int slot)
+        {
+            if (_channel == null) return;
+            try
+            {
+                ChannelSend(new byte[] { CustomAccessoryRemoveMarker, (byte)slot }, reliable: true);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendCustomAccessoryRemove failed: {ex.Message}");
+            }
+        }
+
+        private static void HandleCustomAccessoryDon(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                if (payload.Length < 4) return;
+                int o = 1;
+                int slot = payload[o++];
+                int idLen = payload[o] | (payload[o + 1] << 8);
+                o += 2;
+                if (slot < 0 || slot > 2 || idLen <= 0 || o + idLen + 4 * 10 > payload.Length) return;
+                string propId = System.Text.Encoding.UTF8.GetString(payload, o, idLen);
+                o += idLen;
+
+                var pos   = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var rot   = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var scale = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+
+                RemoteAccessoryManager.SetDesired(senderUuid, slot, propId, pos, rot, scale);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleCustomAccessoryDon failed: {ex.Message}");
+            }
+        }
+
+        private static void HandleCustomAccessoryRemove(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                if (payload.Length < 2) return;
+                int slot = payload[1];
+                if (slot < 0 || slot > 2) return;
+                RemoteAccessoryManager.ClearDesired(senderUuid, slot);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleCustomAccessoryRemove failed: {ex.Message}");
+            }
+        }
+
+        // ─── Per-instance prop properties ────────────────────────────────────────────
+        //
+        // Properties-window edits (hair amount, hat/grab offsets, sunglasses-needed,
+        // player-passthrough, "act as sunglasses", surface type) are per-instance and saved
+        // in .bbb, but weren't live-synced — so a peer's copy kept its old values. Each edit
+        // marks the prop's netId dirty; FlushDirtyPropProperties coalesces and broadcasts the
+        // current values, and peers apply them in-place. (Tint, material construction and
+        // freeze-until-hit have their own dedicated messages and are unaffected.)
+
+        // Called from the properties panel after a per-instance property edit.
+        internal static void MarkPropPropertiesDirty(ulong netId)
+        {
+            if (netId != 0) _dirtyPropProps.Add(netId);
+        }
+
+        private static void FlushDirtyPropProperties()
+        {
+            if (_dirtyPropProps.Count == 0 || Time.unscaledTime < _nextPropPropsFlushTime) return;
+            _nextPropPropsFlushTime = Time.unscaledTime + PropPropsFlushInterval;
+            foreach (var netId in _dirtyPropProps)
+                if (_networkedObjects.TryGetValue(netId, out var obj) && obj != null)
+                    SendPropProperties(obj);
+            _dirtyPropProps.Clear();
+        }
+
+        // Payload: [marker][netId:ulong LE][hairAmt][hatOffPos.xyz][hatOffRot.xyz]
+        //          [grabOffPos.xyz][grabOffRot.xyz] (13 floats LE)[flags:byte]
+        //          [surfLen:ushort LE][surfBytes UTF8]
+        // flags bit 0x01=sunglassesNeeded, 0x02=playerPassthrough, 0x04=hat.isSunglasses
+        private static void SendPropProperties(LevelEditorObject obj)
+        {
+            if (_channel == null || obj == null || obj.netId == 0) return;
+            try
+            {
+                string surf = obj.surfaceTypeTag ?? string.Empty;
+                var surfBytes = System.Text.Encoding.UTF8.GetBytes(surf);
+                var payload = new byte[1 + 8 + 4 * 13 + 1 + 2 + surfBytes.Length];
+                int o = 0;
+                payload[o++] = PropPropertiesMarker;
+                WriteULong(payload, ref o, obj.netId);
+                WriteFloat(payload, ref o, obj.hatHairAmt);
+                WriteFloat(payload, ref o, obj.hatOffsetPos.x);
+                WriteFloat(payload, ref o, obj.hatOffsetPos.y);
+                WriteFloat(payload, ref o, obj.hatOffsetPos.z);
+                WriteFloat(payload, ref o, obj.hatOffsetRot.x);
+                WriteFloat(payload, ref o, obj.hatOffsetRot.y);
+                WriteFloat(payload, ref o, obj.hatOffsetRot.z);
+                WriteFloat(payload, ref o, obj.grabOffsetPos.x);
+                WriteFloat(payload, ref o, obj.grabOffsetPos.y);
+                WriteFloat(payload, ref o, obj.grabOffsetPos.z);
+                WriteFloat(payload, ref o, obj.grabOffsetRot.x);
+                WriteFloat(payload, ref o, obj.grabOffsetRot.y);
+                WriteFloat(payload, ref o, obj.grabOffsetRot.z);
+
+                byte flags = 0;
+                if (obj.sunglassesNeeded)        flags |= 0x01;
+                if (obj.playerPassthrough)       flags |= 0x02;
+                if (BbHatSunglassesFlag.Has(obj)) flags |= 0x04;
+                payload[o++] = flags;
+
+                payload[o++] = (byte)(surfBytes.Length & 0xFF);
+                payload[o++] = (byte)((surfBytes.Length >> 8) & 0xFF);
+                Buffer.BlockCopy(surfBytes, 0, payload, o, surfBytes.Length);
+
+                ChannelSend(payload, reliable: true);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendPropProperties failed: {ex.Message}");
+            }
+        }
+
+        private static void HandlePropProperties(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                const int fixedLen = 1 + 8 + 4 * 13 + 1 + 2;
+                if (payload.Length < fixedLen) return;
+                int o = 1;
+                ulong netId = ReadULong(payload, ref o);
+                float hairAmt = ReadFloat(payload, ref o);
+                var hatOffPos  = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var hatOffRot  = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var grabOffPos = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var grabOffRot = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                byte flags = payload[o++];
+                int surfLen = payload[o] | (payload[o + 1] << 8);
+                o += 2;
+                string surf = (surfLen > 0 && o + surfLen <= payload.Length)
+                    ? System.Text.Encoding.UTF8.GetString(payload, o, surfLen)
+                    : string.Empty;
+
+                if (!_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
+                {
+                    _networkedObjects.Remove(netId);
+                    return;
+                }
+
+                obj.hatHairAmt   = hairAmt;
+                obj.hatOffsetPos = hatOffPos;
+                obj.hatOffsetRot = hatOffRot;
+                obj.grabOffsetPos = grabOffPos;
+                obj.grabOffsetRot = grabOffRot;
+
+                bool sunglassesNeeded = (flags & 0x01) != 0;
+                bool passthrough      = (flags & 0x02) != 0;
+                bool hatIsSunglasses  = (flags & 0x04) != 0;
+
+                if (obj.sunglassesNeeded != sunglassesNeeded)
+                {
+                    obj.sunglassesNeeded = sunglassesNeeded;
+                    var existing = obj.GetComponent<BbSunglassesChecker>();
+                    if (sunglassesNeeded && existing == null)
+                        obj.gameObject.AddComponent<BbSunglassesChecker>();
+                    else if (!sunglassesNeeded && existing != null)
+                        UnityEngine.Object.DestroyImmediate(existing);
+                }
+
+                if (obj.playerPassthrough != passthrough)
+                {
+                    obj.playerPassthrough = passthrough;
+                    PropInstanceServices.SetBushPassthrough(obj.gameObject, passthrough);
+                }
+
+                BbHatSunglassesFlag.Set(obj, hatIsSunglasses);
+
+                if (!string.IsNullOrEmpty(surf) && obj.surfaceTypeTag != surf)
+                    PropInstanceServices.ApplySurfaceType(obj, surf);
+
+                var hat = obj.GetComponent<Hat>();
+                if (hat != null) hat.isSunglasses = hatIsSunglasses;
+
+                PhysicsObjectManager.SyncHatHairAmount(obj);
+                if (obj.physicsMode == PhysicsMode.Grabable || obj.physicsMode == PhysicsMode.Hat)
+                    PhysicsObjectManager.SyncGrabOffset(obj);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandlePropProperties failed: {ex.Message}");
+            }
+        }
+
+        // Broadcasts that a peer changed the physics mode (Static/Rigidbody/Grabable/Hat) of
+        // one or more networked props. Up to 255 netIds. Payload:
+        //   [marker][mode:byte][count:byte][netId1..netIdN:ulong LE]
+        public static void SendPropPhysicsMode(List<ulong> netIds, PhysicsMode mode)
+        {
+            if (_channel == null || netIds == null) return;
+            var ids = new List<ulong>();
+            foreach (var id in netIds)
+                if (id != 0) ids.Add(id);
+            if (ids.Count == 0) return;
+
+            try
+            {
+                int n = Math.Min(ids.Count, 255);
+                var payload = new byte[1 + 1 + 1 + n * 8];
+                int o = 0;
+                payload[o++] = PropPhysicsModeMarker;
+                payload[o++] = (byte)mode;
+                payload[o++] = (byte)n;
+                for (int i = 0; i < n; i++)
+                    WriteULong(payload, ref o, ids[i]);
+
+                ChannelSend(payload, reliable: true);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendPropPhysicsMode failed: {ex.Message}");
+            }
+        }
+
+        private static void HandlePropPhysicsMode(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                if (payload.Length < 3) return;
+                int o = 1;
+                var mode = (PhysicsMode)payload[o++];
+                int n = payload[o++];
+                if (payload.Length < 3 + n * 8) return;
+
+                var targets = new List<LevelEditorObject>(n);
+                for (int i = 0; i < n; i++)
+                {
+                    ulong netId = ReadULong(payload, ref o);
+                    if (_networkedObjects.TryGetValue(netId, out var obj) && obj != null)
+                        targets.Add(obj);
+                }
+                if (targets.Count == 0) return;
+
+                LevelEditor.ApplyPhysicsModeToTargets(targets, mode);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandlePropPhysicsMode failed: {ex.Message}");
+            }
+        }
+
+        // Resolves the local player's bone for an accessory slot (0=head, 1=right hand,
+        // 2=left hand), used to compute the bone-relative offset we broadcast.
+        private static Transform GetLocalAccessoryBone(int slot)
+        {
+            try
+            {
+                if (_localPlayerInstanceField == null) return null;
+                var localPlayer = _localPlayerInstanceField.GetValue(null);
+                return GetBoneFromPlayer(localPlayer, slot);
+            }
+            catch { return null; }
+        }
+
+        // Resolves a remote player's bone for an accessory slot. Called by
+        // RemoteAccessoryManager to (re)attach a peer's worn/held custom prop.
+        internal static Transform GetRemoteAccessoryBone(byte uuid, int slot)
+        {
+            try
+            {
+                if (_playersField == null || _networkManagerField == null) return null;
+                var networkManager = _networkManagerField.GetValue(null);
+                if (networkManager == null) return null;
+                var players = _playersField.GetValue(networkManager) as System.Collections.IDictionary;
+                if (players == null) return null;
+                var remotePlayer = players[uuid]; // ConcurrentDictionary's IDictionary indexer returns null if absent
+                return GetBoneFromPlayer(remotePlayer, slot);
+            }
+            catch { return null; }
+        }
+
+        private static Transform GetBoneFromPlayer(object player, int slot)
+        {
+            if (player == null) return null;
+            try
+            {
+                if (slot == 0)
+                    return _basePlayerHeadBoneField?.GetValue(player) as Transform;
+
+                if (_basePlayerHandBonesField == null) return null;
+                var tuple = _basePlayerHandBonesField.GetValue(player);
+                if (tuple == null) return null;
+                var item = slot == 1 ? _handBonesItem1Field?.GetValue(tuple)
+                                     : _handBonesItem2Field?.GetValue(tuple);
+                return item as Transform;
+            }
+            catch { return null; }
         }
     }
 }

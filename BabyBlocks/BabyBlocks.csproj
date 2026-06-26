@@ -767,6 +767,7 @@
 		<Compile Include="Networking\RemoteFreecamManager.cs" />
 		<Compile Include="Networking\RemotePropHighlightManager.cs" />
 		<Compile Include="Networking\RemotePropGhostManager.cs" />
+		<Compile Include="Networking\RemoteAccessoryManager.cs" />
 		<Compile Include="UI\PropBrowserUI.cs" />
 		<!-- UI\UniverseLibDemo.cs kept on disk as legacy reference — not compiled -->
 	</ItemGroup>

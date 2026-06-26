@@ -374,6 +374,7 @@ namespace BabyBlocks.UI
                 _preview?.ApplyHairShader(gameVal, hat);
                 if (_hairLabel != null)
                     _hairLabel.text = $"Hair: {Mathf.RoundToInt(v * 100f)}%";
+                NetSyncInstanceProps();
             });
 
             _hairSection.SetActive(false);
@@ -721,6 +722,7 @@ namespace BabyBlocks.UI
                         PropInstanceServices.ApplySurfaceType(_target, cap);
                     CloseAllDds();
                     RefreshSurfLabel();
+                    NetSyncInstanceProps();
                 };
             }
 
@@ -1154,6 +1156,16 @@ namespace BabyBlocks.UI
                 ?? (IReadOnlyList<LevelEditorObject>)new[] { _target };
         }
 
+        // Broadcasts the current per-instance properties (hair/offsets/flags/surface) of the
+        // edited prop(s) to connected peers so their copies stay in sync. Coalesced + sent on
+        // a short delay by ModNetworking, so calling it on every slider tick is fine.
+        void NetSyncInstanceProps()
+        {
+            foreach (var m in GetGroupMembers())
+                if (m != null && m.netId != 0)
+                    BabyBlocks.Networking.ModNetworking.MarkPropPropertiesDirty(m.netId);
+        }
+
         void ToggleGroup()
         {
             if (_target == null) return;
@@ -1284,6 +1296,7 @@ namespace BabyBlocks.UI
                 BbHatSunglassesFlag.Set(m, newOn);
             }
             RefreshHatSunglassesLabel(hat);
+            NetSyncInstanceProps();
         }
 
         void RefreshHatSunglassesLabel(Hat hat = null)
@@ -1309,6 +1322,7 @@ namespace BabyBlocks.UI
                     UnityEngine.Object.DestroyImmediate(existing);
             }
             RefreshFlagLabels();
+            NetSyncInstanceProps();
         }
 
         void TogglePassthrough()
@@ -1322,6 +1336,7 @@ namespace BabyBlocks.UI
                 PropInstanceServices.SetBushPassthrough(m.gameObject, newVal);
             }
             RefreshFlagLabels();
+            NetSyncInstanceProps();
         }
 
         void ToggleFreezeUntilHit()
@@ -1872,6 +1887,7 @@ namespace BabyBlocks.UI
                     LevelEditor.SetGrabOffset(_target.grabOffsetPos, _target.grabOffsetRot);
                 _preview?.ApplyHatOffset(_target, headMode: false);
             }
+            NetSyncInstanceProps();
         }
 
         void SetOffsetRot(float v, int axis)
@@ -1893,6 +1909,7 @@ namespace BabyBlocks.UI
                     LevelEditor.SetGrabOffset(_target.grabOffsetPos, _target.grabOffsetRot);
                 _preview?.ApplyHatOffset(_target, headMode: false);
             }
+            NetSyncInstanceProps();
         }
 
         void RestoreVec(Vector3 pos, Vector3 scale, Quaternion rot)
