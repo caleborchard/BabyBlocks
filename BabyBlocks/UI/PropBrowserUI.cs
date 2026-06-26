@@ -1341,14 +1341,14 @@ namespace BabyBlocks.UI
                     if (m == null) continue;
                     MaterialConstructionPanel.ApplyToInstance(m, _matDragEntry, pushHistory: false);
                     if (m.netId != 0)
-                        Networking.ModNetworking.SendMaterialApplied(m.netId, _matDragEntry.id);
+                        Networking.ModNetworking.SendMaterialApplied(m.netId, _matDragEntry);
                 }
             }
             else
             {
                 MaterialConstructionPanel.ApplyToInstance(foundLeo, _matDragEntry);
                 if (foundLeo.netId != 0)
-                    Networking.ModNetworking.SendMaterialApplied(foundLeo.netId, _matDragEntry.id);
+                    Networking.ModNetworking.SendMaterialApplied(foundLeo.netId, _matDragEntry);
             }
         }
 

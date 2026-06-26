@@ -508,7 +508,7 @@ namespace BabyBlocks
             // Only synced for props placed/received over the network this session (netId
             // != 0) - applying to a non-networked prop is a purely local edit.
             if (foundLeo.netId != 0)
-                BabyBlocks.Networking.ModNetworking.SendMaterialApplied(foundLeo.netId, entry.id);
+                BabyBlocks.Networking.ModNetworking.SendMaterialApplied(foundLeo.netId, entry);
         }
 
         public static void ApplyToInstance(LevelEditorObject leo, MaterialConstructionEntry entry, bool pushHistory = true)
@@ -617,6 +617,11 @@ namespace BabyBlocks
         }
 
         // ── Reset to default ─────────────────────────────────────────────────
+
+        // Public entry point for resetting a prop's materials to default (used by the network
+        // receive path; the UI goes through ApplyToInstance with the int.MinValue sentinel).
+        public static void ResetInstance(LevelEditorObject leo, bool pushHistory = true)
+            => ResetToDefaultMaterials(leo, pushHistory);
 
         static void ResetToDefaultMaterials(LevelEditorObject leo, bool pushHistory)
         {

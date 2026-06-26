@@ -39,6 +39,7 @@ namespace BabyBlocks.Networking
         private const byte CustomAccessoryRemoveMarker = 0xC7; // a peer doffed/dropped a custom (editor) hat or grabable
         private const byte PropPropertiesMarker = 0xC8; // a peer changed a networked prop's per-instance properties (hair, hat/grab offsets, sunglasses/passthrough flags, surface type)
         private const byte PropPhysicsModeMarker = 0xC9; // a peer changed a networked prop's physics mode (Static/Rigidbody/Grabable/Hat)
+        private const byte GroupScaleMarker = 0xCA; // a peer changed a static group's display scale (lives on the group root, not the members' localScale)
         private const float AnnounceIntervalSeconds = 5f;
         private const float FreecamSendIntervalSeconds = 0.15f;
 
@@ -437,7 +438,10 @@ namespace BabyBlocks.Networking
                 _levelTransferPending = true;
                 _levelTransferRequestTime = Time.unscaledTime;
                 _bufferedLivePackets.Clear();
-                FlyCamController.BeginNetworkLevelTransfer();
+                // Note: the "Loading level..." overlay is NOT shown here. It's deferred to
+                // HandleLevelTransferData (first chunk) so connecting to an empty server — or
+                // one where no peer has a level — never flashes the overlay. Buffering of live
+                // edits still starts now via _levelTransferPending above.
                 SendLevelTransferRequest();
                 BBLog.Msg("[BabyBlocks][ModNetworking] Mod channel established");
             }
@@ -566,6 +570,34 @@ namespace BabyBlocks.Networking
             }
         }
 
+        // Broadcasts the complete networked per-instance state of a freshly network-registered
+        // prop: physics mode, material construction, freeze-until-hit, tint, plus the coalesced
+        // properties (hair/offsets/sunglasses/passthrough/surface). Used after duplicating a
+        // prop — SendPropPlaced carries only the transform, so the copy's customizations would
+        // otherwise be lost on peers. Safe to call right after SendPropPlaced (all reliable-
+        // ordered, so peers spawn the prop before these arrive).
+        public static void SyncFullPropState(LevelEditorObject obj)
+        {
+            if (_channel == null || obj == null || obj.netId == 0) return;
+
+            if (obj.physicsMode != PhysicsMode.Static)
+                SendPropPhysicsMode(new List<ulong> { obj.netId }, obj.physicsMode);
+
+            if (obj.materialConstructionId >= 0)
+            {
+                var matEntry = MaterialConstructionLibrary.FindById(obj.materialConstructionId);
+                if (matEntry != null) SendMaterialApplied(obj.netId, matEntry);
+            }
+
+            if (obj.freezeUntilHit)
+                SendPropFlagsApplied(obj.netId, true);
+
+            if (obj.materialTint != new Vector3(255f, 255f, 255f))
+                SendTintApplied(obj.netId, obj.materialTint);
+
+            MarkPropPropertiesDirty(obj.netId);
+        }
+
         // Broadcasts the local player's fly-cam state to peers. While active, this is sent
         // at FreecamSendIntervalSeconds over an unreliable channel along with our suit color
         // and nickname; on exiting fly-cam a single reliable "inactive" packet is sent so
@@ -664,7 +696,8 @@ namespace BabyBlocks.Networking
                 if (marker == PropPlacedMarker   || marker == PropDeletedMarker ||
                     marker == LevelClearedMarker  || marker == MaterialAppliedMarker ||
                     marker == TintAppliedMarker   || marker == GroupSyncMarker ||
-                    marker == PropPropertiesMarker || marker == PropPhysicsModeMarker)
+                    marker == PropPropertiesMarker || marker == PropPhysicsModeMarker ||
+                    marker == GroupScaleMarker)
                 {
                     _bufferedLivePackets.Add((senderUuid, payload));
                     return;
@@ -736,6 +769,10 @@ namespace BabyBlocks.Networking
 
                 case PropPhysicsModeMarker:
                     HandlePropPhysicsMode(senderUuid, payload);
+                    break;
+
+                case GroupScaleMarker:
+                    HandleGroupScale(senderUuid, payload);
                     break;
 
                 case LevelClearedMarker:
@@ -960,21 +997,31 @@ namespace BabyBlocks.Networking
             }
         }
 
-        // Broadcasts that a peer dragged a material construction onto a networked prop, so
-        // peers re-skin their copy of that prop the same way. Only synced for props that
-        // already have a netId (i.e. placed/received over the network this session) -
-        // applying to a non-networked prop is a purely local edit. Payload layout:
-        //   [marker][netId:ulong LE][materialConstructionId:int LE]
-        public static void SendMaterialApplied(ulong netId, int materialConstructionId)
+        // Broadcasts that a peer dragged a material construction onto a networked prop (or
+        // reset it to default), so peers re-skin their copy the same way. The FULL construction
+        // definition is sent — not just its id — because construction ids come from a per-client
+        // counter, so a construction created live on one client wouldn't resolve on another.
+        // Sending the definition makes the receiver self-sufficient. id == int.MinValue is the
+        // reset-to-default sentinel (other fields ignored). Payload layout:
+        //   [marker][netId:ulong LE][id:int LE][sunglasses:byte][name str16][materialName str16][surfaceType str16]
+        public static void SendMaterialApplied(ulong netId, MaterialConstructionEntry entry)
         {
-            if (_channel == null || netId == 0) return;
+            if (_channel == null || netId == 0 || entry == null) return;
             try
             {
-                var payload = new byte[1 + 8 + 4];
+                var nameB = System.Text.Encoding.UTF8.GetBytes(entry.name ?? string.Empty);
+                var matB  = System.Text.Encoding.UTF8.GetBytes(entry.materialName ?? string.Empty);
+                var surfB = System.Text.Encoding.UTF8.GetBytes(entry.surfaceType ?? string.Empty);
+
+                var payload = new byte[1 + 8 + 4 + 1 + 2 + nameB.Length + 2 + matB.Length + 2 + surfB.Length];
                 int o = 0;
                 payload[o++] = MaterialAppliedMarker;
                 WriteULong(payload, ref o, netId);
-                Buffer.BlockCopy(BitConverter.GetBytes(materialConstructionId), 0, payload, o, 4);
+                Buffer.BlockCopy(BitConverter.GetBytes(entry.id), 0, payload, o, 4); o += 4;
+                payload[o++] = (byte)(entry.sunglassesNeeded ? 1 : 0);
+                WriteString16(payload, ref o, nameB);
+                WriteString16(payload, ref o, matB);
+                WriteString16(payload, ref o, surfB);
 
                 ChannelSend(payload, reliable: true);
             }
@@ -982,6 +1029,25 @@ namespace BabyBlocks.Networking
             {
                 MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendMaterialApplied failed: {ex.Message}");
             }
+        }
+
+        private static void WriteString16(byte[] buf, ref int offset, byte[] strBytes)
+        {
+            buf[offset++] = (byte)(strBytes.Length & 0xFF);
+            buf[offset++] = (byte)((strBytes.Length >> 8) & 0xFF);
+            Buffer.BlockCopy(strBytes, 0, buf, offset, strBytes.Length);
+            offset += strBytes.Length;
+        }
+
+        private static string ReadString16(byte[] buf, ref int offset)
+        {
+            if (offset + 2 > buf.Length) { offset = buf.Length; return string.Empty; }
+            int len = buf[offset] | (buf[offset + 1] << 8);
+            offset += 2;
+            if (len <= 0 || offset + len > buf.Length) { offset = Math.Min(offset + Math.Max(len, 0), buf.Length); return string.Empty; }
+            string s = System.Text.Encoding.UTF8.GetString(buf, offset, len);
+            offset += len;
+            return s;
         }
 
         // Broadcasts that the local player pressed the Clear Level button, so peers wipe
@@ -1209,6 +1275,11 @@ namespace BabyBlocks.Networking
                         TotalLen      = totalLen,
                     };
                     _levelChunkStates[senderUuid] = state;
+
+                    // A real level is now incoming — show the "Loading level..." overlay (only
+                    // reached when a peer actually has a level to send, so empty servers never
+                    // flash it). Cleared on completion, timeout, or teardown.
+                    FlyCamController.BeginNetworkLevelTransfer();
                 }
 
                 if (state.Chunks[chunkIndex] == null)
@@ -1277,9 +1348,14 @@ namespace BabyBlocks.Networking
         {
             try
             {
+                if (payload.Length < 1 + 8 + 4 + 1) return;
                 int o = 1;
                 ulong netId = ReadULong(payload, ref o);
-                int materialConstructionId = BitConverter.ToInt32(payload, o);
+                int id = BitConverter.ToInt32(payload, o); o += 4;
+                bool sunglasses = payload[o++] != 0;
+                string name    = ReadString16(payload, ref o);
+                string matName = ReadString16(payload, ref o);
+                string surf    = ReadString16(payload, ref o);
 
                 if (!_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
                 {
@@ -1287,9 +1363,23 @@ namespace BabyBlocks.Networking
                     return;
                 }
 
-                var entry = MaterialConstructionLibrary.FindById(materialConstructionId);
-                if (entry == null) return;
+                // int.MinValue is the reset-to-default sentinel (matches the UI's _resetEntry).
+                if (id == int.MinValue)
+                {
+                    MaterialConstructionPanel.ResetInstance(obj, pushHistory: false);
+                    return;
+                }
 
+                // Reconstruct the construction from the wire so we don't depend on the (per-client)
+                // id resolving in our local library.
+                var entry = new MaterialConstructionEntry
+                {
+                    id              = id,
+                    name            = name,
+                    materialName    = matName,
+                    surfaceType     = surf,
+                    sunglassesNeeded = sunglasses,
+                };
                 MaterialConstructionPanel.ApplyToInstance(obj, entry);
             }
             catch (Exception ex)
@@ -1956,6 +2046,73 @@ namespace BabyBlocks.Networking
             catch (Exception ex)
             {
                 MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandlePropPhysicsMode failed: {ex.Message}");
+            }
+        }
+
+        // Broadcasts a static group's display scale. A grouped prop's visible size lives on
+        // the group ROOT's localScale (GroupManager display scale), not on each member's
+        // localScale, so the per-member SendPropTransform stream alone reproduces member
+        // positions but not size on peers. We identify the group by its member netIds since
+        // group ids are allocated per-client. Payload:
+        //   [marker][scale.xyz floats LE][count:byte][netId1..netIdN:ulong LE]
+        public static void SendGroupScale(int groupId, bool reliable = true)
+        {
+            if (_channel == null || groupId <= 0) return;
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null) return;
+
+            var ids = new List<ulong>();
+            foreach (var obj in mgr.Objects)
+                if (obj != null && obj.groupId == groupId && obj.netId != 0) ids.Add(obj.netId);
+            if (ids.Count == 0) return;
+
+            var scale = GroupManager.GetGroupDisplayScale(groupId);
+            try
+            {
+                int n = Math.Min(ids.Count, 255);
+                var payload = new byte[1 + 4 * 3 + 1 + n * 8];
+                int o = 0;
+                payload[o++] = GroupScaleMarker;
+                WriteFloat(payload, ref o, scale.x);
+                WriteFloat(payload, ref o, scale.y);
+                WriteFloat(payload, ref o, scale.z);
+                payload[o++] = (byte)n;
+                for (int i = 0; i < n; i++)
+                    WriteULong(payload, ref o, ids[i]);
+
+                ChannelSend(payload, reliable);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendGroupScale failed: {ex.Message}");
+            }
+        }
+
+        private static void HandleGroupScale(byte senderUuid, byte[] payload)
+        {
+            try
+            {
+                if (payload.Length < 1 + 4 * 3 + 1) return;
+                int o = 1;
+                var scale = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                int n = payload[o++];
+                if (payload.Length < o + n * 8) return;
+
+                int groupId = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    ulong netId = ReadULong(payload, ref o);
+                    if (groupId == 0 && _networkedObjects.TryGetValue(netId, out var obj)
+                        && obj != null && obj.groupId > 0)
+                        groupId = obj.groupId;
+                }
+                if (groupId <= 0) return;
+
+                GroupManager.SetGroupDisplayScale(groupId, scale);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] HandleGroupScale failed: {ex.Message}");
             }
         }
 

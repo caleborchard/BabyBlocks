@@ -50,6 +50,8 @@ namespace BabyBlocks
         static readonly List<Vector3>    _dragStartRootPositions = new();
         static readonly List<Quaternion> _dragStartRootRotations = new();
         static readonly List<Vector3>    _dragStartLocalPositions = new();
+        // Scratch set reused each BroadcastDragTransforms to send a group's display scale once.
+        static readonly HashSet<int>     _dragGroupScaleScratch  = new();
 
         // Throttling for SendPropTransform broadcasts during an active drag, mirroring
         // the freecam update cadence (Unreliable at high frequency, periodic
@@ -447,9 +449,14 @@ namespace BabyBlocks
                                     BabyBlocks.Networking.ModNetworking.SendPropTransform(
                                         obj.netId, obj.transform.position, obj.transform.rotation, obj.transform.localScale, reliable: true);
 
-                                // History: once per group.
+                                // History + network display-scale: once per group.
                                 if (processedGroupHistory.Add(obj.groupId))
                                 {
+                                    // Member positions/localScale go out per-member above; the
+                                    // group's display scale (which carries the visible size) is
+                                    // separate and must be sent too.
+                                    BabyBlocks.Networking.ModNetworking.SendGroupScale(obj.groupId, reliable: true);
+
                                     var members = new System.Collections.Generic.List<LevelEditorObject>();
                                     var scalesBefore   = new System.Collections.Generic.List<Vector3>();
                                     var localPosBefore = new System.Collections.Generic.List<Vector3>();
@@ -916,6 +923,22 @@ namespace BabyBlocks
                 if (obj == null || obj.netId == 0) continue;
                 BabyBlocks.Networking.ModNetworking.SendPropTransform(
                     obj.netId, obj.transform.position, obj.transform.rotation, obj.transform.localScale, reliable);
+            }
+
+            // During a group-scale drag the visible size lives on the group root's display
+            // scale, not the members' localScale — broadcast it (once per group) so peers
+            // resize live, not just at drag end.
+            if (currentTool == ToolMode.Scale)
+            {
+                _dragGroupScaleScratch.Clear();
+                for (int i = 0; i < _dragObjects.Count; i++)
+                {
+                    var obj  = _dragObjects[i];
+                    var root = i < _dragScaleRoots.Count ? _dragScaleRoots[i] : null;
+                    if (obj == null || obj.groupId <= 0 || root == null) continue;
+                    if (_dragGroupScaleScratch.Add(obj.groupId))
+                        BabyBlocks.Networking.ModNetworking.SendGroupScale(obj.groupId, reliable);
+                }
             }
 
             _nextNetTransformSendTime = now + NetTransformSendIntervalSeconds;
@@ -1485,6 +1508,10 @@ namespace BabyBlocks
                     ulong netId = BabyBlocks.Networking.ModNetworking.RegisterNetworkedObject(obj);
                     BabyBlocks.Networking.ModNetworking.SendPropPlaced(
                         netId, entry.addressableKey, obj.transform.position, obj.transform.rotation, obj.transform.localScale);
+                    // PropPlaced carries only the transform; replicate the copied prop's
+                    // physics mode / material / flags so peers' copies match (the local
+                    // SetPhysicsMode above ran before netId existed, so it didn't broadcast).
+                    BabyBlocks.Networking.ModNetworking.SyncFullPropState(obj);
                 }
             }
 

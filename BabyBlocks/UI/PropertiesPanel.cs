@@ -562,6 +562,9 @@ namespace BabyBlocks.UI
                         _rawMatNames.Remove(mKey);
                         MaterialConstructionPanel.ApplyToInstance(m, _resetEntry);
                         m.materialConstructionId = -1;
+                        // _resetEntry.id == int.MinValue is the reset-to-default sentinel.
+                        if (m.netId != 0)
+                            Networking.ModNetworking.SendMaterialApplied(m.netId, _resetEntry);
                     }
                 }
                 else
@@ -571,6 +574,8 @@ namespace BabyBlocks.UI
                     MaterialConstructionPanel.ApplyToInstance(_target, _resetEntry);
                     MelonLoader.MelonLogger.Msg($"[PP Reset] after ApplyToInstance: matConstructId={_target.materialConstructionId} rawHasKey={_rawMatNames.ContainsKey(key)}");
                     _target.materialConstructionId = -1;
+                    if (_target.netId != 0)
+                        Networking.ModNetworking.SendMaterialApplied(_target.netId, _resetEntry);
                 }
                 RefreshMatLabel();
                 return;
@@ -1166,6 +1171,25 @@ namespace BabyBlocks.UI
                     BabyBlocks.Networking.ModNetworking.MarkPropPropertiesDirty(m.netId);
         }
 
+        // Broadcasts every group member's current transform after a grouped move/rotate done
+        // via the property number fields. The gizmo path networks group members per-member,
+        // but the field path (position 0-2, rotation 6-8 on a group root) otherwise wouldn't
+        // reach peers. Also re-syncs each member's loop base so the chunk loop holds the new
+        // pose locally (matching what the position fields already do).
+        void NetworkGroupMemberTransforms()
+        {
+            var mgr = LevelEditorManager.Instance;
+            if (mgr == null) return;
+            foreach (var m in GetGroupMembers())
+            {
+                if (m == null) continue;
+                mgr.SyncLoopBase(m);
+                if (m.netId != 0)
+                    BabyBlocks.Networking.ModNetworking.SendPropTransform(
+                        m.netId, m.transform.position, m.transform.rotation, m.transform.localScale, reliable: true);
+            }
+        }
+
         void ToggleGroup()
         {
             if (_target == null) return;
@@ -1460,6 +1484,11 @@ namespace BabyBlocks.UI
                             _target.transform.position, _target.transform.rotation,
                             _target.transform.localScale, reliable: true);
                 }
+                else if (_editId < 9 && grpGO != null)
+                {
+                    // Grouped move/rotate via the fields — broadcast every member.
+                    NetworkGroupMemberTransforms();
+                }
                 else if (_editId >= 15)
                 {
                     foreach (var m in GetGroupMembers())
@@ -1546,6 +1575,10 @@ namespace BabyBlocks.UI
                             Networking.ModNetworking.SendPropTransform(_target.netId,
                                 _target.transform.position, _target.transform.rotation,
                                 _target.transform.localScale, reliable: true);
+                    }
+                    else if (grpGO != null && _dragId < 9)
+                    {
+                        NetworkGroupMemberTransforms();
                     }
                     if (_dragId >= 15)
                     {
@@ -1670,6 +1703,10 @@ namespace BabyBlocks.UI
                             Networking.ModNetworking.SendPropTransform(_target.netId,
                                 _target.transform.position, _target.transform.rotation,
                                 _target.transform.localScale, reliable: true);
+                    }
+                    else if (_dragId < 9 && grpGO != null)
+                    {
+                        NetworkGroupMemberTransforms();
                     }
                     else if (_dragId >= 15)
                     {
@@ -1864,6 +1901,9 @@ namespace BabyBlocks.UI
                     if (m != null && m.groupId == _grpScSnapGroupId && m.netId != 0)
                         BabyBlocks.Networking.ModNetworking.SendPropTransform(
                             m.netId, m.transform.position, m.transform.rotation, m.transform.localScale, reliable: true);
+            // Member transforms carry position/localScale; the group's display scale (the
+            // visible size, which lives on the group root) must be sent separately.
+            BabyBlocks.Networking.ModNetworking.SendGroupScale(_grpScSnapGroupId);
             _grpScSnapGroupId = 0;
         }
 
