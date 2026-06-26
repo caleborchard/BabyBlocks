@@ -84,3 +84,11 @@ A huge thank-you to everyone that kept me going:
 - _CodyUmm_
 
 And to the *Baby Steps* community for the support. ❤️
+
+---
+
+## 📄 License
+
+Baby Blocks is released under the [MIT License](LICENSE).
+
+Baby Blocks is an unofficial, fan-made mod. It is not affiliated with, endorsed by, or associated with the developers or publishers of *Baby Steps*. All game assets and trademarks belong to their respective owners.
