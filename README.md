@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="screenshots/banner.webp" alt="BabyBlocks" width="100%"/>
+  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/banner.webp" alt="BabyBlocks" width="100%"/>
 </p>
 
 # Baby Blocks: A Level Editor for *Baby Steps*
@@ -14,26 +14,26 @@ It's highly recommended that you use the Thunderstore Mod Manager to install thi
 [Join the Baby Steps Modding Discord!](https://discord.gg/fpBQW5cKdE)
 ---
 
-## 📸 Screenshots
+## Screenshots
 
 <p align="center">
-  <img src="screenshots/editor.webp" width="32%"/>
-  <img src="screenshots/collaborative.webp" width="32%"/>
-  <img src="screenshots/hat.webp" width="32%"/>
+  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/editor.webp" width="32%"/>
+  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/collaborative.webp" width="32%"/>
+  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/hat.webp" width="32%"/>
 </p>
 <p align="center">
-  <img src="screenshots/level1.webp" width="32%"/>
-  <img src="screenshots/level2.webp" width="32%"/>
-  <img src="screenshots/level3.webp" width="32%"/>
+  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/level1.webp" width="32%"/>
+  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/level2.webp" width="32%"/>
+  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/level3.webp" width="32%"/>
 </p>
 <p align="center">
-  <img src="screenshots/levelmenu.webp" width="21%"/>
-  <img src="screenshots/grabable.webp" width="24%"/>
+  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/levelmenu.webp" width="21%"/>
+  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/grabable.webp" width="24%"/>
 </p>
 
 ---
 
-## ✨ Features
+## Features
 
 - **Works with the [Baby Steps: Multiplayer Mod](https://github.com/caleborchard/Baby-Steps-Multiplayer-Mod-Client)** — edits, prop placement, materials, grouping, physics modes, and custom accessories all sync live between players for collaborative, real-time level building
 - **Prop placement** — browse and place any prop from the game's catalog, organized in a searchable, categorized palette
@@ -49,7 +49,7 @@ It's highly recommended that you use the Thunderstore Mod Manager to install thi
 
 ---
 
-## 🔗 Links & Credits
+## Links & Credits
 
 ### My other Baby Steps projects
 - [Baby Steps: Multiplayer Mod — Client](https://github.com/caleborchard/Baby-Steps-Multiplayer-Mod-Client)
@@ -69,7 +69,7 @@ It's highly recommended that you use the Thunderstore Mod Manager to install thi
 
 ---
 
-## 🙏 Testers & Thanks
+## Testers & Thanks
 
 A huge thank-you to everyone that kept me going:
 
@@ -87,7 +87,7 @@ And to the *Baby Steps* community for the support. ❤️
 
 ---
 
-## 📄 License
+## License
 
 Baby Blocks is released under the [MIT License](LICENSE).
 
