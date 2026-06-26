@@ -35,12 +35,18 @@ namespace BabyBlocks.Networking
         // refreshes and the copy is reclaimed here.
         const float AttachedStaleSeconds = 8f;
 
+        // No-hat hair state (matches RemotePlayer.RemoveHat's reset): full hair, default hairline.
+        static readonly Vector4 NoHatHairUp = new Vector4(0f, 1f, 1f, 0f);
+        const float NoHatHairAmt = 1f;
+
         class Worn
         {
             public string     propId;
             public Vector3    localPos;
             public Quaternion localRot;
             public Vector3    worldScale;
+            public float      hairAmt = NoHatHairAmt; // hat slot only: drives the wearer's hair shader
+            public Vector4    hairUp  = NoHatHairUp;
             public GameObject clone;        // null until (re)attached, or after its bone's player is gone
             public Transform  attachedBone;
             public float      lastSeenTime; // last time this don was (re)received
@@ -52,7 +58,7 @@ namespace BabyBlocks.Networking
         // Records/updates what a peer is wearing in a slot. Idempotent: re-receiving the
         // same prop just refreshes the keep-alive timestamp (and the pose, in case the
         // offset changed). A different prop in the same slot rebuilds the copy.
-        public static void SetDesired(byte uuid, int slot, string propId, Vector3 localPos, Quaternion localRot, Vector3 worldScale)
+        public static void SetDesired(byte uuid, int slot, string propId, Vector3 localPos, Quaternion localRot, Vector3 worldScale, float hairAmt, Vector4 hairUp)
         {
             if (string.IsNullOrEmpty(propId)) return;
             var key = (uuid, slot);
@@ -73,6 +79,8 @@ namespace BabyBlocks.Networking
             w.localPos   = localPos;
             w.localRot   = localRot;
             w.worldScale = worldScale;
+            w.hairAmt    = hairAmt;
+            w.hairUp     = hairUp;
             w.lastSeenTime = Time.unscaledTime;
 
             if (w.clone != null && w.attachedBone != null)
@@ -80,6 +88,8 @@ namespace BabyBlocks.Networking
                 w.clone.transform.localPosition = localPos;
                 w.clone.transform.localRotation = localRot;
                 ApplyWorldScale(w.clone.transform, w.attachedBone, worldScale);
+                // Keep the wearer's hair shaped to the (possibly just-edited) hat.
+                if (slot == 0) ModNetworking.SetRemoteHair(uuid, hairAmt, hairUp);
             }
         }
 
@@ -91,6 +101,8 @@ namespace BabyBlocks.Networking
                 if (w.clone != null) UnityEngine.Object.Destroy(w.clone);
                 _worn.Remove(key);
             }
+            // Hat removed — restore the wearer's full hair.
+            if (slot == 0) ModNetworking.SetRemoteHair(uuid, NoHatHairAmt, NoHatHairUp);
         }
 
         public static void Update()
@@ -125,6 +137,8 @@ namespace BabyBlocks.Networking
                     if (_worn.TryGetValue(key, out var w) && w.clone != null)
                         UnityEngine.Object.Destroy(w.clone);
                     _worn.Remove(key);
+                    // Hat entry expired (owner stopped broadcasting / left) — restore hair.
+                    if (key.slot == 0) ModNetworking.SetRemoteHair(key.uuid, NoHatHairAmt, NoHatHairUp);
                 }
         }
 
@@ -158,6 +172,9 @@ namespace BabyBlocks.Networking
 
             w.clone        = clone;
             w.attachedBone = bone;
+
+            // Shape the wearer's hair to the hat now that the player is resolved.
+            if (slot == 0) ModNetworking.SetRemoteHair(uuid, w.hairAmt, w.hairUp);
             return true;
         }
 
@@ -174,8 +191,11 @@ namespace BabyBlocks.Networking
 
         public static void ClearAll()
         {
-            foreach (var w in _worn.Values)
-                if (w.clone != null) UnityEngine.Object.Destroy(w.clone);
+            foreach (var kv in _worn)
+            {
+                if (kv.Value.clone != null) UnityEngine.Object.Destroy(kv.Value.clone);
+                if (kv.Key.slot == 0) ModNetworking.SetRemoteHair(kv.Key.uuid, NoHatHairAmt, NoHatHairUp);
+            }
             _worn.Clear();
         }
     }

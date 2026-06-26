@@ -1180,6 +1180,10 @@ namespace BabyBlocks.UI
         {
             var mgr = LevelEditorManager.Instance;
             if (mgr == null) return;
+            // Root transform (rotation + display scale) first — peers must set the group root
+            // before per-member transforms, since member world rotation derives from it.
+            if (_target != null && _target.groupId > 0)
+                BabyBlocks.Networking.ModNetworking.SendGroupRootTransform(_target.groupId);
             foreach (var m in GetGroupMembers())
             {
                 if (m == null) continue;
@@ -1901,9 +1905,9 @@ namespace BabyBlocks.UI
                     if (m != null && m.groupId == _grpScSnapGroupId && m.netId != 0)
                         BabyBlocks.Networking.ModNetworking.SendPropTransform(
                             m.netId, m.transform.position, m.transform.rotation, m.transform.localScale, reliable: true);
-            // Member transforms carry position/localScale; the group's display scale (the
-            // visible size, which lives on the group root) must be sent separately.
-            BabyBlocks.Networking.ModNetworking.SendGroupScale(_grpScSnapGroupId);
+            // Member transforms carry position/localScale; the group root transform (display
+            // scale + rotation, which carry the visible size/orientation) must be sent too.
+            BabyBlocks.Networking.ModNetworking.SendGroupRootTransform(_grpScSnapGroupId);
             _grpScSnapGroupId = 0;
         }
 

@@ -1,34 +1,34 @@
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.Rendering;
 
 namespace BabyBlocks.Networking
 {
-    // Editor-only stencil outlines (reusing GizmoRenderer's outline shell pipeline) drawn
-    // around props that other connected players currently have selected, colored with that
-    // player's suit color. Mirrors RemoteFreecamManager's per-peer dictionary and visibility
-    // rule (only shown while the local player has the Baby Blocks editor open).
+    // Per-peer selection highlights: the props other connected players currently have selected,
+    // outlined in that player's suit colour. Rendered through GizmoRenderer's screen-space outline
+    // system (the same shader-based outline as the local selection), so remote highlights match
+    // the local look exactly — the SelectionMask/SelectionOutline shaders take the outline colour
+    // from the mask RGB, so each peer's group just draws into the shared mask in its own colour.
+    //
+    // Only shown while the local player has the Baby Blocks editor open (FlyCamActive &&
+    // CursorMode), mirroring RemoteFreecamManager's visibility rule.
     internal static class RemotePropHighlightManager
     {
         class Highlight
         {
             public readonly List<LevelEditorObject> targets = new();
             public Color color;
-            public Material outlineMat;
-            public Material outlineOccMat;
-            public CommandBuffer buffer;
-            public Camera attachedCam;
         }
 
         static readonly Dictionary<byte, Highlight> _highlights = new();
 
         public static void Update()
         {
+            // Rebuild GizmoRenderer's remote-highlight list from scratch each frame so removed or
+            // disconnected peers — and the editor-closed state — clear immediately.
+            GizmoRenderer.ClearRemoteHighlights();
             if (_highlights.Count == 0) return;
 
             bool editorActive = FlyCamController.FlyCamActive && FlyCamController.CursorMode;
-            var cam = editorActive ? Camera.main : null;
-            if (editorActive) GizmoRenderer.EnsureStencilMaterials();
 
             List<byte> stale = null;
             foreach (var kv in _highlights)
@@ -40,68 +40,33 @@ namespace BabyBlocks.Networking
                     (stale ??= new List<byte>()).Add(kv.Key);
                     continue;
                 }
-
-                Detach(h);
-
-                if (cam == null || !GizmoRenderer.StencilMaterialsReady) continue;
-
-                h.buffer.Clear();
-                GizmoRenderer.DrawRemoteOutline(h.targets, h.outlineMat, h.outlineOccMat, h.buffer);
-                cam.AddCommandBuffer(CameraEvent.AfterEverything, h.buffer);
-                h.attachedCam = cam;
+                if (editorActive)
+                    GizmoRenderer.AddRemoteHighlight(h.color, h.targets);
             }
 
             if (stale != null)
-                foreach (var uuid in stale) Remove(uuid);
+                foreach (var uuid in stale) _highlights.Remove(uuid);
         }
 
         public static void SetHighlights(byte uuid, List<LevelEditorObject> targets, Color color)
         {
-            if (targets == null || targets.Count == 0) return;
+            if (targets == null || targets.Count == 0) { Remove(uuid); return; }
             if (!_highlights.TryGetValue(uuid, out var h))
             {
-                h = new Highlight
-                {
-                    buffer       = new CommandBuffer { name = "BabyBlocks_RemotePropHighlight" },
-                    outlineMat   = GizmoRenderer.CreateOutlineMaterial(color),
-                    outlineOccMat = GizmoRenderer.CreateOccludedOutlineMaterial(color),
-                    color        = color,
-                };
+                h = new Highlight();
                 _highlights[uuid] = h;
             }
-
             h.targets.Clear();
             h.targets.AddRange(targets);
-            if (h.color != color)
-            {
-                h.color = color;
-                if (h.outlineMat    != null) h.outlineMat.SetColor("_Color", color);
-                if (h.outlineOccMat != null) h.outlineOccMat.SetColor("_Color",
-                    new Color(color.r, color.g, color.b, GizmoRenderer.OutlineOccludedAlpha));
-            }
+            h.color = color;
         }
 
-        public static void Remove(byte uuid)
-        {
-            if (_highlights.TryGetValue(uuid, out var h))
-            {
-                Detach(h);
-                _highlights.Remove(uuid);
-            }
-        }
+        public static void Remove(byte uuid) => _highlights.Remove(uuid);
 
         public static void ClearAll()
         {
-            foreach (var h in _highlights.Values)
-                Detach(h);
             _highlights.Clear();
-        }
-
-        static void Detach(Highlight h)
-        {
-            if (h.attachedCam != null && h.buffer != null)
-                h.attachedCam.RemoveCommandBuffer(CameraEvent.AfterEverything, h.buffer);
-            h.attachedCam = null;
+            GizmoRenderer.ClearRemoteHighlights();
         }
     }
 }

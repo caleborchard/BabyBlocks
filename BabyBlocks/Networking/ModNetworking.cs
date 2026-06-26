@@ -39,7 +39,7 @@ namespace BabyBlocks.Networking
         private const byte CustomAccessoryRemoveMarker = 0xC7; // a peer doffed/dropped a custom (editor) hat or grabable
         private const byte PropPropertiesMarker = 0xC8; // a peer changed a networked prop's per-instance properties (hair, hat/grab offsets, sunglasses/passthrough flags, surface type)
         private const byte PropPhysicsModeMarker = 0xC9; // a peer changed a networked prop's physics mode (Static/Rigidbody/Grabable/Hat)
-        private const byte GroupScaleMarker = 0xCA; // a peer changed a static group's display scale (lives on the group root, not the members' localScale)
+        private const byte GroupScaleMarker = 0xCA; // a peer changed a static group's ROOT transform (display scale + root rotation — both live on the group root, not the members)
         private const float AnnounceIntervalSeconds = 5f;
         private const float FreecamSendIntervalSeconds = 0.15f;
 
@@ -134,6 +134,7 @@ namespace BabyBlocks.Networking
         private static FieldInfo _handBonesItem1Field;       // ValueTuple.Item1 (right hand)
         private static FieldInfo _handBonesItem2Field;       // ValueTuple.Item2 (left hand)
         private static FieldInfo _playersField;              // NetworkManager.players (IDictionary<byte, RemotePlayer>)
+        private static MethodInfo _basePlayerSetHairHatMethod; // BasePlayer.SetHairHat(float, Vector4)
 
         // BabyStepsNetworking channel (object so no hard type dependency)
         private static object   _channel;
@@ -277,6 +278,8 @@ namespace BabyBlocks.Networking
                         _handBonesItem1Field = _basePlayerHandBonesField.FieldType.GetField("Item1");
                         _handBonesItem2Field = _basePlayerHandBonesField.FieldType.GetField("Item2");
                     }
+                    _basePlayerSetHairHatMethod = basePlayerType?.GetMethod("SetHairHat",
+                        new[] { typeof(float), typeof(Vector4) });
 
                     if (_playersField != null && _localPlayerInstanceField != null
                         && _basePlayerHeadBoneField != null && _basePlayerHandBonesField != null)
@@ -1746,9 +1749,11 @@ namespace BabyBlocks.Networking
             catch { return null; }
         }
 
-        // Payload: [marker][slot:byte][idLen:ushort LE][idBytes UTF8][pos.xyz][rot.xyzw][scale.xyz] (floats LE)
+        // Payload: [marker][slot:byte][idLen:ushort LE][idBytes UTF8][pos.xyz][rot.xyzw][scale.xyz]
+        //          [hairAmt][hairUp.xyzw] (floats LE)
         // pos/rot are the prop's pose relative to the local player's matching bone; scale is
-        // world scale. Returns false if the local bone couldn't be resolved (caller retries).
+        // world scale. hairAmt/hairUp drive the wearer's hair shader (hats only; defaults for
+        // grabables). Returns false if the local bone couldn't be resolved (caller retries).
         private static bool SendCustomAccessoryDon(int slot, LevelEditorObject leo)
         {
             if (_channel == null || leo == null) return false;
@@ -1765,8 +1770,19 @@ namespace BabyBlocks.Networking
                 Quaternion localRot = Quaternion.Inverse(bone.rotation) * t.rotation;
                 Vector3 scale = t.lossyScale;
 
+                // Hair shaping (hats only). hairAmt = leo.hatHairAmt (authoritative); hairUp comes
+                // from the live Hat component if present, else the default hairline.
+                float hairAmt = 1f;
+                Vector4 hairUp = new Vector4(0f, 1f, 1f, 0f);
+                if (slot == 0)
+                {
+                    hairAmt = leo.hatHairAmt;
+                    var hat = leo.GetComponent<Hat>();
+                    if (hat != null) hairUp = hat.hairlineUpVec;
+                }
+
                 var idBytes = System.Text.Encoding.UTF8.GetBytes(propId);
-                var payload = new byte[1 + 1 + 2 + idBytes.Length + 4 * (3 + 4 + 3)];
+                var payload = new byte[1 + 1 + 2 + idBytes.Length + 4 * (3 + 4 + 3 + 1 + 4)];
                 int o = 0;
                 payload[o++] = CustomAccessoryDonMarker;
                 payload[o++] = (byte)slot;
@@ -1785,6 +1801,11 @@ namespace BabyBlocks.Networking
                 WriteFloat(payload, ref o, scale.x);
                 WriteFloat(payload, ref o, scale.y);
                 WriteFloat(payload, ref o, scale.z);
+                WriteFloat(payload, ref o, hairAmt);
+                WriteFloat(payload, ref o, hairUp.x);
+                WriteFloat(payload, ref o, hairUp.y);
+                WriteFloat(payload, ref o, hairUp.z);
+                WriteFloat(payload, ref o, hairUp.w);
 
                 ChannelSend(payload, reliable: true);
                 return true;
@@ -1819,15 +1840,17 @@ namespace BabyBlocks.Networking
                 int slot = payload[o++];
                 int idLen = payload[o] | (payload[o + 1] << 8);
                 o += 2;
-                if (slot < 0 || slot > 2 || idLen <= 0 || o + idLen + 4 * 10 > payload.Length) return;
+                if (slot < 0 || slot > 2 || idLen <= 0 || o + idLen + 4 * 15 > payload.Length) return;
                 string propId = System.Text.Encoding.UTF8.GetString(payload, o, idLen);
                 o += idLen;
 
                 var pos   = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 var rot   = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 var scale = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                float hairAmt = ReadFloat(payload, ref o);
+                var hairUp = new Vector4(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
 
-                RemoteAccessoryManager.SetDesired(senderUuid, slot, propId, pos, rot, scale);
+                RemoteAccessoryManager.SetDesired(senderUuid, slot, propId, pos, rot, scale, hairAmt, hairUp);
             }
             catch (Exception ex)
             {
@@ -2049,13 +2072,15 @@ namespace BabyBlocks.Networking
             }
         }
 
-        // Broadcasts a static group's display scale. A grouped prop's visible size lives on
-        // the group ROOT's localScale (GroupManager display scale), not on each member's
-        // localScale, so the per-member SendPropTransform stream alone reproduces member
-        // positions but not size on peers. We identify the group by its member netIds since
-        // group ids are allocated per-client. Payload:
-        //   [marker][scale.xyz floats LE][count:byte][netId1..netIdN:ulong LE]
-        public static void SendGroupScale(int groupId, bool reliable = true)
+        // Broadcasts a static group's ROOT transform — its world rotation and display scale.
+        // A grouped prop's visible size AND orientation live on the group ROOT (display scale +
+        // root rotation), not on each member's own transform, so the per-member SendPropTransform
+        // stream alone reproduces member positions but not size/shear/rotation-frame on peers.
+        // We identify the group by member netIds since group ids are allocated per-client.
+        // Must be sent BEFORE the per-member transforms (member world rotation is derived from
+        // the root, so peers need the root set first). Payload:
+        //   [marker][rot.xyzw][scale.xyz] floats LE [count:byte][netId1..netIdN:ulong LE]
+        public static void SendGroupRootTransform(int groupId, bool reliable = true)
         {
             if (_channel == null || groupId <= 0) return;
             var mgr = LevelEditorManager.Instance;
@@ -2067,12 +2092,18 @@ namespace BabyBlocks.Networking
             if (ids.Count == 0) return;
 
             var scale = GroupManager.GetGroupDisplayScale(groupId);
+            var root  = GroupManager.GetGroupRoot(groupId);
+            var rot   = root != null ? root.transform.rotation : Quaternion.identity;
             try
             {
                 int n = Math.Min(ids.Count, 255);
-                var payload = new byte[1 + 4 * 3 + 1 + n * 8];
+                var payload = new byte[1 + 4 * 7 + 1 + n * 8];
                 int o = 0;
                 payload[o++] = GroupScaleMarker;
+                WriteFloat(payload, ref o, rot.x);
+                WriteFloat(payload, ref o, rot.y);
+                WriteFloat(payload, ref o, rot.z);
+                WriteFloat(payload, ref o, rot.w);
                 WriteFloat(payload, ref o, scale.x);
                 WriteFloat(payload, ref o, scale.y);
                 WriteFloat(payload, ref o, scale.z);
@@ -2084,7 +2115,7 @@ namespace BabyBlocks.Networking
             }
             catch (Exception ex)
             {
-                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendGroupScale failed: {ex.Message}");
+                MelonLogger.Warning($"[BabyBlocks][ModNetworking] SendGroupRootTransform failed: {ex.Message}");
             }
         }
 
@@ -2092,8 +2123,9 @@ namespace BabyBlocks.Networking
         {
             try
             {
-                if (payload.Length < 1 + 4 * 3 + 1) return;
+                if (payload.Length < 1 + 4 * 7 + 1) return;
                 int o = 1;
+                var rot   = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 var scale = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 int n = payload[o++];
                 if (payload.Length < o + n * 8) return;
@@ -2108,7 +2140,9 @@ namespace BabyBlocks.Networking
                 }
                 if (groupId <= 0) return;
 
-                GroupManager.SetGroupDisplayScale(groupId, scale);
+                GroupManager.SetGroupDisplayScale(groupId, scale); // sets root.localScale
+                var root = GroupManager.GetGroupRoot(groupId);
+                if (root != null) root.transform.rotation = rot;
             }
             catch (Exception ex)
             {
@@ -2135,15 +2169,36 @@ namespace BabyBlocks.Networking
         {
             try
             {
-                if (_playersField == null || _networkManagerField == null) return null;
-                var networkManager = _networkManagerField.GetValue(null);
-                if (networkManager == null) return null;
-                var players = _playersField.GetValue(networkManager) as System.Collections.IDictionary;
-                if (players == null) return null;
-                var remotePlayer = players[uuid]; // ConcurrentDictionary's IDictionary indexer returns null if absent
+                var remotePlayer = GetRemotePlayerObject(uuid);
                 return GetBoneFromPlayer(remotePlayer, slot);
             }
             catch { return null; }
+        }
+
+        // Resolves the RemotePlayer object for a uuid via NetworkManager.players (reflection).
+        private static object GetRemotePlayerObject(byte uuid)
+        {
+            if (_playersField == null || _networkManagerField == null) return null;
+            var networkManager = _networkManagerField.GetValue(null);
+            if (networkManager == null) return null;
+            var players = _playersField.GetValue(networkManager) as System.Collections.IDictionary;
+            // ConcurrentDictionary's IDictionary indexer returns null if absent.
+            return players?[uuid];
+        }
+
+        // Drives a remote player's hair shader so a worn custom hat shapes their hair the same way
+        // a base-game hat would (BasePlayer.SetHairHat). Called by RemoteAccessoryManager for the
+        // hat slot; reset to the no-hat default when the hat is removed.
+        internal static void SetRemoteHair(byte uuid, float hatMax, Vector4 hatUp)
+        {
+            try
+            {
+                if (_basePlayerSetHairHatMethod == null) return;
+                var remotePlayer = GetRemotePlayerObject(uuid);
+                if (remotePlayer == null) return;
+                _basePlayerSetHairHatMethod.Invoke(remotePlayer, new object[] { hatMax, hatUp });
+            }
+            catch { }
         }
 
         private static Transform GetBoneFromPlayer(object player, int slot)

@@ -430,6 +430,22 @@ namespace BabyBlocks
                     }
                     if (_dragObjects.Count > 0)
                     {
+                        // Group root transforms (rotation + display scale) first, once per group,
+                        // so peers set the root before the per-member transforms below — member
+                        // world rotation/size/shear derive from the root.
+                        if (currentTool == ToolMode.Scale || currentTool == ToolMode.Rotate)
+                        {
+                            var sentRootGroups = new System.Collections.Generic.HashSet<int>();
+                            for (int i = 0; i < _dragObjects.Count; i++)
+                            {
+                                var o    = _dragObjects[i];
+                                var root = i < _dragScaleRoots.Count ? _dragScaleRoots[i] : null;
+                                if (o == null || o.groupId <= 0 || root == null) continue;
+                                if (sentRootGroups.Add(o.groupId))
+                                    BabyBlocks.Networking.ModNetworking.SendGroupRootTransform(o.groupId, reliable: true);
+                            }
+                        }
+
                         // For group-scale drags push one GroupScaleAction per group instead of
                         // per-member PushTransform (which would miss display-scale and root-pos).
                         var processedGroupHistory = new System.Collections.Generic.HashSet<int>();
@@ -449,14 +465,10 @@ namespace BabyBlocks
                                     BabyBlocks.Networking.ModNetworking.SendPropTransform(
                                         obj.netId, obj.transform.position, obj.transform.rotation, obj.transform.localScale, reliable: true);
 
-                                // History + network display-scale: once per group.
+                                // History: once per group. (The group root transform was already
+                                // broadcast in the pre-pass above.)
                                 if (processedGroupHistory.Add(obj.groupId))
                                 {
-                                    // Member positions/localScale go out per-member above; the
-                                    // group's display scale (which carries the visible size) is
-                                    // separate and must be sent too.
-                                    BabyBlocks.Networking.ModNetworking.SendGroupScale(obj.groupId, reliable: true);
-
                                     var members = new System.Collections.Generic.List<LevelEditorObject>();
                                     var scalesBefore   = new System.Collections.Generic.List<Vector3>();
                                     var localPosBefore = new System.Collections.Generic.List<Vector3>();
@@ -917,18 +929,12 @@ namespace BabyBlocks
             if (now < _nextNetTransformSendTime) return;
 
             bool reliable = now >= _nextNetTransformReliableTime;
-            for (int i = 0; i < _dragObjects.Count; i++)
-            {
-                var obj = _dragObjects[i];
-                if (obj == null || obj.netId == 0) continue;
-                BabyBlocks.Networking.ModNetworking.SendPropTransform(
-                    obj.netId, obj.transform.position, obj.transform.rotation, obj.transform.localScale, reliable);
-            }
 
-            // During a group-scale drag the visible size lives on the group root's display
-            // scale, not the members' localScale — broadcast it (once per group) so peers
-            // resize live, not just at drag end.
-            if (currentTool == ToolMode.Scale)
+            // During a group scale/rotate drag, the visible size AND rotation frame live on the
+            // group root (display scale + root rotation), not the members' own transforms.
+            // Broadcast the root transform FIRST (once per group) — peers must set the root
+            // before applying per-member transforms, since member world rotation derives from it.
+            if (currentTool == ToolMode.Scale || currentTool == ToolMode.Rotate)
             {
                 _dragGroupScaleScratch.Clear();
                 for (int i = 0; i < _dragObjects.Count; i++)
@@ -937,8 +943,16 @@ namespace BabyBlocks
                     var root = i < _dragScaleRoots.Count ? _dragScaleRoots[i] : null;
                     if (obj == null || obj.groupId <= 0 || root == null) continue;
                     if (_dragGroupScaleScratch.Add(obj.groupId))
-                        BabyBlocks.Networking.ModNetworking.SendGroupScale(obj.groupId, reliable);
+                        BabyBlocks.Networking.ModNetworking.SendGroupRootTransform(obj.groupId, reliable);
                 }
+            }
+
+            for (int i = 0; i < _dragObjects.Count; i++)
+            {
+                var obj = _dragObjects[i];
+                if (obj == null || obj.netId == 0) continue;
+                BabyBlocks.Networking.ModNetworking.SendPropTransform(
+                    obj.netId, obj.transform.position, obj.transform.rotation, obj.transform.localScale, reliable);
             }
 
             _nextNetTransformSendTime = now + NetTransformSendIntervalSeconds;

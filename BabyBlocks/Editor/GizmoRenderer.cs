@@ -84,6 +84,24 @@ namespace BabyBlocks
         // fresh Camera.main matrices after Cinemachine LateUpdate has run.
         static IReadOnlyList<LevelEditorObject> _ssLastSelection;
 
+        // Other connected players' selection highlights, rendered into the SAME screen-space
+        // outline mask as the local selection but in each player's suit colour. The SelectionMask
+        // shader writes its _Color into the mask RGB and SelectionOutline reads the outline colour
+        // straight from the mask RGB, so a per-draw MaterialPropertyBlock is all that's needed —
+        // no separate buffers or shader changes. Fed each frame by RemotePropHighlightManager.
+        static readonly List<(Color color, IReadOnlyList<LevelEditorObject> targets)> _ssRemoteHighlights = new();
+        // One reusable property block per highlight group (pooled to avoid per-frame allocation
+        // and per-draw aliasing).
+        static readonly List<MaterialPropertyBlock> _ssRemoteMpbPool = new();
+
+        public static void ClearRemoteHighlights() => _ssRemoteHighlights.Clear();
+        public static void AddRemoteHighlight(Color color, IReadOnlyList<LevelEditorObject> targets)
+        {
+            if (targets != null && targets.Count > 0)
+                _ssRemoteHighlights.Add((color, targets));
+        }
+        public static bool HasRemoteHighlights => _ssRemoteHighlights.Count > 0;
+
         public static bool ScreenSpaceShadersLoaded => _maskMat != null && _ppMat != null;
 
         static bool    _outlineTranslateDrag;
@@ -174,7 +192,10 @@ namespace BabyBlocks
             if (_root == null) return;
             bool visible = selection != null && selection.Count > 0;
             _root.SetActive(visible);
-            if (_overlayCam != null) _overlayCam.enabled = visible;
+            // The screen-space outline command buffer is attached to _overlayCam, so the cam must
+            // keep rendering when peers have selection highlights even if WE have nothing selected.
+            // The gizmo handles (_root) stay tied to the local selection only.
+            if (_overlayCam != null) _overlayCam.enabled = visible || _ssRemoteHighlights.Count > 0;
             if (!visible) return;
 
             _pivotPos = _pivotOverrideActive ? _pivotOverride : GetSelectionBoundsCenter(selection);
@@ -494,7 +515,10 @@ namespace BabyBlocks
         {
             DetachSSBuffer();
 
-            if (selection == null || selection.Count == 0 || mainCam == null) return;
+            bool hasLocal  = selection != null && selection.Count > 0;
+            // Render even with an empty local selection if other players have highlights, so a
+            // peer's selection still shows when we have nothing selected ourselves.
+            if ((!hasLocal && _ssRemoteHighlights.Count == 0) || mainCam == null) return;
             if (!ScreenSpaceShadersLoaded) return;
             if (_overlayCam == null) return;
 
@@ -534,7 +558,7 @@ namespace BabyBlocks
         {
             if (_ssBuffer == null || _ssCameraTarget == null) return;
             if (!ScreenSpaceShadersLoaded) return;
-            if (_ssLastSelection == null || _ssLastSelection.Count == 0) return;
+            if ((_ssLastSelection == null || _ssLastSelection.Count == 0) && _ssRemoteHighlights.Count == 0) return;
 
             var mainCam = Camera.main;
             if (mainCam == null) return;
@@ -578,23 +602,56 @@ namespace BabyBlocks
             _ssBuffer.SetViewport(new Rect(0, 0, mainCam.pixelWidth, mainCam.pixelHeight));
             _ssBuffer.SetViewProjectionMatrices(mainCam.worldToCameraMatrix, mainCam.projectionMatrix);
 
+            // Local selection (default yellow, via the material's own _Color uniform).
             _maskMat.SetColor("_Color", new Color(1f, 0.85f, 0.1f, 1f));
-            for (int s = 0; s < selection.Count; s++)
+            if (selection != null)
             {
-                var sel = selection[s];
-                if (sel == null) continue;
-                var mfs = sel.GetComponentsInChildren<MeshFilter>();
-                if (mfs == null) continue;
-                for (int i = 0; i < mfs.Length; i++)
+                for (int s = 0; s < selection.Count; s++)
                 {
-                    var mf = mfs[i];
-                    if (mf == null || mf.sharedMesh == null) continue;
-                    var mr = mf.GetComponent<MeshRenderer>();
-                    if (mr == null || !mr.enabled) continue;
-                    var mesh   = mf.sharedMesh;
-                    var matrix = mf.transform.localToWorldMatrix;
-                    for (int sub = 0; sub < mesh.subMeshCount; sub++)
-                        _ssBuffer.DrawMesh(mesh, matrix, _maskMat, sub);
+                    var sel = selection[s];
+                    if (sel == null) continue;
+                    var mfs = sel.GetComponentsInChildren<MeshFilter>();
+                    if (mfs == null) continue;
+                    for (int i = 0; i < mfs.Length; i++)
+                    {
+                        var mf = mfs[i];
+                        if (mf == null || mf.sharedMesh == null) continue;
+                        var mr = mf.GetComponent<MeshRenderer>();
+                        if (mr == null || !mr.enabled) continue;
+                        var mesh   = mf.sharedMesh;
+                        var matrix = mf.transform.localToWorldMatrix;
+                        for (int sub = 0; sub < mesh.subMeshCount; sub++)
+                            _ssBuffer.DrawMesh(mesh, matrix, _maskMat, sub);
+                    }
+                }
+            }
+
+            // Other players' selections — same mask, drawn in each player's colour via a
+            // per-group property block (the outline shader reads the colour from the mask RGB).
+            for (int gi = 0; gi < _ssRemoteHighlights.Count; gi++)
+            {
+                var g = _ssRemoteHighlights[gi];
+                if (g.targets == null || g.targets.Count == 0) continue;
+                while (_ssRemoteMpbPool.Count <= gi) _ssRemoteMpbPool.Add(new MaterialPropertyBlock());
+                var mpb = _ssRemoteMpbPool[gi];
+                mpb.SetColor("_Color", g.color);
+                for (int s = 0; s < g.targets.Count; s++)
+                {
+                    var sel = g.targets[s];
+                    if (sel == null) continue;
+                    var mfs = sel.GetComponentsInChildren<MeshFilter>();
+                    if (mfs == null) continue;
+                    for (int i = 0; i < mfs.Length; i++)
+                    {
+                        var mf = mfs[i];
+                        if (mf == null || mf.sharedMesh == null) continue;
+                        var mr = mf.GetComponent<MeshRenderer>();
+                        if (mr == null || !mr.enabled) continue;
+                        var mesh   = mf.sharedMesh;
+                        var matrix = mf.transform.localToWorldMatrix;
+                        for (int sub = 0; sub < mesh.subMeshCount; sub++)
+                            _ssBuffer.DrawMesh(mesh, matrix, _maskMat, sub, 0, mpb);
+                    }
                 }
             }
 
