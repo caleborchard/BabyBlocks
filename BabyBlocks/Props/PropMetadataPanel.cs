@@ -18,10 +18,10 @@ namespace BabyBlocks
         const float MaterialListH = 140f;
         const float RendererListH = 120f;
 
-        const string SearchField      = "propMetaSearch";
+        const string SearchField = "propMetaSearch";
         const string DisplayNameField = "propMetaDisplayName";
-        const string CategoryField    = "propMetaCategory";
-        const string OverrideField    = "propMetaOverride";
+        const string CategoryField = "propMetaCategory";
+        const string OverrideField = "propMetaOverride";
 
         static Rect _windowRect;
         static bool _windowInitialized;
@@ -658,7 +658,7 @@ namespace BabyBlocks
             var r = _exportWindowRect;
             GUI.Box(r, "Metadata Export", GUI.skin.window);
 
-            var headerRect  = new Rect(r.x, r.y, r.width, HeaderH);
+            var headerRect = new Rect(r.x, r.y, r.width, HeaderH);
             var contentRect = new Rect(r.x + Pad, r.y + HeaderH + Pad, r.width - Pad * 2f, r.height - HeaderH - Pad * 2f);
 
             GUILayout.BeginArea(contentRect);

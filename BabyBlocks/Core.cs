@@ -20,9 +20,7 @@ namespace BabyBlocks
         static MelonPreferences_Category _prefs;
         static MelonPreferences_Entry<string> _lastSavePath;
 
-        // Multiplayer-mod chat detection
-        // Accessed via reflection so BabyBlocks compiles without a hard dependency
-        // on the multiplayer mod. FieldInfo is cached after the first lookup.
+        // reflects into BabyStepsMultiplayerClient to detect chat open; cached after first lookup
         static System.Reflection.FieldInfo _mpUiManagerField;
         static System.Reflection.FieldInfo _mpShowChatTabField;
         static bool _mpReflectionDone;
@@ -36,14 +34,12 @@ namespace BabyBlocks
                 foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
                 {
                     if (asm.GetName().Name != "BabyStepsMultiplayerClient") continue;
-                    var coreType  = asm.GetType("BabyStepsMultiplayerClient.Core");
-                    var uiField   = coreType?.GetField("uiManager",
-                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                    var chatField = uiField?.FieldType.GetField("showChatTab",
-                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    var coreType = asm.GetType("BabyStepsMultiplayerClient.Core");
+                    var uiField = coreType?.GetField("uiManager", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    var chatField = uiField?.FieldType.GetField("showChatTab", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
                     if (uiField != null && chatField != null)
                     {
-                        _mpUiManagerField   = uiField;
+                        _mpUiManagerField = uiField;
                         _mpShowChatTabField = chatField;
                     }
                     break;
@@ -70,14 +66,9 @@ namespace BabyBlocks
         public static bool IsKeyboardCaptured =>
             IsMultiplayerChatOpen || (Menu.me != null && Menu.me.paused);
 
-        // BestRegionLoader.LoadProp/UnloadProp are async UniTaskVoid methods that set
-        // somebodyLoading = true, await an Addressables handle, then clear it. If the
-        // handle gets invalidated mid-flight (e.g. concurrent chunk/scene unload),
-        // somebodyLoading stays true forever and no further chunk loads can start.
-        // Normal chunk loads take 3-4s; use 6s so we never interrupt a healthy load.
-        // Skipped during far teleports — FlyCamTeleportCo has its own scoped watchdog.
+        // if BRL.somebodyLoading gets stuck (Addressables handle invalidated mid-flight) no further chunks can start; force-clear after 6s
         const float SomebodyLoadingStuckTimeout = 6f;
-        static bool  _somebodyLoadingWasTrue;
+        static bool _somebodyLoadingWasTrue;
         static float _somebodyLoadingSinceTime;
 
         static void WatchSomebodyLoading()
@@ -89,7 +80,7 @@ namespace BabyBlocks
             {
                 if (!_somebodyLoadingWasTrue)
                 {
-                    _somebodyLoadingWasTrue   = true;
+                    _somebodyLoadingWasTrue = true;
                     _somebodyLoadingSinceTime = Time.realtimeSinceStartup;
                 }
                 else if (Time.realtimeSinceStartup - _somebodyLoadingSinceTime > SomebodyLoadingStuckTimeout)
@@ -103,24 +94,17 @@ namespace BabyBlocks
             else { _somebodyLoadingWasTrue = false; }
         }
 
-        // Menu.me.teleporting can get stuck true (e.g. if a level-transfer load
-        // called Menu.me.Teleport in a context where the native TeleportCo never
-        // completes). While stuck, the R / BackQuote guards block editor exit,
-        // leaving the player permanently trapped. Force-clear after a generous timeout.
+        // Menu.me.teleporting can get stuck (TeleportCo never completes); force-clear after 8s
         const float MenuTeleportingStuckTimeout = 8f;
-        static bool  _menuTeleportingWasTrue;
+        static bool _menuTeleportingWasTrue;
         static float _menuTeleportingSinceTime;
 
         static void WatchMenuTeleporting()
         {
             if (Menu.me == null) return;
 
-            // Never interfere while one of our own coroutines is managing the teleport —
-            // they deliberately loop on Menu.me.teleporting and must let it finish naturally.
-            // Only watch for unmanaged stuck states (e.g. from a peer-join side-effect).
-            if (FlyCamController.FarTeleportActive
-                || FlyCamController.LevelLoadTeleportActive
-                || FlyCamController.NetworkLevelTransferActive)
+            // skip when our own coroutines are managing the teleport
+            if (FlyCamController.FarTeleportActive || FlyCamController.LevelLoadTeleportActive || FlyCamController.NetworkLevelTransferActive)
             {
                 _menuTeleportingWasTrue = false;
                 return;
@@ -130,14 +114,14 @@ namespace BabyBlocks
             {
                 if (!_menuTeleportingWasTrue)
                 {
-                    _menuTeleportingWasTrue  = true;
+                    _menuTeleportingWasTrue = true;
                     _menuTeleportingSinceTime = Time.realtimeSinceStartup;
                 }
                 else if (Time.realtimeSinceStartup - _menuTeleportingSinceTime > MenuTeleportingStuckTimeout)
                 {
                     MelonLogger.Warning(
                         $"[BabyBlocks] Menu.me.teleporting stuck true for {MenuTeleportingStuckTimeout}s, force-clearing.");
-                    Menu.me.teleporting  = false;
+                    Menu.me.teleporting = false;
                     _menuTeleportingWasTrue = false;
                 }
             }
@@ -162,7 +146,7 @@ namespace BabyBlocks
         {
             Logger = LoggerInstance;
 
-            _prefs        = MelonPreferences.CreateCategory("BabyBlocks");
+            _prefs = MelonPreferences.CreateCategory("BabyBlocks");
             _lastSavePath = _prefs.CreateEntry("LastSavePath", "");
 
             ClassInjector.RegisterTypeInIl2Cpp<LevelEditorObject>();
@@ -183,23 +167,13 @@ namespace BabyBlocks
             UI.PropBrowserUI.Init();
         }
 
-        // A "load a different save" triggers a burst of many additive scene loads/unloads in
-        // quick succession (streaming chunks, loading screens, etc). Refreshing the MicroSplat
-        // layer materials mid-burst grabs an intermediate/loading scene's terrain material,
-        // which itself goes stale once the burst finishes loading the final scene. Instead,
-        // each scene load pushes this timestamp out; FlyCamController.OnUpdate fires the
-        // refresh once no further scene load has happened for MicroSplatRefreshSettleDelay.
+        // scene load burst during save-change can grab a stale terrain material mid-burst; settle for 1.5s first
         internal static float PendingMicroSplatRefreshTime = -1f;
         internal const float MicroSplatRefreshSettleDelay = 1.5f;
 
-        // Tracks whether FlyCamTeleportCo was active last frame, so OnUpdate can
-        // detect the true->false transition and start the post-teleport rescan
-        // window (see OnUpdate).
         static bool _wasFarTeleportActive;
 
-        // After FlyCamTeleportCo finishes, BRL keeps streaming in surrounding chunks.
-        // Keep brl.off == false and rescan every frame for this many frames so newly
-        // loaded chunks get hidden, then flip brl.off = true once.
+        // after far teleport, BRL keeps streaming; rescan 90 frames so newly-loaded chunks get hidden
         const int PostTeleportRescanFrames = 90;
         static int _postTeleportRescanFramesRemaining;
 
@@ -209,10 +183,7 @@ namespace BabyBlocks
             PendingMicroSplatRefreshTime = Time.realtimeSinceStartup;
         }
 
-        // ModNetworking.Update touches types from BabyStepsNetworking.dll, which BabyBlocks
-        // references directly but which may not be present if no other mod has installed it.
-        // Resolving those types fails the first time this is JIT'd/called in that case;
-        // catch it once and stop calling in so the rest of the editor keeps working.
+        // BabyStepsNetworking.dll may not be present; catch the first failure and disable networking
         static bool _networkingDisabled;
 
         public override void OnUpdate()
@@ -237,19 +208,9 @@ namespace BabyBlocks
 
             BaseMapController.TickWeatherPreset();
 
-            // Suppress any terrain chunks or prop containers that BRL streams in
-            // while the base map is hidden. Runs unconditionally so it works even
-            // before the fly cam editor has been opened.
-            //
-            // Skipped while FlyCamTeleportCo is running so the native TeleportCo has
-            // uncontested control of brl.off; forcing it back to true here every frame
-            // would stall fullyLoaded forever.
+            // suppress BRL-streamed terrain chunks while base map is hidden; skipped during far teleport so TeleportCo has uncontested brl.off
             if (!BaseMapController.BaseMapEnabled && !FlyCamController.FarTeleportActive)
             {
-                // FlyCamTeleportCo just finished (first frame back with FarTeleportActive
-                // == false). brl.off is still false — BRL will stream surrounding chunks
-                // over the next several frames. Start the rescan window so those chunks
-                // get hidden as they load.
                 if (_wasFarTeleportActive)
                     _postTeleportRescanFramesRemaining = PostTeleportRescanFrames;
                 _wasFarTeleportActive = false;
@@ -266,7 +227,6 @@ namespace BabyBlocks
                     if (!brl.off && !BaseMapController.DeferBrlOff && _postTeleportRescanFramesRemaining == 0)
                         brl.off = true;
 
-                    // Suppress BRL child renderers (proxies).
                     var cache = BaseMapController._brlRendererCache;
                     bool needsRefresh = false;
                     foreach (var r in cache)
@@ -279,8 +239,6 @@ namespace BabyBlocks
                             brl.GetComponentsInChildren<Renderer>(true);
                 }
 
-                // Re-assert hidden lights/colliders that game logic (day-night cycle,
-                // quest/cutscene state) may have re-enabled since the last toggle.
                 BaseMapController.SuppressHiddenWhileBaseMapOff();
             }
             else if (FlyCamController.FarTeleportActive)
@@ -301,7 +259,7 @@ namespace BabyBlocks
         }
     }
 
-    // Replaces FlyCam.Update to add right-click look in cursor mode and left-click far-teleport.
+    // replaces FlyCam.Update to add RMB look in cursor mode and LMB far-teleport
     [HarmonyPatch(typeof(FlyCam), "Update")]
     class FlyCamUpdatePatch
     {
@@ -323,7 +281,6 @@ namespace BabyBlocks
                 if (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.LeftAlt)) input *= 30f;
             }
 
-            // Cursor mode: look only while RMB held and not dragging a gizmo.
             bool doLook = !FlyCamController.CursorMode
                        || (Input.GetMouseButton(1) && !LevelEditor.isDragging);
 
@@ -332,7 +289,7 @@ namespace BabyBlocks
                 var eul = __instance.transform.eulerAngles;
                 if (eul.x > 180f) eul.x -= 360f;
                 eul.x -= Input.GetAxis("Mouse Y");
-                eul.x  = Mathf.Clamp(eul.x, -85f, 85f);
+                eul.x = Mathf.Clamp(eul.x, -85f, 85f);
                 eul.y += Input.GetAxis("Mouse X");
                 __instance.transform.eulerAngles = eul;
             }
@@ -347,23 +304,15 @@ namespace BabyBlocks
         }
     }
 
-    // While base map is disabled, the FlyCam/GameCam vcams' transforms update
-    // correctly each frame, but CinemachineBrain.LateUpdate stops applying that
-    // state to Camera.main on its own. Forcing a manual re-update keeps the
-    // output camera synced.
+    // when base map is off CinemachineBrain.LateUpdate doesn't drive Camera.main; ManualUpdate finishes it
     [HarmonyPatch(typeof(CinemachineBrain), "LateUpdate")]
     class CinemachineBrainLateUpdatePatch
     {
         static void Postfix(CinemachineBrain __instance)
         {
-            // In base-map-disabled mode LateUpdate alone doesn't drive Camera.main;
-            // ManualUpdate finishes the job. Either way, by the time we reach here
-            // the camera transform for this frame is final.
             if (!BaseMapController.BaseMapEnabled)
                 __instance.ManualUpdate();
 
-            // Re-record the screen-space outline CommandBuffer with the now-current
-            // Camera.main matrices so the mask aligns with the scene render.
             GizmoRenderer.RefreshSSBufferMatrices();
         }
     }
@@ -378,10 +327,7 @@ namespace BabyBlocks
         }
     }
 
-    // PlayCutscene is the common choke point for every way a cutscene can start — not just
-    // OnTriggerEnter, but also Menu.qedCutscene, morning/evening checkpoint cutscenes, and
-    // sequelCutscene chaining (BBConvoStarter.OnEnd). Gating here catches scheduled/queued
-    // cutscenes that never go through OnTriggerEnter at all.
+    // gates all cutscene starts including queued/scheduled ones that bypass OnTriggerEnter
     [HarmonyPatch(typeof(BBConvoStarter), "PlayCutscene")]
     class BBConvoStarterPlayCutscenePatch
     {
@@ -394,7 +340,7 @@ namespace BabyBlocks
         }
     }
 
-    // Makes editor bush props produce grass sounds by intercepting TractionByteKeeper.GetGrassAt.
+    // editor bush props produce grass sounds via GetGrassAt intercept
     [HarmonyPatch(typeof(TractionByteKeeper), "GetGrassAt")]
     class TractionByteKeeperGetGrassAtPatch
     {
@@ -410,14 +356,13 @@ namespace BabyBlocks
         }
     }
 
-    // Verbose diagnostic logging
     internal static class BBLog
     {
         internal static bool Verbose = false;
         internal static void Msg(string msg) { if (Verbose) MelonLogger.Msg(msg); }
     }
 
-    // Applies per-prop hat offset overrides on top of the default head placement.
+    // applies per-prop hat offset overrides on top of default head placement
     [HarmonyPatch(typeof(PlayerMovement), "PlaceCurrentHatOnHead")]
     class PlaceCurrentHatOnHeadPatch
     {
@@ -430,7 +375,7 @@ namespace BabyBlocks
             if (leo == null) return true;
 
             var hatTrans = __instance.currentHat.transform;
-            hatTrans.parent        = __instance.inCutscene ? __instance.head : __instance.headRB;
+            hatTrans.parent = __instance.inCutscene ? __instance.head : __instance.headRB;
             hatTrans.localPosition = new Vector3(0f, .207f, -.02f) + leo.hatOffsetPos;
             hatTrans.localRotation = Quaternion.Euler(
                 -25f + leo.hatOffsetRot.x, leo.hatOffsetRot.y, leo.hatOffsetRot.z);
@@ -439,10 +384,7 @@ namespace BabyBlocks
         }
     }
 
-    // Force native SunglassesChecker props visible while in editor cursor mode.
-    // The native type controls visibility via a Renderer[] field named "rends" and uses
-    // change-detection, so it won't re-hide on its own when we exit editor mode — we
-    // must actively reset it on the first frame after leaving editor.
+    // forces native SunglassesChecker props visible in editor; resets on first frame back in game
     [HarmonyPatch(typeof(SunglassesChecker), "Update")]
     class SunglassesCheckerUpdatePatch
     {
@@ -460,7 +402,6 @@ namespace BabyBlocks
             }
             else if (_forcedVisible.Remove(iid))
             {
-                // First frame back in game — native's cached state is stale; force-correct it.
                 bool sunglasses = BbSunglassesChecker.IsWearingSunglasses();
                 SetRends(__instance, sunglasses);
             }

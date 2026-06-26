@@ -16,8 +16,8 @@ namespace BabyBlocks.UI
     {
         public static bool Ready { get; private set; }
 
-        static UIBase          _uiBase;
-        static TopBarPanel     _topBar;
+        static UIBase _uiBase;
+        static TopBarPanel _topBar;
         static PropLibraryPanel _panel;
 
         public static void Init()
@@ -25,7 +25,7 @@ namespace BabyBlocks.UI
             Universe.Init(1f, OnReady, null, new UniverseLibConfig
             {
                 Disable_EventSystem_Override = false,
-                Force_Unlock_Mouse           = false,
+                Force_Unlock_Mouse = false,
             });
         }
 
@@ -33,13 +33,12 @@ namespace BabyBlocks.UI
         {
             _uiBase = UniversalUI.RegisterUI<DemoUIBase>("BabyBlocks.Demo", OnUpdate);
             _topBar = new TopBarPanel(_uiBase);
-            _panel  = new PropLibraryPanel(_uiBase);
+            _panel = new PropLibraryPanel(_uiBase);
             // UIBase constructor ends with RootObject.SetActive(true); hide immediately.
             // UIBase.Enabled reads RootObject.activeSelf, so this also sets
             // AnyUIShowing=false, stopping UniverseLib's cursor coroutine.
             _uiBase.RootObject.SetActive(false);
             Ready = true;
-            MelonLogger.Msg("[BabyBlocks] UniverseLib demo ready.");
         }
 
         // Called from Core.OnUpdate — runs every frame regardless of UIBase state.
@@ -67,7 +66,7 @@ namespace BabyBlocks.UI
             if (inEditorCursor) return;
             bool menuOpen = Menu.me != null && Menu.me.paused;
             if (menuOpen) return;
-            Cursor.visible   = false;
+            Cursor.visible = false;
             Cursor.lockState = CursorLockMode.Locked;
         }
     }
@@ -77,31 +76,29 @@ namespace BabyBlocks.UI
         public DemoUIBase(string id, Action update) : base(id, update) { }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
     //  Top bar — full-width menu bar with File dropdown
-    // ─────────────────────────────────────────────────────────────────────────
     class TopBarPanel : PanelBase
     {
         internal const int BarHeight = 28;
 
-        public override string  Name           => "TopBar";
-        public override int     MinWidth       => 400;
-        public override int     MinHeight      => BarHeight;
+        public override string Name => "TopBar";
+        public override int MinWidth => 400;
+        public override int MinHeight => BarHeight;
         public override Vector2 DefaultAnchorMin => new(0f, 1f);
         public override Vector2 DefaultAnchorMax => new(1f, 1f);
-        public override bool    CanDragAndResize => false;
+        public override bool CanDragAndResize => false;
 
         public override void SetDefaultSizeAndPosition()
         {
-            Rect.pivot            = new Vector2(0.5f, 1f);
-            Rect.anchorMin        = new Vector2(0f, 1f);
-            Rect.anchorMax        = new Vector2(1f, 1f); // full-width, top-anchored
+            Rect.pivot = new Vector2(0.5f, 1f);
+            Rect.anchorMin = new Vector2(0f, 1f);
+            Rect.anchorMax = new Vector2(1f, 1f); // full-width, top-anchored
             Rect.anchoredPosition = Vector2.zero;
-            Rect.sizeDelta        = new Vector2(0f, BarHeight);
+            Rect.sizeDelta = new Vector2(0f, BarHeight);
         }
 
         GameObject _fileDropdown;
-        bool       _fileOpen;
+        bool _fileOpen;
 
         public TopBarPanel(UIBase owner) : base(owner) { }
 
@@ -129,11 +126,11 @@ namespace BabyBlocks.UI
             // Child of the canvas root so it can float outside the bar's rect.
             var go = UIFactory.CreateUIObject("FileDropdown", Owner.RootObject);
             var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin        = new Vector2(0f, 1f); // canvas top-left
-            rt.anchorMax        = new Vector2(0f, 1f);
-            rt.pivot            = new Vector2(0f, 1f);
+            rt.anchorMin = new Vector2(0f, 1f); // canvas top-left
+            rt.anchorMax = new Vector2(0f, 1f);
+            rt.pivot = new Vector2(0f, 1f);
             rt.anchoredPosition = new Vector2(4f, -(BarHeight + 1f));
-            rt.sizeDelta        = new Vector2(130f, 62f);
+            rt.sizeDelta = new Vector2(130f, 62f);
 
             var bg = go.AddComponent<Image>();
             bg.color = new Color(0.13f, 0.13f, 0.16f, 0.97f);
@@ -167,61 +164,59 @@ namespace BabyBlocks.UI
             _fileDropdown.SetActive(false);
         }
 
-        static void OnLoad() => MelonLogger.Msg("[BabyBlocks] File > Load (TODO)");
-        static void OnSave() => MelonLogger.Msg("[BabyBlocks] File > Save (TODO)");
+        static void OnLoad() { }
+        static void OnSave() { }
 
         public void Tick() { }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
     //  Prop Library Panel — full-height left sidebar, paged prop cards
-    // ─────────────────────────────────────────────────────────────────────────
     class PropLibraryPanel : PanelBase
     {
-        const int   SlotCount   = 8;
-        const int   PanelWidth  = 220;
-        const int   CardHeight  = 60;
-        const int   PreviewSize = CardHeight;
-        const int   LabelFontSz = 16;
-        const float ScrollPx   = 36f;
+        const int SlotCount = 8;
+        const int PanelWidth = 220;
+        const int CardHeight = 60;
+        const int PreviewSize = CardHeight;
+        const int LabelFontSz = 16;
+        const float ScrollPx = 36f;
 
-        public override string  Name           => "Prop Library";
-        public override int     MinWidth       => PanelWidth;
-        public override int     MinHeight      => 200;
+        public override string Name => "Prop Library";
+        public override int MinWidth => PanelWidth;
+        public override int MinHeight => 200;
         public override Vector2 DefaultAnchorMin => new(0f, 1f);
         public override Vector2 DefaultAnchorMax => new(0f, 1f);
-        public override bool    CanDragAndResize => false;
+        public override bool CanDragAndResize => false;
 
         public override void SetDefaultSizeAndPosition()
         {
             int h = TopBarPanel.BarHeight;
-            Rect.pivot            = new Vector2(0f, 1f);
-            Rect.anchorMin        = new Vector2(0f, 0f);
-            Rect.anchorMax        = new Vector2(0f, 1f);
+            Rect.pivot = new Vector2(0f, 1f);
+            Rect.anchorMin = new Vector2(0f, 0f);
+            Rect.anchorMax = new Vector2(0f, 1f);
             Rect.anchoredPosition = new Vector2(0f, -h);
-            Rect.sizeDelta        = new Vector2(PanelWidth, -h);
+            Rect.sizeDelta = new Vector2(PanelWidth, -h);
         }
 
         struct PropCard
         {
-            public GameObject    Root;
-            public RawImage      Preview;
-            public Text          Label;
+            public GameObject Root;
+            public RawImage Preview;
+            public Text Label;
             public RectTransform LabelRect;
             public RectTransform LabelMask;
-            public string        DisplayedName;
-            public bool          IsDoubled;
+            public string DisplayedName;
+            public bool IsDoubled;
         }
 
-        readonly PropCard[]     _cards      = new PropCard[SlotCount];
-        ButtonRef               _prevBtn, _nextBtn;
-        int                     _offset;
-        static Texture2D        _debugTex;
+        readonly PropCard[] _cards = new PropCard[SlotCount];
+        ButtonRef _prevBtn, _nextBtn;
+        int _offset;
+        static Texture2D _debugTex;
 
         // Panel keeps its own "All" view — always shows all categorized props,
         // ignoring PropPalette.SelectedCategory so it's independent of the ImGui palette.
         readonly List<PropInfo> _panelProps = new();
-        int                     _lastAllCount = -1;
+        int _lastAllCount = -1;
 
         public PropLibraryPanel(UIBase owner) : base(owner) { }
 
@@ -258,10 +253,10 @@ namespace BabyBlocks.UI
             const int sz = 8;
             var tex = new Texture2D(sz, sz, TextureFormat.RGBA32, false);
             tex.filterMode = FilterMode.Point;
-            tex.wrapMode   = TextureWrapMode.Repeat;
+            tex.wrapMode = TextureWrapMode.Repeat;
             var pixels = new Color32[sz * sz];
-            var dark   = new Color32(28, 28, 33, 255);
-            var light  = new Color32(62, 62, 72, 255);
+            var dark = new Color32(28, 28, 33, 255);
+            var light = new Color32(62, 62, 72, 255);
             for (int y = 0; y < sz; y++)
             for (int x = 0; x < sz; x++)
                 pixels[y * sz + x] = ((x + y) % 2 == 0) ? light : dark;
@@ -274,9 +269,9 @@ namespace BabyBlocks.UI
         {
             var txt = btn.Component.GetComponentInChildren<Text>();
             if (txt == null) return;
-            txt.text             = $"{arrow}\n{key}";
+            txt.text = $"{arrow}\n{key}";
             txt.verticalOverflow = VerticalWrapMode.Overflow;
-            txt.lineSpacing      = 0.8f;
+            txt.lineSpacing = 0.8f;
         }
 
         PropCard BuildCard(GameObject parent, int index)
@@ -291,48 +286,48 @@ namespace BabyBlocks.UI
             // anchorMin=(0,0), anchorMax=(0,1): left edge fixed, height follows parent.
             // sizeDelta.x = PreviewSize gives the explicit pixel width.
             var previewGO = UIFactory.CreateUIObject($"Preview{index}", cardGO);
-            var preview   = previewGO.AddComponent<RawImage>();
+            var preview = previewGO.AddComponent<RawImage>();
             preview.texture = _debugTex;
-            preview.uvRect  = new Rect(0f, 0f, 4f, 4f);
+            preview.uvRect = new Rect(0f, 0f, 4f, 4f);
             var previewRect = previewGO.GetComponent<RectTransform>();
-            previewRect.anchorMin        = new Vector2(0f, 0f);
-            previewRect.anchorMax        = new Vector2(0f, 1f);
-            previewRect.pivot            = new Vector2(0f, 0.5f);
+            previewRect.anchorMin = new Vector2(0f, 0f);
+            previewRect.anchorMax = new Vector2(0f, 1f);
+            previewRect.pivot = new Vector2(0f, 0.5f);
             previewRect.anchoredPosition = Vector2.zero;
-            previewRect.sizeDelta        = new Vector2(PreviewSize, 0f);
+            previewRect.sizeDelta = new Vector2(PreviewSize, 0f);
 
             // Mask for the scrolling label — fills the area to the right of the preview.
             // anchorMin=(0,0), anchorMax=(1,1) + pivot=(0,0.5):
             //   offsetMin.x = anchoredPos.x = PreviewSize+gap  → left edge past preview
             //   offsetMax.x = anchoredPos.x + sizeDelta.x = 0  → right edge at parent right
             const float gap = 4f;
-            var maskGO   = UIFactory.CreateUIObject($"LabelMask{index}", cardGO);
+            var maskGO = UIFactory.CreateUIObject($"LabelMask{index}", cardGO);
             maskGO.AddComponent<RectMask2D>();
             var maskRect = maskGO.GetComponent<RectTransform>();
-            maskRect.anchorMin        = new Vector2(0f, 0f);
-            maskRect.anchorMax        = new Vector2(1f, 1f);
-            maskRect.pivot            = new Vector2(0f, 0.5f);
+            maskRect.anchorMin = new Vector2(0f, 0f);
+            maskRect.anchorMax = new Vector2(1f, 1f);
+            maskRect.pivot = new Vector2(0f, 0.5f);
             maskRect.anchoredPosition = new Vector2(PreviewSize + gap, 0f);
-            maskRect.sizeDelta        = new Vector2(-(PreviewSize + gap), 0f);
+            maskRect.sizeDelta = new Vector2(-(PreviewSize + gap), 0f);
 
             var lbl = UIFactory.CreateLabel(maskGO, $"LabelText{index}", "",
                 TextAnchor.MiddleLeft, new Color(0.95f, 0.95f, 0.95f),
                 supportRichText: false, fontSize: LabelFontSz);
             lbl.horizontalOverflow = HorizontalWrapMode.Overflow;
-            lbl.verticalOverflow   = VerticalWrapMode.Overflow;
+            lbl.verticalOverflow = VerticalWrapMode.Overflow;
 
             var lblRect = lbl.GetComponent<RectTransform>();
-            lblRect.anchorMin        = new Vector2(0f, 0f);
-            lblRect.anchorMax        = new Vector2(0f, 1f);
-            lblRect.pivot            = new Vector2(0f, 0.5f);
+            lblRect.anchorMin = new Vector2(0f, 0f);
+            lblRect.anchorMax = new Vector2(0f, 1f);
+            lblRect.pivot = new Vector2(0f, 0.5f);
             lblRect.anchoredPosition = Vector2.zero;
-            lblRect.sizeDelta        = new Vector2(200f, 0f);
+            lblRect.sizeDelta = new Vector2(200f, 0f);
 
             return new PropCard
             {
-                Root      = cardGO,
-                Preview   = preview,
-                Label     = lbl,
+                Root = cardGO,
+                Preview = preview,
+                Label = lbl,
                 LabelRect = lblRect,
                 LabelMask = maskRect,
             };
@@ -364,8 +359,8 @@ namespace BabyBlocks.UI
         void Scroll(int delta)
         {
             var props = GetPanelProps();
-            int max   = Math.Max(0, props.Count - SlotCount);
-            _offset   = Math.Clamp(_offset + delta, 0, max);
+            int max = Math.Max(0, props.Count - SlotCount);
+            _offset = Math.Clamp(_offset + delta, 0, max);
             RefreshCards(props);
         }
 
@@ -411,12 +406,12 @@ namespace BabyBlocks.UI
                         if (tex != null)
                         {
                             card.Preview.texture = tex;
-                            card.Preview.uvRect  = new Rect(0f, 0f, 1f, 1f);
+                            card.Preview.uvRect = new Rect(0f, 0f, 1f, 1f);
                         }
                         else
                         {
                             card.Preview.texture = _debugTex;
-                            card.Preview.uvRect  = new Rect(0f, 0f, 4f, 4f);
+                            card.Preview.uvRect = new Rect(0f, 0f, 4f, 4f);
                         }
                     }
                 }
@@ -450,7 +445,7 @@ namespace BabyBlocks.UI
                 if (card.DisplayedName != name)
                 {
                     card.DisplayedName = name;
-                    card.IsDoubled     = false;
+                    card.IsDoubled = false;
                     if (card.Label != null)
                         card.Label.text = name;
                     if (card.LabelRect != null)
@@ -481,7 +476,7 @@ namespace BabyBlocks.UI
 
                 string name = card.DisplayedName ?? "";
                 card.Label.text = name + "   •   " + name + "   •   ";
-                card.IsDoubled  = true;
+                card.IsDoubled = true;
             }
 
             float textW = card.Label.preferredWidth;

@@ -15,10 +15,10 @@ namespace BabyBlocks
                 var padding = new RectOffset { left = 4, right = 4, top = 4, bottom = 4 };
                 itemStyle = new GUIStyle(GUI.skin.box)
                 {
-                    wordWrap  = true,
+                    wordWrap = true,
                     alignment = TextAnchor.MiddleCenter,
-                    clipping  = TextClipping.Clip,
-                    padding   = padding
+                    clipping = TextClipping.Clip,
+                    padding = padding
                 };
             }
 

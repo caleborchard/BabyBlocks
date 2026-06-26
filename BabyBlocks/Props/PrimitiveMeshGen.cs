@@ -10,21 +10,21 @@ namespace BabyBlocks
         {
             var verts = new List<Vector3>();
             var norms = new List<Vector3>();
-            var uvs   = new List<Vector2>();
-            var tris  = new List<int>();
+            var uvs = new List<Vector2>();
+            var tris = new List<int>();
 
             for (int i = 0; i <= segments; i++)
             {
-                float u      = (float)i / segments;
-                float theta  = u * Mathf.PI * 2f;
-                var   centre = new Vector3(Mathf.Cos(theta) * majorRadius, 0f, Mathf.Sin(theta) * majorRadius);
-                var   outDir = new Vector3(Mathf.Cos(theta), 0f, Mathf.Sin(theta));
+                float u = (float)i / segments;
+                float theta = u * Mathf.PI * 2f;
+                var centre = new Vector3(Mathf.Cos(theta) * majorRadius, 0f, Mathf.Sin(theta) * majorRadius);
+                var outDir = new Vector3(Mathf.Cos(theta), 0f, Mathf.Sin(theta));
 
                 for (int j = 0; j <= sides; j++)
                 {
-                    float v   = (float)j / sides;
+                    float v = (float)j / sides;
                     float phi = v * Mathf.PI * 2f;
-                    var   n   = Mathf.Cos(phi) * outDir + new Vector3(0f, Mathf.Sin(phi), 0f);
+                    var n = Mathf.Cos(phi) * outDir + new Vector3(0f, Mathf.Sin(phi), 0f);
                     verts.Add(centre + n * minorRadius);
                     norms.Add(n);
                     uvs.Add(new Vector2(u, v));
@@ -49,20 +49,20 @@ namespace BabyBlocks
         {
             var verts = new List<Vector3>();
             var norms = new List<Vector3>();
-            var uvs   = new List<Vector2>();
-            var tris  = new List<int>();
+            var uvs = new List<Vector2>();
+            var tris = new List<int>();
 
-            float half  = height * 0.5f;
+            float half = height * 0.5f;
             float slant = Mathf.Sqrt(radius * radius + height * height);
-            float sinA  = height / slant;
-            float cosA  = radius / slant;
+            float sinA = height / slant;
+            float cosA = radius / slant;
 
             for (int i = 0; i <= segments; i++)
             {
-                float t     = (float)i / segments;
+                float t = (float)i / segments;
                 float theta = t * Mathf.PI * 2f;
-                float cx    = Mathf.Cos(theta);
-                float cz    = Mathf.Sin(theta);
+                float cx = Mathf.Cos(theta);
+                float cz = Mathf.Sin(theta);
 
                 verts.Add(new Vector3(cx * radius, -half, cz * radius));
                 norms.Add(new Vector3(cx * sinA, cosA, cz * sinA));
@@ -88,10 +88,10 @@ namespace BabyBlocks
 
             for (int i = 0; i <= segments; i++)
             {
-                float t     = (float)i / segments;
+                float t = (float)i / segments;
                 float theta = t * Mathf.PI * 2f;
-                float cx    = Mathf.Cos(theta);
-                float cz    = Mathf.Sin(theta);
+                float cx = Mathf.Cos(theta);
+                float cz = Mathf.Sin(theta);
                 verts.Add(new Vector3(cx * radius, -half, cz * radius));
                 norms.Add(Vector3.down);
                 uvs.Add(new Vector2(cx * 0.5f + 0.5f, cz * 0.5f + 0.5f));
@@ -100,8 +100,8 @@ namespace BabyBlocks
             for (int i = 0; i < segments; i++)
             {
                 int center = capBase;
-                int a      = capBase + 1 + i;
-                int b      = capBase + 2 + i;
+                int a = capBase + 1 + i;
+                int b = capBase + 2 + i;
                 tris.Add(center); tris.Add(a); tris.Add(b);
             }
 
@@ -114,21 +114,21 @@ namespace BabyBlocks
         {
             var verts = new List<Vector3>();
             var norms = new List<Vector3>();
-            var uvs   = new List<Vector2>();
-            var tris  = new List<int>();
+            var uvs = new List<Vector2>();
+            var tris = new List<int>();
 
             float totalAngle = turns * Mathf.PI * 2f;
-            float slope      = height / totalAngle; // height gained per radian
+            float slope = height / totalAngle; // height gained per radian
 
             // Top face
             int topBase = 0;
             for (int i = 0; i <= segments; i++)
             {
-                float t     = (float)i / segments;
+                float t = (float)i / segments;
                 float theta = t * totalAngle;
-                float h     = t * height - height * 0.5f;
-                float cosT  = Mathf.Cos(theta);
-                float sinT  = Mathf.Sin(theta);
+                float h = t * height - height * 0.5f;
+                float cosT = Mathf.Cos(theta);
+                float sinT = Mathf.Sin(theta);
 
                 var topN = new Vector3(sinT * slope, 1f, -cosT * slope).normalized;
 
@@ -155,11 +155,11 @@ namespace BabyBlocks
             int botBase = verts.Count;
             for (int i = 0; i <= segments; i++)
             {
-                float t     = (float)i / segments;
+                float t = (float)i / segments;
                 float theta = t * totalAngle;
-                float h     = t * height - height * 0.5f;
-                float cosT  = Mathf.Cos(theta);
-                float sinT  = Mathf.Sin(theta);
+                float h = t * height - height * 0.5f;
+                float cosT = Mathf.Cos(theta);
+                float sinT = Mathf.Sin(theta);
 
                 var botN = -new Vector3(sinT * slope, 1f, -cosT * slope).normalized;
 
@@ -193,21 +193,21 @@ namespace BabyBlocks
             const float b = 0.38f;  // equatorial radius scale
 
             var verts = new List<Vector3>();
-            var uvs   = new List<Vector2>();
-            var tris  = new List<int>();
+            var uvs = new List<Vector2>();
+            var tris = new List<int>();
 
             for (int i = 0; i <= latSegs; i++)
             {
-                float v     = (float)i / latSegs * Mathf.PI;
-                float sinV  = Mathf.Sin(v);
-                float cosV  = Mathf.Cos(v);
+                float v = (float)i / latSegs * Mathf.PI;
+                float sinV = Mathf.Sin(v);
+                float cosV = Mathf.Cos(v);
                 float denom = 1f + k * a * cosV;
-                float r     = denom > 1e-4f ? b * sinV / Mathf.Sqrt(denom) : 0f;
-                float y     = a * cosV;
+                float r = denom > 1e-4f ? b * sinV / Mathf.Sqrt(denom) : 0f;
+                float y = a * cosV;
 
                 for (int j = 0; j <= lonSegs; j++)
                 {
-                    float u     = (float)j / lonSegs;
+                    float u = (float)j / lonSegs;
                     float theta = u * Mathf.PI * 2f;
                     verts.Add(new Vector3(Mathf.Cos(theta) * r, y, Mathf.Sin(theta) * r));
                     uvs.Add(new Vector2(u, 1f - v / Mathf.PI));
@@ -226,8 +226,8 @@ namespace BabyBlocks
             }
 
             var mesh = new Mesh { name = "Egg" };
-            mesh.vertices  = verts.ToArray();
-            mesh.uv        = uvs.ToArray();
+            mesh.vertices = verts.ToArray();
+            mesh.uv = uvs.ToArray();
             mesh.triangles = tris.ToArray();
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
@@ -240,9 +240,9 @@ namespace BabyBlocks
                                    List<int> tris, string name)
         {
             var mesh = new Mesh { name = name };
-            mesh.vertices  = verts.ToArray();
-            mesh.normals   = norms.ToArray();
-            mesh.uv        = uvs.ToArray();
+            mesh.vertices = verts.ToArray();
+            mesh.normals = norms.ToArray();
+            mesh.uv = uvs.ToArray();
             mesh.triangles = tris.ToArray();
             mesh.RecalculateBounds();
             // Not owned by any GameObject — mark as don't-save so Unity doesn't destroy it

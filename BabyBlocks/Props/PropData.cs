@@ -36,7 +36,7 @@ namespace BabyBlocks
         public readonly string id;
         public          string displayName;
 
-        public List<PropMeshPart>     parts         = new();
+        public List<PropMeshPart> parts = new();
         public List<PropColliderPart> colliderParts = new();
         public bool HasColliderParts => colliderParts != null && colliderParts.Count > 0;
         public bool isLoaded;
@@ -44,7 +44,7 @@ namespace BabyBlocks
 
         public int  gpuiIndex = -1;
         public bool IsGpui => gpuiIndex >= 0;
-        public string visualPath     = "";
+        public string visualPath = "";
         public string gpuiPrefabName = "";
 
         public bool HasMesh      => parts != null && parts.Count > 0;

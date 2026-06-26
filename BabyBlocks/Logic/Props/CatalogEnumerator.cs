@@ -61,8 +61,8 @@ namespace BabyBlocks
                     }
                 }
 
-                var bundles  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                var scenes   = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var bundles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var scenes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var text in new[] { json, decoded })
                 {
@@ -76,12 +76,10 @@ namespace BabyBlocks
                         if (hit < 0) break;
                         searchFrom = hit + 1;
 
-                        // Scan a ±2 KB window around the hit for bundle/scene references.
                         int wStart = Math.Max(0, hit - 2048);
-                        int wEnd   = Math.Min(text.Length, hit + 2048);
+                        int wEnd = Math.Min(text.Length, hit + 2048);
                         string window = text.Substring(wStart, wEnd - wStart);
 
-                        // Collect *.bundle names.
                         int bi = 0;
                         while (bi < window.Length)
                         {

@@ -8,8 +8,7 @@ namespace BabyBlocks
     {
         public BbSunglassesChecker(IntPtr ptr) : base(ptr) { }
 
-        // Tracks which renderer slots were enabled when this component was first attached.
-        // Only those renderers are toggled — ones already disabled by prop metadata stay off.
+        // Tracks which renderer slots were enabled when this component was first attached, only those are used.
         bool[] _wasEnabled;
 
         public static bool IsWearingSunglasses()
@@ -36,9 +35,7 @@ namespace BabyBlocks
             for (int i = 0; i < count; i++)
             {
                 if (renderers[i] == null) continue;
-                // Only toggle renderers that were on at attach time; metadata-disabled ones stay off.
-                if (_wasEnabled[i])
-                    renderers[i].enabled = visible;
+                if (_wasEnabled[i]) renderers[i].enabled = visible;
             }
         }
     }

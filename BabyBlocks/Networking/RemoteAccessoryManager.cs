@@ -46,7 +46,7 @@ namespace BabyBlocks.Networking
             public Quaternion localRot;
             public Vector3    worldScale;
             public float      hairAmt = NoHatHairAmt; // hat slot only: drives the wearer's hair shader
-            public Vector4    hairUp  = NoHatHairUp;
+            public Vector4 hairUp = NoHatHairUp;
             public GameObject clone;        // null until (re)attached, or after its bone's player is gone
             public Transform  attachedBone;
             public float      lastSeenTime; // last time this don was (re)received
@@ -75,12 +75,12 @@ namespace BabyBlocks.Networking
                 w.attachedBone = null;
             }
 
-            w.propId     = propId;
-            w.localPos   = localPos;
-            w.localRot   = localRot;
+            w.propId = propId;
+            w.localPos = localPos;
+            w.localRot = localRot;
             w.worldScale = worldScale;
-            w.hairAmt    = hairAmt;
-            w.hairUp     = hairUp;
+            w.hairAmt = hairAmt;
+            w.hairUp = hairUp;
             w.lastSeenTime = Time.unscaledTime;
 
             if (w.clone != null && w.attachedBone != null)
@@ -170,7 +170,7 @@ namespace BabyBlocks.Networking
             clone.transform.localRotation = w.localRot;
             ApplyWorldScale(clone.transform, bone, w.worldScale);
 
-            w.clone        = clone;
+            w.clone = clone;
             w.attachedBone = bone;
 
             // Shape the wearer's hair to the hat now that the player is resolved.

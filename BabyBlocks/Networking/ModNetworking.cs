@@ -264,12 +264,12 @@ namespace BabyBlocks.Networking
                     _playersField = networkManagerType.GetField("players",
                         BindingFlags.Public | BindingFlags.Instance);
 
-                    var basePlayerType  = mpAsm.GetType("BabyStepsMultiplayerClient.Player.BasePlayer");
+                    var basePlayerType = mpAsm.GetType("BabyStepsMultiplayerClient.Player.BasePlayer");
                     var localPlayerType = mpAsm.GetType("BabyStepsMultiplayerClient.Player.LocalPlayer");
 
                     _localPlayerInstanceField = localPlayerType?.GetField("Instance",
                         BindingFlags.Public | BindingFlags.Static);
-                    _basePlayerHeadBoneField  = basePlayerType?.GetField("headBone",
+                    _basePlayerHeadBoneField = basePlayerType?.GetField("headBone",
                         BindingFlags.Public | BindingFlags.Instance);
                     _basePlayerHandBonesField = basePlayerType?.GetField("handBones",
                         BindingFlags.Public | BindingFlags.Instance);
@@ -305,17 +305,17 @@ namespace BabyBlocks.Networking
                     }
                     else
                     {
-                        var networkClientType    = bsnAsm.GetType("BabyStepsNetworking.Client.NetworkClient");
-                        var modChannelType       = bsnAsm.GetType("BabyStepsNetworking.Extensions.IModChannel");
-                        var packetDeliveryType   = bsnAsm.GetType("BabyStepsNetworking.Transport.PacketDelivery");
+                        var networkClientType = bsnAsm.GetType("BabyStepsNetworking.Client.NetworkClient");
+                        var modChannelType = bsnAsm.GetType("BabyStepsNetworking.Extensions.IModChannel");
+                        var packetDeliveryType = bsnAsm.GetType("BabyStepsNetworking.Transport.PacketDelivery");
 
-                        _createModChannelMethod    = networkClientType?.GetMethod("CreateModChannel", new[] { typeof(string) });
-                        _channelSendMethod         = modChannelType?.GetMethod("Send");
-                        _channelDataReceivedEvent  = modChannelType?.GetEvent("DataReceived");
+                        _createModChannelMethod = networkClientType?.GetMethod("CreateModChannel", new[] { typeof(string) });
+                        _channelSendMethod = modChannelType?.GetMethod("Send");
+                        _channelDataReceivedEvent = modChannelType?.GetEvent("DataReceived");
 
                         if (packetDeliveryType != null)
                         {
-                            _packetDeliveryReliable   = Enum.Parse(packetDeliveryType, "ReliableOrdered");
+                            _packetDeliveryReliable = Enum.Parse(packetDeliveryType, "ReliableOrdered");
                             _packetDeliveryUnreliable = Enum.Parse(packetDeliveryType, "Unreliable");
                         }
 
@@ -838,8 +838,8 @@ namespace BabyBlocks.Networking
                 o += idLen;
 
                 var position = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
-                var rotation  = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
-                var scale     = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var rotation = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var scale = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
 
                 LevelEditor.EnsureManager();
 
@@ -937,8 +937,8 @@ namespace BabyBlocks.Networking
                 int o = 1;
                 ulong netId = ReadULong(payload, ref o);
                 var position = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
-                var rotation  = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
-                var scale     = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var rotation = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var scale = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
 
                 if (!_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
                 {
@@ -1013,7 +1013,7 @@ namespace BabyBlocks.Networking
             try
             {
                 var nameB = System.Text.Encoding.UTF8.GetBytes(entry.name ?? string.Empty);
-                var matB  = System.Text.Encoding.UTF8.GetBytes(entry.materialName ?? string.Empty);
+                var matB = System.Text.Encoding.UTF8.GetBytes(entry.materialName ?? string.Empty);
                 var surfB = System.Text.Encoding.UTF8.GetBytes(entry.surfaceType ?? string.Empty);
 
                 var payload = new byte[1 + 8 + 4 + 1 + 2 + nameB.Length + 2 + matB.Length + 2 + surfB.Length];
@@ -1213,9 +1213,9 @@ namespace BabyBlocks.Networking
                 int totalChunks = (data.Length + LevelChunkSize - 1) / LevelChunkSize;
                 for (int i = 0; i < totalChunks; i++)
                 {
-                    int offset   = i * LevelChunkSize;
+                    int offset = i * LevelChunkSize;
                     int chunkLen = Math.Min(LevelChunkSize, data.Length - offset);
-                    var payload  = new byte[1 + 4 + 2 + 2 + chunkLen];
+                    var payload = new byte[1 + 4 + 2 + 2 + chunkLen];
                     int o = 0;
                     payload[o++] = LevelTransferDataMarker;
                     Buffer.BlockCopy(BitConverter.GetBytes(data.Length), 0, payload, o, 4); o += 4;
@@ -1260,9 +1260,9 @@ namespace BabyBlocks.Networking
             {
                 // Header: [marker(1)][totalLen(4)][totalChunks(2)][chunkIndex(2)][data]
                 if (payload.Length < 9) return;
-                int   totalLen    = BitConverter.ToInt32(payload, 1);
-                int   totalChunks = BitConverter.ToUInt16(payload, 5);
-                int   chunkIndex  = BitConverter.ToUInt16(payload, 7);
+                int totalLen = BitConverter.ToInt32(payload, 1);
+                int totalChunks = BitConverter.ToUInt16(payload, 5);
+                int chunkIndex = BitConverter.ToUInt16(payload, 7);
                 int   chunkDataLen = payload.Length - 9;
 
                 if (totalLen <= 0 || totalChunks <= 0 || chunkIndex >= totalChunks || chunkDataLen <= 0) return;
@@ -1273,9 +1273,9 @@ namespace BabyBlocks.Networking
                 {
                     state = new LevelChunkState
                     {
-                        Chunks        = new byte[totalChunks][],
+                        Chunks = new byte[totalChunks][],
                         ReceivedCount = 0,
-                        TotalLen      = totalLen,
+                        TotalLen = totalLen,
                     };
                     _levelChunkStates[senderUuid] = state;
 
@@ -1356,9 +1356,9 @@ namespace BabyBlocks.Networking
                 ulong netId = ReadULong(payload, ref o);
                 int id = BitConverter.ToInt32(payload, o); o += 4;
                 bool sunglasses = payload[o++] != 0;
-                string name    = ReadString16(payload, ref o);
+                string name = ReadString16(payload, ref o);
                 string matName = ReadString16(payload, ref o);
-                string surf    = ReadString16(payload, ref o);
+                string surf = ReadString16(payload, ref o);
 
                 if (!_networkedObjects.TryGetValue(netId, out var obj) || obj == null)
                 {
@@ -1377,10 +1377,10 @@ namespace BabyBlocks.Networking
                 // id resolving in our local library.
                 var entry = new MaterialConstructionEntry
                 {
-                    id              = id,
-                    name            = name,
-                    materialName    = matName,
-                    surfaceType     = surf,
+                    id = id,
+                    name = name,
+                    materialName = matName,
+                    surfaceType = surf,
                     sunglassesNeeded = sunglasses,
                 };
                 MaterialConstructionPanel.ApplyToInstance(obj, entry);
@@ -1644,8 +1644,8 @@ namespace BabyBlocks.Networking
                 o += idLen;
 
                 var position = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
-                var rotation  = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
-                var scale     = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var rotation = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var scale = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
 
                 var info = PropLibrary.FindById(propId);
                 if (info == null && propId.StartsWith("gpui://", StringComparison.OrdinalIgnoreCase)
@@ -1665,7 +1665,6 @@ namespace BabyBlocks.Networking
             }
         }
 
-        // ─── Custom worn/held accessories ────────────────────────────────────────────
         //
         // The multiplayer client's native accessory sync can only rebuild base-game
         // hats/grabables (by name, from the game's Savables loaders). Custom editor props
@@ -1844,8 +1843,8 @@ namespace BabyBlocks.Networking
                 string propId = System.Text.Encoding.UTF8.GetString(payload, o, idLen);
                 o += idLen;
 
-                var pos   = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
-                var rot   = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var pos = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var rot = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 var scale = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 float hairAmt = ReadFloat(payload, ref o);
                 var hairUp = new Vector4(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
@@ -1873,7 +1872,6 @@ namespace BabyBlocks.Networking
             }
         }
 
-        // ─── Per-instance prop properties ────────────────────────────────────────────
         //
         // Properties-window edits (hair amount, hat/grab offsets, sunglasses-needed,
         // player-passthrough, "act as sunglasses", surface type) are per-instance and saved
@@ -1954,8 +1952,8 @@ namespace BabyBlocks.Networking
                 int o = 1;
                 ulong netId = ReadULong(payload, ref o);
                 float hairAmt = ReadFloat(payload, ref o);
-                var hatOffPos  = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
-                var hatOffRot  = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var hatOffPos = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var hatOffRot = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 var grabOffPos = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 var grabOffRot = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 byte flags = payload[o++];
@@ -1971,15 +1969,15 @@ namespace BabyBlocks.Networking
                     return;
                 }
 
-                obj.hatHairAmt   = hairAmt;
+                obj.hatHairAmt = hairAmt;
                 obj.hatOffsetPos = hatOffPos;
                 obj.hatOffsetRot = hatOffRot;
                 obj.grabOffsetPos = grabOffPos;
                 obj.grabOffsetRot = grabOffRot;
 
                 bool sunglassesNeeded = (flags & 0x01) != 0;
-                bool passthrough      = (flags & 0x02) != 0;
-                bool hatIsSunglasses  = (flags & 0x04) != 0;
+                bool passthrough = (flags & 0x02) != 0;
+                bool hatIsSunglasses = (flags & 0x04) != 0;
 
                 if (obj.sunglassesNeeded != sunglassesNeeded)
                 {
@@ -2092,8 +2090,8 @@ namespace BabyBlocks.Networking
             if (ids.Count == 0) return;
 
             var scale = GroupManager.GetGroupDisplayScale(groupId);
-            var root  = GroupManager.GetGroupRoot(groupId);
-            var rot   = root != null ? root.transform.rotation : Quaternion.identity;
+            var root = GroupManager.GetGroupRoot(groupId);
+            var rot = root != null ? root.transform.rotation : Quaternion.identity;
             try
             {
                 int n = Math.Min(ids.Count, 255);
@@ -2125,7 +2123,7 @@ namespace BabyBlocks.Networking
             {
                 if (payload.Length < 1 + 4 * 7 + 1) return;
                 int o = 1;
-                var rot   = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
+                var rot = new Quaternion(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 var scale = new Vector3(ReadFloat(payload, ref o), ReadFloat(payload, ref o), ReadFloat(payload, ref o));
                 int n = payload[o++];
                 if (payload.Length < o + n * 8) return;

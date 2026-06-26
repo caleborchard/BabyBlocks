@@ -8,10 +8,10 @@ namespace BabyBlocks
     // shows the current physics mode and group, and exposes Group/Ungroup buttons.
     static class PhysicsWindow
     {
-        const float WinW    = 210f;
+        const float WinW = 210f;
         const float HeaderH = 30f;
-        const float Pad     = 7f;
-        const float LineH   = 22f;
+        const float Pad = 7f;
+        const float LineH = 22f;
 
         static Rect    _windowRect;
         static bool    _initialized;
@@ -21,8 +21,8 @@ namespace BabyBlocks
         // Text field state for grab/hat offsets
         static string[] _grabPosStr = { "0", "0", "0" };
         static string[] _grabRotStr = { "0", "0", "0" };
-        static string[] _hatPosStr  = { "0", "0", "0" };
-        static string[] _hatRotStr  = { "0", "0", "0" };
+        static string[] _hatPosStr = { "0", "0", "0" };
+        static string[] _hatRotStr = { "0", "0", "0" };
         static LevelEditorObject _lastPrimary;
 
         public static bool IsTypingInUI { get; private set; }
@@ -66,8 +66,8 @@ namespace BabyBlocks
                 if (!hasSelection)
                 {
                     hasSelection = true;
-                    sharedMode   = obj.physicsMode;
-                    sharedGroup  = obj.groupId;
+                    sharedMode = obj.physicsMode;
+                    sharedGroup = obj.groupId;
                 }
                 else
                 {
@@ -87,10 +87,10 @@ namespace BabyBlocks
                 else if (sharedDisableBaking != val) sharedDisableBaking = null;
             }
 
-            bool showGroup      = hasSelection && sharedGroup > 0;
-            bool showHatHair    = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Hat;
+            bool showGroup = hasSelection && sharedGroup > 0;
+            bool showHatHair = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Hat;
             bool showGrabOffset = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Grabable;
-            bool showHatOffset  = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Hat;
+            bool showHatOffset = hasSelection && primary != null && primary.physicsMode == PhysicsMode.Hat;
             bool showBakeToggle = bakingPropIds.Count > 0;
 
             // Sync text field strings when the selected object changes
@@ -101,7 +101,7 @@ namespace BabyBlocks
             }
 
             float winH = ComputeHeight(showGroup, showHatHair, showGrabOffset, showHatOffset, showBakeToggle);
-            _windowRect.width  = WinW;
+            _windowRect.width = WinW;
             _windowRect.height = winH;
             _windowRect.x = Mathf.Clamp(_windowRect.x, 0f, Screen.width  - WinW);
             _windowRect.y = Mathf.Clamp(_windowRect.y, 0f, Screen.height - winH);
@@ -115,7 +115,7 @@ namespace BabyBlocks
 
             if (e.type == EventType.MouseDown && e.button == 0 && headerRect.Contains(e.mousePosition))
             {
-                _dragging   = true;
+                _dragging = true;
                 _dragOffset = e.mousePosition - new Vector2(_windowRect.x, _windowRect.y);
                 e.Use();
             }
@@ -245,7 +245,7 @@ namespace BabyBlocks
                                string ctrlX, string ctrlY, string ctrlZ)
         {
             const float LabelW = 28f;
-            const float Gap    = 3f;
+            const float Gap = 3f;
             float fw = (w - LabelW - Gap * 2f) / 3f;
 
             GUI.Label(new Rect(x, y + 2f, LabelW, LineH), label);

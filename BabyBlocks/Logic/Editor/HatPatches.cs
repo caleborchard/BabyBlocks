@@ -54,13 +54,12 @@ namespace BabyBlocks
             var scale = __instance.transform.localScale;
             if (scale.x == 1f && scale.y == 1f && scale.z == 1f) return;
 
-            var pts  = handIndex == 0 ? __instance.grabLocPtsR  : __instance.grabLocPtsL;
+            var pts = handIndex == 0 ? __instance.grabLocPtsR : __instance.grabLocPtsL;
             var rots = handIndex == 0 ? __instance.grabLocRotsR : __instance.grabLocRotsL;
             if (pts == null || pts.Count == 0) return;
 
-            // pts[0] is stored in local (pre-scale) space. Re-apply scale so hand.TransformPoint
-            // receives the world-scale offset that positions the grab point at the hand.
-            var localPt     = pts[0];
+            // pts[0] is pre-scale local space; re-apply scale so hand.TransformPoint gets the world-scale grab offset
+            var localPt = pts[0];
             var worldOffset = new Vector3(localPt.x * scale.x, localPt.y * scale.y, localPt.z * scale.z);
             __instance.transform.position = hand.TransformPoint(worldOffset);
             __instance.transform.rotation = hand.rotation * rots[0];

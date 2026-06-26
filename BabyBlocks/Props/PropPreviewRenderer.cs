@@ -11,7 +11,7 @@ namespace BabyBlocks
     // Completed renders are written to PropPreviewCache so they survive across sessions.
     static class PropPreviewRenderer
     {
-        const int ThumbSize  = 256;
+        const int ThumbSize = 256;
         const int JpgQuality = 85;
 
         static readonly MaterialPropertyBlock _mpb = new MaterialPropertyBlock();
@@ -31,7 +31,7 @@ namespace BabyBlocks
         static readonly Vector3 RenderWorldOffset = new Vector3(50f, 50f, 50f);
 
         static readonly Queue<PropInfo>               _queue = new();
-        static readonly HashSet<string>               _seen  = new();
+        static readonly HashSet<string> _seen = new();
         static readonly Dictionary<string, Texture2D> _ready = new();
 
         public static void Request(PropInfo info)
@@ -115,56 +115,56 @@ namespace BabyBlocks
             int drawLayer = MaterialBaker.FindUnusedLayer();
             if (drawLayer < 0) return null;
 
-            var   bounds  = ComputeBounds(info, disabledSubPaths, disabledIndices);
-            float maxDim  = Mathf.Max(bounds.extents.x, bounds.extents.y, bounds.extents.z) * 2f;
+            var bounds = ComputeBounds(info, disabledSubPaths, disabledIndices);
+            float maxDim = Mathf.Max(bounds.extents.x, bounds.extents.y, bounds.extents.z) * 2f;
             if (maxDim < 0.001f) maxDim = 1f;
 
             // Holds props face away from the default camera angle — flip 180° around Y to face them.
             bool holdsCategory = string.Equals(PropMetadataStore.GetCategory(info.id), "Holds", StringComparison.OrdinalIgnoreCase);
-            var   camDir  = holdsCategory ? new Vector3(1f, -1f, 1f).normalized : new Vector3(-1f, -1f, -1f).normalized;
+            var camDir = holdsCategory ? new Vector3(1f, -1f, 1f).normalized : new Vector3(-1f, -1f, -1f).normalized;
             float camDist = maxDim * 3f;
 
             var camGO = new GameObject("BB_PreviewCam");
-            var cam   = camGO.AddComponent<Camera>();
-            cam.enabled       = false;
-            cam.orthographic  = true;
-            cam.clearFlags    = CameraClearFlags.SolidColor;
+            var cam = camGO.AddComponent<Camera>();
+            cam.enabled = false;
+            cam.orthographic = true;
+            cam.clearFlags = CameraClearFlags.SolidColor;
             cam.backgroundColor = new Color(0.09f, 0.09f, 0.11f, 1f);
-            cam.cullingMask   = 1 << drawLayer;
+            cam.cullingMask = 1 << drawLayer;
             cam.nearClipPlane = Mathf.Min(0.01f, camDist * 0.05f);
-            cam.farClipPlane  = camDist * 4f;
-            cam.aspect        = 1f;
+            cam.farClipPlane = camDist * 4f;
+            cam.aspect = 1f;
             SetupCameraTransform(camGO, cam, bounds.center, camDir, camDist, bounds);
 
             var rt = new RenderTexture(ThumbSize, ThumbSize, 24, RenderTextureFormat.ARGB32);
             cam.targetTexture = rt;
 
-            var savedAmbientMode  = RenderSettings.ambientMode;
+            var savedAmbientMode = RenderSettings.ambientMode;
             var savedAmbientLight = RenderSettings.ambientLight;
             var sceneLights = UnityEngine.Object.FindObjectsOfType<Light>();
-            var wasEnabled  = new bool[sceneLights.Length];
+            var wasEnabled = new bool[sceneLights.Length];
             for (int i = 0; i < sceneLights.Length; i++)
             {
                 wasEnabled[i] = sceneLights[i].enabled;
                 sceneLights[i].enabled = false;
             }
-            RenderSettings.ambientMode  = AmbientMode.Flat;
+            RenderSettings.ambientMode = AmbientMode.Flat;
             RenderSettings.ambientLight = new Color(0.15f, 0.15f, 0.18f);
 
-            var lightGO  = new GameObject("BB_PreviewLight");
+            var lightGO = new GameObject("BB_PreviewLight");
             var keyLight = lightGO.AddComponent<Light>();
-            keyLight.type      = LightType.Directional;
+            keyLight.type = LightType.Directional;
             keyLight.intensity = 1.2f;
-            keyLight.color     = new Color(1f, 0.97f, 0.92f);
-            keyLight.shadows   = LightShadows.None;
+            keyLight.color = new Color(1f, 0.97f, 0.92f);
+            keyLight.shadows = LightShadows.None;
             lightGO.transform.rotation = camGO.transform.rotation;
 
-            var rimGO    = new GameObject("BB_PreviewRim");
+            var rimGO = new GameObject("BB_PreviewRim");
             var rimLight = rimGO.AddComponent<Light>();
-            rimLight.type      = LightType.Directional;
+            rimLight.type = LightType.Directional;
             rimLight.intensity = 0.25f;
-            rimLight.color     = new Color(0.6f, 0.7f, 1f);
-            rimLight.shadows   = LightShadows.None;
+            rimLight.color = new Color(0.6f, 0.7f, 1f);
+            rimLight.shadows = LightShadows.None;
             rimGO.transform.rotation = Quaternion.LookRotation(-camGO.transform.forward, camGO.transform.up);
 
             // Per-render clone cache: keyed by original material → temp clone with cull/snow overrides.
@@ -216,7 +216,7 @@ namespace BabyBlocks
             {
                 RenderTexture.active = prevActive;
 
-                RenderSettings.ambientMode  = savedAmbientMode;
+                RenderSettings.ambientMode = savedAmbientMode;
                 RenderSettings.ambientLight = savedAmbientLight;
                 for (int i = 0; i < sceneLights.Length; i++)
                     if (sceneLights[i] != null) sceneLights[i].enabled = wasEnabled[i];
@@ -294,10 +294,10 @@ namespace BabyBlocks
             camGO.transform.position = worldCenter - camDir * camDist;
             camGO.transform.LookAt(worldCenter);
 
-            var bMin     = bounds.min;
-            var bMax     = bounds.max;
+            var bMin = bounds.min;
+            var bMax = bounds.max;
             var camRight = camGO.transform.right;
-            var camUp    = camGO.transform.up;
+            var camUp = camGO.transform.up;
             float minR = float.MaxValue, maxR = float.MinValue;
             float minU = float.MaxValue, maxU = float.MinValue;
             for (int xi = 0; xi < 2; xi++)
@@ -330,7 +330,7 @@ namespace BabyBlocks
             out HashSet<string> disabledSubPaths, out HashSet<int> disabledIndices)
         {
             disabledSubPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            disabledIndices  = new HashSet<int>();
+            disabledIndices = new HashSet<int>();
 
             if (extra?.disabledRenderers == null) return;
 
@@ -384,9 +384,9 @@ namespace BabyBlocks
                 if (IsPartDisabled(pi, part, disabledSubPaths, disabledIndices)) continue;
 
                 var scale = part.localScale == Vector3.zero ? Vector3.one : part.localScale;
-                var pos   = part.localPosition + RenderWorldOffset;
-                var mtx   = Matrix4x4.TRS(pos, part.localRotation, scale);
-                var mats  = (effectiveMaterials != null && pi < effectiveMaterials.Length)
+                var pos = part.localPosition + RenderWorldOffset;
+                var mtx = Matrix4x4.TRS(pos, part.localRotation, scale);
+                var mats = (effectiveMaterials != null && pi < effectiveMaterials.Length)
                     ? effectiveMaterials[pi] : part.materials;
 
                 for (int sub = 0; sub < part.mesh.subMeshCount; sub++)
@@ -397,29 +397,6 @@ namespace BabyBlocks
                     Graphics.DrawMesh(part.mesh, mtx, renderMat, drawLayer, cam, sub, _mpb);
                 }
             }
-        }
-
-        // ---- Click-time diagnostics ----
-
-        public static void LogBoundsDiagnostics(PropInfo info)
-        {
-            if (info == null) return;
-            for (int pi = 0; pi < info.parts.Count; pi++)
-            {
-                var p = info.parts[pi];
-                if (p.mesh == null)
-                {
-                    MelonLogger.Msg($"[PropPreviews]   bounds part[{pi}] mesh=null");
-                    continue;
-                }
-                var mb = p.mesh.bounds;
-                MelonLogger.Msg($"[PropPreviews]   bounds part[{pi}] localPos={p.localPosition} scale={p.localScale} meshCenter={mb.center} meshSize={mb.size}");
-            }
-            var dummy = new HashSet<string>();
-            var dummyIdx = new HashSet<int>();
-            var b2 = ComputeBounds(info, dummy, dummyIdx);
-            float maxDim = Mathf.Max(b2.extents.x, b2.extents.y, b2.extents.z) * 2f;
-            MelonLogger.Msg($"[PropPreviews]   bounds result: center={b2.center} size={b2.size} maxDim={maxDim:F2} orthoSize={maxDim * 3f * 0.5f * 1.12f:F2}");
         }
 
         static Material GetOrCreateFallback()
@@ -457,7 +434,7 @@ namespace BabyBlocks
         static Material[][] BuildEffectiveMaterials(PropInfo info, PropExtraInfo extra,
             HashSet<string> disabledSubPaths, HashSet<int> disabledIndices)
         {
-            Material   singleOverride   = null;
+            Material singleOverride = null;
             Material[] perSlotOverrides = null;
 
             if (extra != null)
@@ -494,9 +471,9 @@ namespace BabyBlocks
                 var part = info.parts[pi];
                 if (IsPartDisabled(pi, part, disabledSubPaths, disabledIndices)) { result[pi] = null; continue; }
 
-                var baseMats  = part.materials;
+                var baseMats = part.materials;
                 int baseCount = baseMats != null ? baseMats.Length : 0;
-                int outCount  = baseCount;
+                int outCount = baseCount;
                 if (perSlotOverrides != null) outCount = Mathf.Max(outCount, perSlotOverrides.Length);
                 if (singleOverride   != null) outCount = Mathf.Max(outCount, 1);
                 if (outCount == 0) { result[pi] = null; continue; }
@@ -519,11 +496,11 @@ namespace BabyBlocks
         // ---- Material sphere previews ----
 
         static Mesh _sphereMesh;
-        static readonly Queue<(int id, Material mat)>    _matQueue    = new();
-        static readonly HashSet<int>                     _matSeen     = new();
-        static readonly Dictionary<int, Texture2D>       _matReady    = new();
+        static readonly Queue<(int id, Material mat)> _matQueue = new();
+        static readonly HashSet<int> _matSeen = new();
+        static readonly Dictionary<int, Texture2D> _matReady = new();
         static readonly Dictionary<int, int>             _matFailures = new(); // per-id render failure count
-        static readonly Dictionary<int, string>          _matId2Name  = new(); // name lookup for invalidation
+        static readonly Dictionary<int, string> _matId2Name = new(); // name lookup for invalidation
 
         public static void RequestMaterialSphere(int id, Material mat)
         {
@@ -575,19 +552,19 @@ namespace BabyBlocks
             int drawLayer = MaterialBaker.FindUnusedLayer();
             if (drawLayer < 0) { BBLog.Msg($"[BB:MatSphere] id={matId} no unused render layer available"); return null; }
 
-            var   camDir  = new Vector3(-1f, -1f, -1f).normalized;
+            var camDir = new Vector3(-1f, -1f, -1f).normalized;
             float camDist = 4f;
 
             var camGO = new GameObject("BB_MatPreviewCam");
-            var cam   = camGO.AddComponent<Camera>();
-            cam.enabled         = false;
-            cam.orthographic    = true;
-            cam.clearFlags      = CameraClearFlags.SolidColor;
+            var cam = camGO.AddComponent<Camera>();
+            cam.enabled = false;
+            cam.orthographic = true;
+            cam.clearFlags = CameraClearFlags.SolidColor;
             cam.backgroundColor = new Color(0.09f, 0.09f, 0.11f, 1f);
-            cam.cullingMask     = 1 << drawLayer;
-            cam.nearClipPlane   = 0.1f;
-            cam.farClipPlane    = camDist * 4f;
-            cam.aspect          = 1f;
+            cam.cullingMask = 1 << drawLayer;
+            cam.nearClipPlane = 0.1f;
+            cam.farClipPlane = camDist * 4f;
+            cam.aspect = 1f;
             cam.orthographicSize = 0.68f;
             camGO.transform.position = RenderWorldOffset - camDir * camDist;
             camGO.transform.LookAt(RenderWorldOffset);
@@ -595,28 +572,28 @@ namespace BabyBlocks
             var rt = new RenderTexture(ThumbSize, ThumbSize, 24, RenderTextureFormat.ARGB32);
             cam.targetTexture = rt;
 
-            var savedAmbientMode  = RenderSettings.ambientMode;
+            var savedAmbientMode = RenderSettings.ambientMode;
             var savedAmbientLight = RenderSettings.ambientLight;
             var sceneLights = UnityEngine.Object.FindObjectsOfType<Light>();
-            var wasEnabled  = new bool[sceneLights.Length];
+            var wasEnabled = new bool[sceneLights.Length];
             for (int i = 0; i < sceneLights.Length; i++) { wasEnabled[i] = sceneLights[i].enabled; sceneLights[i].enabled = false; }
-            RenderSettings.ambientMode  = AmbientMode.Flat;
+            RenderSettings.ambientMode = AmbientMode.Flat;
             RenderSettings.ambientLight = new Color(0.15f, 0.15f, 0.18f);
 
-            var lightGO  = new GameObject("BB_MatPreviewKey");
+            var lightGO = new GameObject("BB_MatPreviewKey");
             var keyLight = lightGO.AddComponent<Light>();
-            keyLight.type      = LightType.Directional;
+            keyLight.type = LightType.Directional;
             keyLight.intensity = 1.2f;
-            keyLight.color     = new Color(1f, 0.97f, 0.92f);
-            keyLight.shadows   = LightShadows.None;
+            keyLight.color = new Color(1f, 0.97f, 0.92f);
+            keyLight.shadows = LightShadows.None;
             lightGO.transform.rotation = camGO.transform.rotation;
 
-            var rimGO    = new GameObject("BB_MatPreviewRim");
+            var rimGO = new GameObject("BB_MatPreviewRim");
             var rimLight = rimGO.AddComponent<Light>();
-            rimLight.type      = LightType.Directional;
+            rimLight.type = LightType.Directional;
             rimLight.intensity = 0.30f;
-            rimLight.color     = new Color(0.5f, 0.65f, 1f);
-            rimLight.shadows   = LightShadows.None;
+            rimLight.color = new Color(0.5f, 0.65f, 1f);
+            rimLight.shadows = LightShadows.None;
             rimGO.transform.rotation = Quaternion.LookRotation(-camGO.transform.forward, camGO.transform.up);
 
             var matClones = new Dictionary<Material, Material>();
@@ -636,7 +613,7 @@ namespace BabyBlocks
                 foreach (var name in _snowPropNames) _mpb.SetFloat(name, 0f);
                 _mpb.SetVector("_SnowHeightAngleRange", new Vector4(1000000f, 1f, 0f, 1f));
 
-                var mtx       = Matrix4x4.TRS(RenderWorldOffset, Quaternion.identity, Vector3.one);
+                var mtx = Matrix4x4.TRS(RenderWorldOffset, Quaternion.identity, Vector3.one);
                 var renderMat = GetOrCloneForRender(mat, matClones);
                 if (renderMat != null)
                 {
@@ -660,7 +637,7 @@ namespace BabyBlocks
             finally
             {
                 RenderTexture.active = prevActive;
-                RenderSettings.ambientMode  = savedAmbientMode;
+                RenderSettings.ambientMode = savedAmbientMode;
                 RenderSettings.ambientLight = savedAmbientLight;
                 for (int i = 0; i < sceneLights.Length; i++)
                     if (sceneLights[i] != null) sceneLights[i].enabled = wasEnabled[i];
@@ -689,8 +666,8 @@ namespace BabyBlocks
                 if (IsPartDisabled(pi, part, disabledSubPaths, disabledIndices)) continue;
 
                 var scale = part.localScale == Vector3.zero ? Vector3.one : part.localScale;
-                var mb    = part.mesh.bounds;
-                var he    = new Vector3(
+                var mb = part.mesh.bounds;
+                var he = new Vector3(
                     Mathf.Abs(mb.extents.x * scale.x),
                     Mathf.Abs(mb.extents.y * scale.y),
                     Mathf.Abs(mb.extents.z * scale.z));
@@ -708,7 +685,7 @@ namespace BabyBlocks
                     if (tight.HasValue)
                     {
                         // Compact prop with outlier stray vertices — use filtered tight bounds.
-                        var tb  = tight.Value;
+                        var tb = tight.Value;
                         var wc2 = part.localPosition + part.localRotation * Vector3.Scale(tb.center, scale);
                         var he2 = new Vector3(
                             Mathf.Abs(tb.extents.x * scale.x),
@@ -749,7 +726,7 @@ namespace BabyBlocks
                 var mn = Vector3.zero; var mx = Vector3.zero;
                 for (int i = 0; i < verts.Length; i++)
                 {
-                    var v   = verts[i];
+                    var v = verts[i];
                     float d = v.x * v.x + v.y * v.y + v.z * v.z;
                     if (d > maxDistSq) continue;
                     inside++;

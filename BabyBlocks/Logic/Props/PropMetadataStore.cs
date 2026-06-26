@@ -38,7 +38,6 @@ namespace BabyBlocks
             Load();
         }
 
-        // ── Material constructions (persisted alongside prop metadata) ─────────────
 
         public static List<MaterialConstructionEntry> MaterialConstructions
         {
@@ -390,29 +389,29 @@ namespace BabyBlocks
 
             if (excluded)
             {
-                info.displayName        = string.Empty;
-                info.category           = string.Empty;
-                info.excluded           = true;
+                info.displayName = string.Empty;
+                info.category = string.Empty;
+                info.excluded = true;
                 info.useRenderMeshCollider = false;
                 info.colliderIgnoredSubmeshes = string.Empty;
-                info.overrideMaterialId       = string.Empty;
-                info.surfaceType              = string.Empty;
-                info.disabledRenderers        = new List<string>();
+                info.overrideMaterialId = string.Empty;
+                info.surfaceType = string.Empty;
+                info.disabledRenderers = new List<string>();
                 info.perSlotMaterialOverrides = null;
-                info.forcedMaterialSlots      = 0;
-                info.isBush                   = false;
-                info.bushRadius               = 0f;
-                info.soundGrassType           = 1;
-                info.keepOriginalHierarchy    = false;
-                info.disableBaking            = false;
-                info.index                    = 0;
+                info.forcedMaterialSlots = 0;
+                info.isBush = false;
+                info.bushRadius = 0f;
+                info.soundGrassType = 1;
+                info.keepOriginalHierarchy = false;
+                info.disableBaking = false;
+                info.index = 0;
             }
             else
             {
                 if (info.index <= 0) info.index = _nextIndex++;
-                info.displayName        = displayName ?? string.Empty;
-                info.category           = category ?? string.Empty;
-                info.excluded           = false;
+                info.displayName = displayName ?? string.Empty;
+                info.category = category ?? string.Empty;
+                info.excluded = false;
                 info.useRenderMeshCollider = useRenderMeshCollider;
                 info.colliderIgnoredSubmeshes = colliderIgnoredSubmeshes ?? string.Empty;
                 info.overrideMaterialId = overrideMaterialName ?? string.Empty;
@@ -430,11 +429,11 @@ namespace BabyBlocks
                 }
                 else
                 {
-                    info.nativeMaterialName    = string.Empty;
-                    info.materialSourcePropId  = string.Empty;
+                    info.nativeMaterialName = string.Empty;
+                    info.materialSourcePropId = string.Empty;
                 }
-                info.surfaceType        = surfaceType ?? string.Empty;
-                info.disabledRenderers  = new List<string>();
+                info.surfaceType = surfaceType ?? string.Empty;
+                info.disabledRenderers = new List<string>();
                 if (disabledRenderers != null)
                     foreach (var path in disabledRenderers) info.disabledRenderers.Add(path);
                 info.perSlotMaterialOverrides = HasNonEmptySlot(perSlotOverrides) ? perSlotOverrides : null;
@@ -555,7 +554,6 @@ namespace BabyBlocks
             }
         }
 
-        // ── Binary PMD format ─────────────────────────────────────────────────────
 
         internal static void SaveBinary(string path)
         {
@@ -586,10 +584,10 @@ namespace BabyBlocks
                 w.Write(item.id);
                 w.Write(item.index);
 
-                bool hasDisplayName     = !item.excluded && !string.IsNullOrEmpty(item.displayName);
-                bool hasCategory        = !item.excluded && !string.IsNullOrEmpty(item.category);
+                bool hasDisplayName =!item.excluded && !string.IsNullOrEmpty(item.displayName);
+                bool hasCategory =!item.excluded && !string.IsNullOrEmpty(item.category);
                 bool hasColliderIgnored = !item.excluded && !string.IsNullOrEmpty(item.colliderIgnoredSubmeshes);
-                bool hasOverrideMat     = !item.excluded && !string.IsNullOrEmpty(item.overrideMaterialId);
+                bool hasOverrideMat =!item.excluded && !string.IsNullOrEmpty(item.overrideMaterialId);
 
                 byte flags1 = 0;
                 if (item.excluded)                                flags1 |= 0x01;
@@ -604,11 +602,11 @@ namespace BabyBlocks
 
                 if (item.excluded) continue;
 
-                bool hasNativeMat   = !string.IsNullOrEmpty(item.nativeMaterialName);
-                bool hasMatSource   = !string.IsNullOrEmpty(item.materialSourcePropId);
-                bool hasSurface     = !string.IsNullOrEmpty(item.surfaceType);
-                bool hasDisabled    = item.disabledRenderers != null && item.disabledRenderers.Count > 0;
-                bool hasPerSlot     = HasNonEmptySlot(item.perSlotMaterialOverrides);
+                bool hasNativeMat =!string.IsNullOrEmpty(item.nativeMaterialName);
+                bool hasMatSource =!string.IsNullOrEmpty(item.materialSourcePropId);
+                bool hasSurface =!string.IsNullOrEmpty(item.surfaceType);
+                bool hasDisabled =item.disabledRenderers != null && item.disabledRenderers.Count > 0;
+                bool hasPerSlot =HasNonEmptySlot(item.perSlotMaterialOverrides);
                 bool hasForcedSlots = item.forcedMaterialSlots > 1;
 
                 byte flags2 = 0;
@@ -698,29 +696,29 @@ namespace BabyBlocks
                 if (!excluded)
                 {
                     item.useRenderMeshCollider = (flags1 & 0x02) != 0;
-                    item.isBush                = (flags1 & 0x04) != 0;
+                    item.isBush = (flags1 & 0x04) != 0;
                     item.keepOriginalHierarchy = (flags1 & 0x08) != 0;
-                    bool hasDisplayName     = (flags1 & 0x10) != 0;
-                    bool hasCategory        = (flags1 & 0x20) != 0;
+                    bool hasDisplayName =(flags1 & 0x10) != 0;
+                    bool hasCategory =(flags1 & 0x20) != 0;
                     bool hasColliderIgnored = (flags1 & 0x40) != 0;
-                    bool hasOverrideMat     = (flags1 & 0x80) != 0;
+                    bool hasOverrideMat =(flags1 & 0x80) != 0;
 
                     byte flags2 = r.ReadByte();
-                    bool hasNativeMat   = (flags2 & 0x01) != 0;
-                    bool hasMatSource   = (flags2 & 0x02) != 0;
-                    bool hasSurface     = (flags2 & 0x04) != 0;
-                    bool hasDisabled    = (flags2 & 0x08) != 0;
-                    bool hasPerSlot     = (flags2 & 0x10) != 0;
+                    bool hasNativeMat =(flags2 & 0x01) != 0;
+                    bool hasMatSource =(flags2 & 0x02) != 0;
+                    bool hasSurface =(flags2 & 0x04) != 0;
+                    bool hasDisabled =(flags2 & 0x08) != 0;
+                    bool hasPerSlot =(flags2 & 0x10) != 0;
                     bool hasForcedSlots = (flags2 & 0x20) != 0;
-                    item.disableBaking  = (flags2 & 0x40) != 0;
+                    item.disableBaking = (flags2 & 0x40) != 0;
 
-                    if (hasDisplayName)     item.displayName              = r.ReadString();
-                    if (hasCategory)        item.category                 = r.ReadString();
+                    if (hasDisplayName)     item.displayName = r.ReadString();
+                    if (hasCategory)        item.category = r.ReadString();
                     if (hasColliderIgnored) item.colliderIgnoredSubmeshes = r.ReadString();
-                    if (hasOverrideMat)     item.overrideMaterialId       = r.ReadString();
-                    if (hasNativeMat)       item.nativeMaterialName       = r.ReadString();
-                    if (hasMatSource)       item.materialSourcePropId     = r.ReadString();
-                    if (hasSurface)         item.surfaceType              = r.ReadString();
+                    if (hasOverrideMat)     item.overrideMaterialId = r.ReadString();
+                    if (hasNativeMat)       item.nativeMaterialName = r.ReadString();
+                    if (hasMatSource)       item.materialSourcePropId = r.ReadString();
+                    if (hasSurface)         item.surfaceType = r.ReadString();
                     if (hasDisabled)
                     {
                         int cnt = r.ReadByte();
@@ -736,7 +734,7 @@ namespace BabyBlocks
                     if (hasForcedSlots) item.forcedMaterialSlots = r.ReadInt32();
                     if (item.isBush)
                     {
-                        item.bushRadius     = r.ReadSingle();
+                        item.bushRadius = r.ReadSingle();
                         item.soundGrassType = r.ReadInt32();
                     }
                 }
@@ -793,7 +791,6 @@ namespace BabyBlocks
             BBLog.Msg("[PropMetadata] Loaded from embedded binary.");
         }
 
-        // ─────────────────────────────────────────────────────────────────────────
 
         static string Serialize(PropExtraInfoSave data) => SerializeManual(data);
 

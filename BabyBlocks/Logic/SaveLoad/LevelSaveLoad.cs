@@ -125,7 +125,7 @@ namespace BabyBlocks
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 using var fs = File.Open(path, FileMode.Create, FileAccess.Write);
-                using var w  = new BinaryWriter(fs, Encoding.UTF8, leaveOpen: false);
+                using var w = new BinaryWriter(fs, Encoding.UTF8, leaveOpen: false);
 
                 w.Write(Magic);
                 w.Write(FormatVersion);
@@ -165,7 +165,7 @@ namespace BabyBlocks
             try
             {
                 using var fs = File.Open(path, FileMode.Open, FileAccess.Read);
-                using var r  = new BinaryReader(fs, Encoding.UTF8, leaveOpen: false);
+                using var r = new BinaryReader(fs, Encoding.UTF8, leaveOpen: false);
                 return LoadFromReader(r, mgr, path);
             }
             catch (Exception e)
@@ -187,7 +187,7 @@ namespace BabyBlocks
             try
             {
                 using var ms = new MemoryStream(data);
-                using var r  = new BinaryReader(ms, Encoding.UTF8, leaveOpen: false);
+                using var r = new BinaryReader(ms, Encoding.UTF8, leaveOpen: false);
                 return LoadFromReader(r, mgr, "[network]", teleportOnLoad: false);
             }
             catch (Exception e)
@@ -210,7 +210,7 @@ namespace BabyBlocks
             try
             {
                 using var ms = new MemoryStream();
-                using var w  = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: false);
+                using var w = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: false);
                 w.Write(Magic);
                 w.Write(FormatVersion);
                 w.Write(!BaseMapController.BaseMapEnabled);
@@ -320,39 +320,39 @@ namespace BabyBlocks
                     }
                 }
 
-                var pos   = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                var rot   = (version >= 3) ? ReadCompactRotation(r)
+                var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                var rot = (version >= 3) ? ReadCompactRotation(r)
                                            : new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
                 var scale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
 
-                PhysicsMode physicsType      = PhysicsMode.Static;
-                int recordGroupId            = 0;
-                int recordPhysicsGroupId     = 0;
-                float hatHairAmt             = 0f;
+                PhysicsMode physicsType = PhysicsMode.Static;
+                int recordGroupId = 0;
+                int recordPhysicsGroupId = 0;
+                float hatHairAmt = 0f;
                 var grabOffsetPos = Vector3.zero;
                 var grabOffsetRot = Vector3.zero;
-                var hatOffsetPos  = Vector3.zero;
-                var hatOffsetRot  = Vector3.zero;
+                var hatOffsetPos = Vector3.zero;
+                var hatOffsetRot = Vector3.zero;
                 if (version >= 4)
                 {
                     byte rawPhysics = r.ReadByte();
                     physicsType = Enum.IsDefined(typeof(PhysicsMode), (int)rawPhysics)
                         ? (PhysicsMode)rawPhysics : PhysicsMode.Static;
-                    recordGroupId        = r.ReadByte();
+                    recordGroupId = r.ReadByte();
                     recordPhysicsGroupId = r.ReadByte();
-                    hatHairAmt           = Mathf.Clamp01(r.ReadSingle());
+                    hatHairAmt = Mathf.Clamp01(r.ReadSingle());
                 }
                 if (version >= 5)
                 {
                     grabOffsetPos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
                     grabOffsetRot = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                    hatOffsetPos  = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                    hatOffsetRot  = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    hatOffsetPos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    hatOffsetRot = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
                 }
 
                 int  materialConstructionId = version >= 8  ? r.ReadInt32() : -1;
-                byte instanceFlags          = version >= 10 ? r.ReadByte()  : (byte)0;
-                var  materialTint           = version >= 12
+                byte instanceFlags = version >= 10 ? r.ReadByte() : (byte)0;
+                var materialTint = version >= 12
                     ? new Vector3(r.ReadByte(), r.ReadByte(), r.ReadByte())
                     : new Vector3(255f, 255f, 255f);
 
@@ -366,7 +366,7 @@ namespace BabyBlocks
                 var leo = mgr.SpawnFromPropInfo(info, pos);
                 if (leo == null) continue;
 
-                leo.transform.rotation   = rot;
+                leo.transform.rotation = rot;
                 // The spawn point marker is fixed-size — ignore any saved scale.
                 leo.transform.localScale = PropLibrary.IsSpawnPointProp(propId) ? Vector3.one : scale;
                 mgr.SyncLoopBase(leo);
@@ -384,14 +384,14 @@ namespace BabyBlocks
                         leo.chunkCoord = new Vector2Int(safeChunk % 8, safeChunk / 8);
                     }
                 }
-                leo.physicsMode      = physicsType;
-                leo.groupId          = recordGroupId;
-                leo.physicsGroupId   = recordPhysicsGroupId;
-                leo.hatHairAmt       = hatHairAmt;
-                leo.grabOffsetPos    = grabOffsetPos;
-                leo.grabOffsetRot    = grabOffsetRot;
-                leo.hatOffsetPos     = hatOffsetPos;
-                leo.hatOffsetRot     = hatOffsetRot;
+                leo.physicsMode = physicsType;
+                leo.groupId = recordGroupId;
+                leo.physicsGroupId = recordPhysicsGroupId;
+                leo.hatHairAmt = hatHairAmt;
+                leo.grabOffsetPos = grabOffsetPos;
+                leo.grabOffsetRot = grabOffsetRot;
+                leo.hatOffsetPos = hatOffsetPos;
+                leo.hatOffsetRot = hatOffsetRot;
                 leo.materialConstructionId = materialConstructionId;
                 if (materialConstructionId >= 0)
                 {
@@ -414,9 +414,9 @@ namespace BabyBlocks
                     MelonLogger.Msg($"[SaveLoad] No construction (id={materialConstructionId}) for {propId}");}
 
 
-                leo.sunglassesNeeded  = (instanceFlags & 0x01) != 0;
+                leo.sunglassesNeeded = (instanceFlags & 0x01) != 0;
                 leo.playerPassthrough = (instanceFlags & 0x02) != 0;
-                leo.freezeUntilHit    = (instanceFlags & 0x08) != 0;
+                leo.freezeUntilHit = (instanceFlags & 0x08) != 0;
                 if (leo.sunglassesNeeded && leo.GetComponent<BbSunglassesChecker>() == null)
                     leo.gameObject.AddComponent<BbSunglassesChecker>();
                 if (leo.playerPassthrough)
@@ -543,17 +543,17 @@ namespace BabyBlocks
                     position = position,
                     rotation = CanonicalizeRotation(leo.transform.rotation),
                     scale = leo.transform.localScale,
-                    physicsType      = leo.physicsMode,
-                    groupId          = leo.groupId,
-                    physicsGroupId   = leo.physicsGroupId,
-                    hatHairAmt       = leo.hatHairAmt,
-                    grabOffsetPos    = leo.grabOffsetPos,
-                    grabOffsetRot    = leo.grabOffsetRot,
-                    hatOffsetPos     = leo.hatOffsetPos,
-                    hatOffsetRot     = leo.hatOffsetRot,
+                    physicsType = leo.physicsMode,
+                    groupId = leo.groupId,
+                    physicsGroupId = leo.physicsGroupId,
+                    hatHairAmt = leo.hatHairAmt,
+                    grabOffsetPos = leo.grabOffsetPos,
+                    grabOffsetRot = leo.grabOffsetRot,
+                    hatOffsetPos = leo.hatOffsetPos,
+                    hatOffsetRot = leo.hatOffsetRot,
                     materialConstructionId = leo.materialConstructionId,
                     instanceFlags = (byte)((leo.sunglassesNeeded ? 0x01 : 0) | (leo.playerPassthrough ? 0x02 : 0) | (BbHatSunglassesFlag.Has(leo) ? 0x04 : 0) | (leo.freezeUntilHit ? 0x08 : 0)),
-                    materialTint  = leo.materialTint,
+                    materialTint = leo.materialTint,
                 });
             }
 
@@ -694,7 +694,7 @@ namespace BabyBlocks
             for (int i = 0; i < count; i++)
             {
                 int groupId = r.ReadInt32();
-                var scale   = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                var scale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
                 GroupManager.SetGroupDisplayScale(groupId, scale);
             }
         }

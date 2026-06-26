@@ -11,14 +11,14 @@ namespace BabyBlocks
     // PropMetadataPanel's per-prop body in the "Prop Details" window.
     static class MaterialConstructionPanel
     {
-        const float Pad    = 8f;
-        const float ItemH  = 60f;
+        const float Pad = 8f;
+        const float ItemH = 60f;
         const float PanelW = 110f;
-        const float ItemW  = PanelW - Pad * 2f; // 94
+        const float ItemW = PanelW - Pad * 2f; // 94
         const float AutoSaveDelay = 0.75f;
         const int PreviewSize = 128;
 
-        const string NameField   = "matConstructionName";
+        const string NameField = "matConstructionName";
         const string SearchField = "matConstructionSearch";
 
         public static bool IsTypingInUI
@@ -53,7 +53,7 @@ namespace BabyBlocks
         // Original materials cached per LEO (instanceId → per-renderer sharedMaterials snapshot)
         // captured the first time ApplyToInstance touches a pristine prop (materialConstructionId < 0).
         // Keyed by leo.gameObject.GetInstanceID().
-        static readonly Dictionary<int, Material[][]> _origCache   = new();
+        static readonly Dictionary<int, Material[][]> _origCache = new();
         // Original surface tag cached in parallel so Reset to Default can restore it.
         static readonly Dictionary<int, string>       _origTagCache = new();
 
@@ -65,7 +65,7 @@ namespace BabyBlocks
         static bool _scrollActive;
         static bool _scrollInDelay;
 
-        const float ScrollInitialDelay   = 0.35f;
+        const float ScrollInitialDelay = 0.35f;
         const float ScrollRepeatInterval = 0.08f;
 
         static bool _showMaterialDropdown;
@@ -105,25 +105,25 @@ namespace BabyBlocks
             int total = MaterialConstructionLibrary.Entries.Count;
             if (total == 0) return;
 
-            bool minusHeld  = Input.GetKey(KeyCode.Minus);
+            bool minusHeld = Input.GetKey(KeyCode.Minus);
             bool equalsHeld = Input.GetKey(KeyCode.Equals);
 
             if (!minusHeld && !equalsHeld)
             {
                 _scrollActive = false;
-                _scrollTimer  = 0f;
+                _scrollTimer = 0f;
                 return;
             }
 
-            int dir  = minusHeld ? -1 : 1;
+            int dir = minusHeld ? -1 : 1;
             int page = VisibleSlots;
 
             if (!_scrollActive)
             {
-                _scrollActive  = true;
+                _scrollActive = true;
                 _scrollInDelay = true;
-                _scrollTimer   = 0f;
-                _scrollOffset  = PropPalette.StepPageOffset(_scrollOffset, dir, page, total);
+                _scrollTimer = 0f;
+                _scrollOffset = PropPalette.StepPageOffset(_scrollOffset, dir, page, total);
                 return;
             }
 
@@ -131,13 +131,12 @@ namespace BabyBlocks
             float threshold = _scrollInDelay ? ScrollInitialDelay : ScrollRepeatInterval;
             if (_scrollTimer >= threshold)
             {
-                _scrollTimer  -= threshold;
+                _scrollTimer -= threshold;
                 _scrollInDelay = false;
-                _scrollOffset  = PropPalette.StepPageOffset(_scrollOffset, dir, page, total);
+                _scrollOffset = PropPalette.StepPageOffset(_scrollOffset, dir, page, total);
             }
         }
 
-        // ── Left-side palette (replaces PropPalette while active) ───────────────
 
         public static void DrawPalette(Event e, bool showAddButton = true)
         {
@@ -147,13 +146,13 @@ namespace BabyBlocks
             _displayEntries.AddRange(MaterialConstructionLibrary.Entries);
             _displayEntries.Sort((a, b) => string.Compare(a.name, b.name, StringComparison.OrdinalIgnoreCase));
             var entries = _displayEntries;
-            int total   = entries.Count;
+            int total = entries.Count;
             int visible = VisibleSlots;
 
             _scrollOffset = Mathf.Clamp(_scrollOffset, 0, Mathf.Max(0, total - 1));
 
-            float panelH    = Pad + visible * (ItemH + Pad) + (showAddButton ? 22f : 0f) + 18f;
-            var   panelRect = new Rect(10f, 10f, PanelW, panelH);
+            float panelH = Pad + visible * (ItemH + Pad) + (showAddButton ? 22f : 0f) + 18f;
+            var panelRect = new Rect(10f, 10f, PanelW, panelH);
             PropPalette.PanelRect = panelRect;
 
             GUI.color = new Color(0f, 0f, 0f, 0.65f);
@@ -169,15 +168,15 @@ namespace BabyBlocks
 
             for (int i = 0; i < visible; i++)
             {
-                int   entryIdx = _scrollOffset + i;
-                float y        = 10f + Pad + i * (ItemH + Pad);
-                var   itemRect = new Rect(10f + Pad, y, ItemW, ItemH);
+                int entryIdx = _scrollOffset + i;
+                float y = 10f + Pad + i * (ItemH + Pad);
+                var itemRect = new Rect(10f + Pad, y, ItemW, ItemH);
 
                 if (entryIdx < total)
                 {
-                    var  entry    = entries[entryIdx];
+                    var entry = entries[entryIdx];
                     bool isEditing = showAddButton && _editing == entry;
-                    bool hovered   = itemRect.Contains(e.mousePosition) && !IsDragging;
+                    bool hovered = itemRect.Contains(e.mousePosition) && !IsDragging;
 
                     GUI.color = isEditing
                         ? new Color(1f, 0.85f, 0.3f, 0.95f)
@@ -192,7 +191,7 @@ namespace BabyBlocks
                             _showMaterialDropdown = false;
                             _showSurfaceDropdown = false;
                         }
-                        _draggingIndex  = entryIdx;
+                        _draggingIndex = entryIdx;
                         _dragStartFrame = Time.frameCount;
                         // Dragging straight out of a focused search/name field (without
                         // clicking elsewhere first to defocus it) can leave Unity's input
@@ -226,7 +225,7 @@ namespace BabyBlocks
             // Page label at bottom of panel.
             if (total > 0)
             {
-                int pageCount   = Mathf.CeilToInt(total / (float)visible);
+                int pageCount = Mathf.CeilToInt(total / (float)visible);
                 int currentPage = (_scrollOffset / visible) + 1;
                 GUI.color = new Color(0.75f, 0.75f, 0.75f, 1f);
                 float pageLabelY = 10f + Pad + visible * (ItemH + Pad) + (showAddButton ? 22f : 2f);
@@ -254,7 +253,6 @@ namespace BabyBlocks
             }
         }
 
-        // ── Right-side constructor (replaces the per-prop body in Prop Details) ─
 
         public static void DrawConstructor()
         {
@@ -310,7 +308,7 @@ namespace BabyBlocks
                 _materialSearch = GUILayout.TextField(_materialSearch ?? "");
 
                 _materialScroll = GUILayout.BeginScrollView(_materialScroll, GUILayout.Height(140f));
-                var names  = MaterialCatalog.MaterialNames;
+                var names = MaterialCatalog.MaterialNames;
                 var labels = MaterialCatalog.MaterialLabels;
                 string search = (_materialSearch ?? "").Trim();
                 bool hasSearch = !string.IsNullOrEmpty(search);
@@ -393,7 +391,6 @@ namespace BabyBlocks
             _dirty = false;
         }
 
-        // ── Sphere preview ───────────────────────────────────────────────────
 
         static GameObject _previewRoot;
         static GameObject _previewSphere;
@@ -481,7 +478,6 @@ namespace BabyBlocks
             _previewSphere.transform.rotation = Quaternion.Euler(15f, Time.realtimeSinceStartup * 25f % 360f, 0f);
         }
 
-        // ── Drag-apply to a placed prop ─────────────────────────────────────────
 
         public static void TryApplyToHoveredProp()
         {
@@ -552,7 +548,7 @@ namespace BabyBlocks
                         if (sm == null || sm.Length == 0) continue;
                         snap[i] = sm; // sharedMaterials getter already returns a copy
                     }
-                    _origCache[leoKey]   = snap;
+                    _origCache[leoKey] = snap;
                     _origTagCache[leoKey] = leo.gameObject.tag;
                 }
             }
@@ -612,11 +608,10 @@ namespace BabyBlocks
                 var sm = renderers[i]?.sharedMaterials;
                 if (sm != null && sm.Length > 0) snap[i] = sm;
             }
-            _origCache[key]   = snap;
+            _origCache[key] = snap;
             _origTagCache[key] = leo.gameObject.tag;
         }
 
-        // ── Reset to default ─────────────────────────────────────────────────
 
         // Public entry point for resetting a prop's materials to default (used by the network
         // receive path; the UI goes through ApplyToInstance with the int.MinValue sentinel).
@@ -625,13 +620,13 @@ namespace BabyBlocks
 
         static void ResetToDefaultMaterials(LevelEditorObject leo, bool pushHistory)
         {
-            var renderers  = leo.GetComponentsInChildren<Renderer>(true);
+            var renderers = leo.GetComponentsInChildren<Renderer>(true);
             var matsBefore = new Material[renderers.Length][];
             for (int i = 0; i < renderers.Length; i++)
                 matsBefore[i] = renderers[i] != null ? renderers[i].sharedMaterials : null;
 
             var colliders = leo.GetComponentsInChildren<Collider>(true);
-            var tagObjs   = new GameObject[1 + colliders.Length];
+            var tagObjs = new GameObject[1 + colliders.Length];
             tagObjs[0] = leo.gameObject;
             for (int i = 0; i < colliders.Length; i++)
                 tagObjs[1 + i] = colliders[i] != null ? colliders[i].gameObject : null;
@@ -687,7 +682,6 @@ namespace BabyBlocks
                 LevelEditorHistory.PushMaterial(leo, renderers, matsBefore, tagObjs, tagsBefore, idBefore);
         }
 
-        // ── Styles ───────────────────────────────────────────────────────────
 
         static void EnsureStyles()
         {

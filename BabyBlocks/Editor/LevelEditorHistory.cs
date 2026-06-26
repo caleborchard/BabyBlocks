@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Il2Cpp;
 using UnityEngine;
 using System.Linq;
@@ -15,15 +15,15 @@ namespace BabyBlocks
             public static TransformState Capture(Transform t) => new()
             {
                 position = t.position,
-                scale    = t.localScale,
+                scale = t.localScale,
                 rotation = t.rotation,
             };
 
             public void Apply(Transform t)
             {
-                t.position   = position;
+                t.position = position;
                 t.localScale = scale;
-                t.rotation   = rotation;
+                t.rotation = rotation;
             }
         }
 
@@ -44,7 +44,7 @@ namespace BabyBlocks
                 if (string.IsNullOrEmpty(_addressableKey))
                     System.Enum.TryParse(obj.objectType, out _primType);
                 _state = TransformState.Capture(obj.transform);
-                _live  = obj;
+                _live = obj;
             }
 
             public void Undo()
@@ -87,7 +87,7 @@ namespace BabyBlocks
                 if (string.IsNullOrEmpty(_addressableKey))
                     System.Enum.TryParse(obj.objectType, out _primType);
                 _state = TransformState.Capture(obj.transform);
-                _live  = null;
+                _live = null;
             }
 
             public void Undo()
@@ -122,9 +122,9 @@ namespace BabyBlocks
 
             public TransformAction(LevelEditorObject obj, TransformState before, TransformState after)
             {
-                _obj    = obj;
+                _obj = obj;
                 _before = before;
-                _after  = after;
+                _after = after;
             }
 
             public void Undo() { if (_obj != null) { _before.Apply(_obj.transform); LevelEditorManager.Instance?.SyncLoopBase(_obj); LevelEditor.Select(_obj); } }
@@ -145,15 +145,15 @@ namespace BabyBlocks
                 GameObject[] tagObjs, string[] tagsBefore, string[] tagsAfter,
                 int idBefore, int idAfter)
             {
-                _obj        = obj;
-                _renderers  = renderers;
+                _obj = obj;
+                _renderers = renderers;
                 _matsBefore = matsBefore;
-                _matsAfter  = matsAfter;
-                _tagObjs    = tagObjs;
+                _matsAfter = matsAfter;
+                _tagObjs = tagObjs;
                 _tagsBefore = tagsBefore;
-                _tagsAfter  = tagsAfter;
-                _idBefore   = idBefore;
-                _idAfter    = idAfter;
+                _tagsAfter = tagsAfter;
+                _idBefore = idBefore;
+                _idAfter = idAfter;
             }
 
             public void Undo() => Apply(_matsBefore, _tagsBefore, _idBefore);
@@ -185,23 +185,23 @@ namespace BabyBlocks
                 Vector3 rootPosBefore, Vector3 displayScaleBefore,
                 Vector3[] scalesBefore, Vector3[] localPosBefore)
             {
-                _groupId    = groupId;
-                _groupRoot  = groupRoot;
-                _members    = members;
-                _rootPosBefore      = rootPosBefore;
+                _groupId = groupId;
+                _groupRoot = groupRoot;
+                _members = members;
+                _rootPosBefore = rootPosBefore;
                 _displayScaleBefore = displayScaleBefore;
-                _scalesBefore    = scalesBefore;
-                _localPosBefore  = localPosBefore;
+                _scalesBefore = scalesBefore;
+                _localPosBefore = localPosBefore;
 
                 // Capture after-state at construction time (called immediately after the change).
-                _rootPosAfter      = groupRoot?.transform.position ?? Vector3.zero;
+                _rootPosAfter = groupRoot?.transform.position ?? Vector3.zero;
                 _displayScaleAfter = GroupManager.GetGroupDisplayScale(groupId);
-                _scalesAfter   = new Vector3[members.Length];
+                _scalesAfter = new Vector3[members.Length];
                 _localPosAfter = new Vector3[members.Length];
                 for (int i = 0; i < members.Length; i++)
                 {
                     if (members[i] == null) continue;
-                    _scalesAfter[i]   = members[i].transform.localScale;
+                    _scalesAfter[i] = members[i].transform.localScale;
                     _localPosAfter[i] = members[i].transform.localPosition;
                 }
             }
@@ -223,7 +223,7 @@ namespace BabyBlocks
                 for (int i = 0; i < _members.Length; i++)
                 {
                     if (_members[i] == null) continue;
-                    _members[i].transform.localScale    = scales[i];
+                    _members[i].transform.localScale = scales[i];
                     _members[i].transform.localPosition = localPositions[i];
                 }
                 GroupManager.SetGroupDisplayScale(_groupId, displayScale);
@@ -257,13 +257,13 @@ namespace BabyBlocks
             public GroupRotateAction(int groupId, GameObject groupRoot, LevelEditorObject[] members,
                 Vector3 rootPosBefore, Quaternion rootRotBefore)
             {
-                _groupId      = groupId;
-                _groupRoot    = groupRoot;
-                _members      = members;
+                _groupId = groupId;
+                _groupRoot = groupRoot;
+                _members = members;
                 _rootPosBefore = rootPosBefore;
                 _rootRotBefore = rootRotBefore;
-                _rootPosAfter  = groupRoot?.transform.position ?? Vector3.zero;
-                _rootRotAfter  = groupRoot?.transform.rotation ?? Quaternion.identity;
+                _rootPosAfter = groupRoot?.transform.position ?? Vector3.zero;
+                _rootRotAfter = groupRoot?.transform.rotation ?? Quaternion.identity;
             }
 
             public bool HasChanges() => _rootPosBefore != _rootPosAfter || _rootRotBefore != _rootRotAfter;
@@ -318,7 +318,7 @@ namespace BabyBlocks
             Vector3 posBefore, Vector3 scaleBefore, Quaternion rotBefore)
         {
             var before = new TransformState { position = posBefore, scale = scaleBefore, rotation = rotBefore };
-            var after  = TransformState.Capture(obj.transform);
+            var after = TransformState.Capture(obj.transform);
             if (before.position != after.position || before.scale != after.scale || before.rotation != after.rotation)
                 Push(new TransformAction(obj, before, after));
         }

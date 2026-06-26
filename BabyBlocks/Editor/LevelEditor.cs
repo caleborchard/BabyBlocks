@@ -11,62 +11,51 @@ namespace BabyBlocks
     {
         public enum ToolMode { Translate, Scale, Rotate }
 
-        public static ToolMode          currentTool    = ToolMode.Translate;
+        public static ToolMode currentTool = ToolMode.Translate;
         public static LevelEditorObject selectedObject;
-        public static bool              isDragging     => _isDragging;
-        public static bool              LocalMode      = true;   // true = local axes; false = world axes (G key)
+        public static bool isDragging => _isDragging;
+        public static bool LocalMode = true; // true=local axes false=world axes (G key)
         public static IReadOnlyList<LevelEditorObject> SelectedObjects => _selection;
 
-        // True while actively dragging the translation gizmo's center sphere with shift held
-        // (surface-snap mode). Used to suppress the selection outline and block the R
-        // edit-mode-toggle shortcut, which is repurposed for cycling spawn orientation here.
+        // true while shift-dragging center sphere; suppresses outline and repurposes R for spawn orient cycle
         public static bool IsSurfaceSnapDragging =>
             _isDragging && currentTool == ToolMode.Translate && _dragAxis == 3
             && (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift));
 
         static readonly List<LevelEditorObject> _selection = new();
-        static bool       _isDragging;
-        static int        _dragAxis;
-        static Vector3    _dragStartPos, _dragStartScale, _dragStartHit, _dragPlaneNormal, _dragPivot;
+        static bool _isDragging;
+        static int _dragAxis;
+        static Vector3 _dragStartPos, _dragStartScale, _dragStartHit, _dragPlaneNormal, _dragPivot;
         static Quaternion _dragStartRot;
-        static Vector2    _dragStartMouse;
-        static Vector2    _rawMouseAccum;      // accumulated raw mouse delta (screen-px units); not clamped at edges
-        static float      _dragGizmoScale;     // gizmo world-space size at drag start; used by scale tool
-        static Quaternion _accumulatedFreeRot; // accumulated rotation for free-rotate (velocity-based)
-        static int        _hoveredAxis = -1;
-        static bool       _pivotLocked;
+        static Vector2 _dragStartMouse;
+        static Vector2 _rawMouseAccum; // accumulated raw mouse delta not clamped at edges
+        static float _dragGizmoScale; // gizmo world-space size at drag start for scale sensitivity
+        static Quaternion _accumulatedFreeRot; // total rotation for free-rotate (velocity-based)
+        static int _hoveredAxis = -1;
+        static bool _pivotLocked;
 
         public static bool IsTypingInUI => PropMetadataPanel.IsTypingInUI || ObjImportWindow.IsTypingInUI || PhysicsWindow.IsTypingInUI || PropBrowserUI.IsTypingInUI;
-        public static bool IsDragging   => _isDragging;
+        public static bool IsDragging => _isDragging;
 
         static readonly List<LevelEditorObject> _dragObjects = new();
         static readonly List<Vector3> _dragStartPositions = new();
         static readonly List<Vector3> _dragStartScales = new();
         static readonly List<Quaternion> _dragStartRotations = new();
-        // Per-drag-object group root info (populated at drag start; used by ApplyScaleToDragObjects).
-        // Parallel to _dragObjects. Entry is null when the object has no group root.
-        static readonly List<GameObject> _dragScaleRoots          = new();
-        static readonly List<Vector3>    _dragStartRootScales    = new();  // display scale (== groupRoot.localScale)
-        static readonly List<Vector3>    _dragStartRootPositions = new();
+        // parallel to _dragObjects; null when no group root
+        static readonly List<GameObject> _dragScaleRoots = new();
+        static readonly List<Vector3> _dragStartRootScales = new(); // display scale == groupRoot.localScale
+        static readonly List<Vector3> _dragStartRootPositions = new();
         static readonly List<Quaternion> _dragStartRootRotations = new();
-        static readonly List<Vector3>    _dragStartLocalPositions = new();
-        // Scratch set reused each BroadcastDragTransforms to send a group's display scale once.
-        static readonly HashSet<int>     _dragGroupScaleScratch  = new();
+        static readonly List<Vector3> _dragStartLocalPositions = new();
+        static readonly HashSet<int> _dragGroupScaleScratch = new();
 
-        // Throttling for SendPropTransform broadcasts during an active drag, mirroring
-        // the freecam update cadence (Unreliable at high frequency, periodic
-        // ReliableOrdered keyframe so a mid-drag late-joiner still converges).
         const float NetTransformSendIntervalSeconds = 0.15f;
         const float NetTransformReliableIntervalSeconds = 1.5f;
         static float _nextNetTransformSendTime;
         static float _nextNetTransformReliableTime;
 
-        // netIds last broadcast via SendPropSelected, so selection changes are only sent
-        // when the set of selected networked props actually changes.
         static List<ulong> _lastBroadcastSelectedNetIds = new();
 
-        // Throttling for SendPropGhostUpdate broadcasts while dragging a prop out of the
-        // palette (before it's dropped), mirroring the drag-transform cadence above.
         const float GhostSendIntervalSeconds = 0.15f;
         const float GhostReliableIntervalSeconds = 1.5f;
         static float _nextGhostSendTime;
@@ -100,26 +89,21 @@ namespace BabyBlocks
         static float _lastUnloadCheck;
         const float UnloadCheckInterval = 15f;
 
-        // Ghost preview shown while dragging a prop from the palette.
         static GameObject _propGhost;
-        static PropInfo   _ghostProp;
+        static PropInfo _ghostProp;
 
-        // The 6 ways to reorient the prop so a different local face points "up" (i.e. gets
-        // aligned to the surface normal by ComputeSpawnRotation): +Y, -Y, the four sides.
+        // 6 face-up orientations for surface-snapped placement (+Y -Y ±Z ±X up)
         static readonly Quaternion[] FaceUpRotations =
         {
-            Quaternion.identity,            // local +Y up   (upright)
-            Quaternion.Euler(180f, 0f, 0f), // local -Y up   (upside-down)
-            Quaternion.Euler(90f,  0f, 0f), // local -Z up   (lying on its back)
-            Quaternion.Euler(-90f, 0f, 0f), // local +Z up   (lying on its front)
-            Quaternion.Euler(0f, 0f, -90f), // local +X up   (lying on its right side)
-            Quaternion.Euler(0f, 0f,  90f), // local -X up   (lying on its left side)
+            Quaternion.identity,
+            Quaternion.Euler(180f, 0f, 0f),
+            Quaternion.Euler(90f, 0f, 0f),
+            Quaternion.Euler(-90f, 0f, 0f),
+            Quaternion.Euler(0f, 0f, -90f),
+            Quaternion.Euler(0f, 0f, 90f),
         };
 
-        // R cycles through all 24 cube orientations: 6 faces-up × 4 spins around that
-        // up axis. The face changes every press (cycling fastest) so each of the first
-        // six presses already shows the prop resting on a different side — varied, not
-        // just spinning in place — and the full spin range is reachable by continuing.
+        // R cycles through 24 cube orientations: 6 faces-up × 4 spins
         static readonly Quaternion[] DragOrientations = BuildDragOrientations();
 
         static Quaternion[] BuildDragOrientations()
@@ -133,11 +117,7 @@ namespace BabyBlocks
         }
         static int _dragStep;
 
-        // Unity's Input.GetMouseButton(0) can spuriously read false for a single
-        // frame (e.g. after a brief hitch resets input state), which would otherwise
-        // be misread as the user releasing the mouse and drop the dragged prop
-        // instantly. Require a few consecutive "not held" frames before treating
-        // it as a real release.
+        // require N consecutive "not held" frames before treating as real release (spurious false frames exist)
         const int DragReleaseDebounceFrames = 3;
         static int _propDragReleaseFrames;
         static int _matDragReleaseFrames;
@@ -223,9 +203,7 @@ namespace BabyBlocks
             selectedObject = null;
         }
 
-        // Called after the entire level is cleared (locally via the Clear button, or
-        // remotely via a peer's clear broadcast) since every LevelEditorObject reference
-        // becomes stale at once - resets selection/drag/gizmo state accordingly.
+        // called when entire level is cleared; resets selection/drag/gizmo since all LEO refs go stale
         public static void ClearAllSelectionState()
         {
             _selection.Clear();
@@ -243,9 +221,7 @@ namespace BabyBlocks
             HideGizmo();
         }
 
-        // Called when a peer deletes a networked prop, so our copy is dropped from
-        // selection/drag state before LevelEditorManager destroys it - otherwise we'd be
-        // left holding a reference to a destroyed object.
+        // drop peer-deleted prop from selection/drag before LevelEditorManager destroys it
         public static void RemoveDeletedObject(LevelEditorObject obj)
         {
             if (obj == null) return;
@@ -264,15 +240,7 @@ namespace BabyBlocks
             }
         }
 
-        // Called once the post-save-load scene load burst settles (see
-        // FlyCamController.OnUpdate). A native "load a different save" destroys every
-        // LevelEditorObject in the old scene, but doesn't clear _selection/selectedObject
-        // - leaving stale destroyed references behind. With those still in _selection,
-        // Sync() sees selection.Count > 0 but every entry is "null" (Unity's destroyed-object
-        // check), so GetSelectionBoundsCenter returns Vector3.zero (world origin) and
-        // DrawOutline finds no live meshes to outline - the gizmo jumps to the origin and
-        // the selection highlight disappears, both seemingly "broken" until the user
-        // reselects something.
+        // removes destroyed LEO refs after a native save-load; prevents gizmo jumping to origin
         internal static void PruneSelection()
         {
             for (int i = _selection.Count - 1; i >= 0; i--)
@@ -318,16 +286,11 @@ namespace BabyBlocks
                 MaterialConstructionPanel.HandleScrollInput();
             }
 
-            // WARNING: EnsureCamera must be called here (once per frame, before Sync),
-            // NOT inside Sync() itself. Past attempts to rebuild/reconfigure the overlay
-            // camera inside Sync caused broken world streaming and player flings on long
-            // teleports. See GizmoRenderer.EnsureCamera for the full explanation.
+                // must be called once per frame before Sync; rebuilding inside Sync caused streaming bugs and player flings
             GizmoRenderer.EnsureCamera();
             var main = Camera.main;
             if (main != null) GizmoRenderer.Sync(_selection, selectedObject, currentTool, main);
             UpdateHover(overUI);
-            // Hide the gizmo while surface-snapping so it doesn't visually fight the
-            // object as it jumps to follow the cursor across surfaces.
             if (!IsSurfaceSnapDragging)
                 GizmoRenderer.Draw(_hoveredAxis, currentTool);
             else
@@ -337,13 +300,8 @@ namespace BabyBlocks
                 GizmoRenderer.SetTranslateDragDelta(_dragObjects[0].transform.position - _dragStartPositions[0]);
             else
                 GizmoRenderer.ClearDragDelta();
-            // Passing null/empty makes DrawOutline detach its command buffer and skip redrawing,
-            // rather than leaving a stale outline rendered at the pre-drag position.
             GizmoRenderer.DrawOutline(IsSurfaceSnapDragging ? null : _selection, main);
 
-            // Broadcast selection changes for the remote highlight feature. Only networked
-            // props (netId != 0) are reported; an empty list tells peers to clear our
-            // highlight entirely.
             var selectedNetIds = new List<ulong>();
             for (int i = 0; i < _selection.Count; i++)
             {
@@ -438,7 +396,7 @@ namespace BabyBlocks
                             var sentRootGroups = new System.Collections.Generic.HashSet<int>();
                             for (int i = 0; i < _dragObjects.Count; i++)
                             {
-                                var o    = _dragObjects[i];
+                                var o = _dragObjects[i];
                                 var root = i < _dragScaleRoots.Count ? _dragScaleRoots[i] : null;
                                 if (o == null || o.groupId <= 0 || root == null) continue;
                                 if (sentRootGroups.Add(o.groupId))
@@ -449,7 +407,7 @@ namespace BabyBlocks
                         // For group-scale drags push one GroupScaleAction per group instead of
                         // per-member PushTransform (which would miss display-scale and root-pos).
                         var processedGroupHistory = new System.Collections.Generic.HashSet<int>();
-                        bool isScaleDrag  = currentTool == ToolMode.Scale;
+                        bool isScaleDrag = currentTool == ToolMode.Scale;
                         bool isRotateDrag = currentTool == ToolMode.Rotate;
 
                         for (int i = 0; i < _dragObjects.Count; i++)
@@ -470,7 +428,7 @@ namespace BabyBlocks
                                 if (processedGroupHistory.Add(obj.groupId))
                                 {
                                     var members = new System.Collections.Generic.List<LevelEditorObject>();
-                                    var scalesBefore   = new System.Collections.Generic.List<Vector3>();
+                                    var scalesBefore = new System.Collections.Generic.List<Vector3>();
                                     var localPosBefore = new System.Collections.Generic.List<Vector3>();
                                     for (int j = 0; j < _dragObjects.Count; j++)
                                     {
@@ -528,18 +486,18 @@ namespace BabyBlocks
             ObjImportWindow.DrawGUI(Event.current);
             MaterialInspectorPanel.DrawGUI();
 
-            string tool  = currentTool == ToolMode.Translate ? "MOVE"
+            string tool = currentTool == ToolMode.Translate ? "MOVE"
                          : currentTool == ToolMode.Scale     ? "SCALE" : "ROTATE";
             string space = LocalMode ? "LOCAL" : "GLOBAL";
             string snapTag = _snapEnabled ? " [SNAP]" : "";
-            string msg   = selectedObject != null
+            string msg = selectedObject != null
                 ? $"LEVEL EDITOR  [{tool}] [{space}]{snapTag}  |  Space=cycle tool  T=local/global  Y=snap  Del=delete  |  R=teleport mode  `=exit to player  |  LMB=teleport  RMB=orbit"
                 : $"LEVEL EDITOR  |  Drag a prop from the palette onto the terrain  |  R=edit mode  `=exit to player  |  LMB=teleport  RMB=orbit";
 
             if (Core.DebugMode)
             {
                 var allProps = PropLibrary.FilteredProps;
-                int totalProps   = allProps.Count;
+                int totalProps = allProps.Count;
                 int checkedProps = 0;
                 for (int i = 0; i < totalProps; i++)
                     if (PropMetadataStore.HasMetadata(allProps[i].id)) checkedProps++;
@@ -568,9 +526,7 @@ namespace BabyBlocks
             _hoveredAxis = handle != null ? handle.axisIndex : -1;
         }
 
-        // Called when the local player exits cursor/editor mode so peers don't keep
-        // showing a highlight around whatever prop was selected when we left, since the
-        // selection-broadcast loop above stops running while the editor is closed.
+        // clears peer selection highlight when exiting editor (broadcast loop stops while closed)
         public static void ClearRemoteSelectionBroadcast()
         {
             if (_lastBroadcastSelectedNetIds.Count == 0) return;
@@ -590,9 +546,7 @@ namespace BabyBlocks
             return false;
         }
 
-        // Returns true if the prop was successfully spawned and placed, false on any
-        // early-return path (no raycast hit, no dragged prop, spawn failure) - callers
-        // use this to know whether to send a SendPropGhostEnd cancellation.
+        // returns false on miss/failure so caller knows to send SendPropGhostEnd cancellation
         static bool TryDropProp()
         {
             var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
@@ -619,15 +573,13 @@ namespace BabyBlocks
             return true;
         }
 
-        // While dragging a prop from the palette, holding shift suppresses surface-rotate
-        // snapping so the prop spawns upright; releasing shift restores normal surface snap.
+        // shift suppresses surface-rotate so prop spawns upright
         static Quaternion ComputeDragRotation(Vector3 normal)
         {
             bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
             return shift ? Quaternion.identity : ComputeSpawnRotation(normal);
         }
 
-        // Returns the rotation that aligns the prop's local +Y with the hit surface normal.
         static Quaternion ComputeSpawnRotation(Vector3 normal)
         {
             if (Vector3.Dot(normal, Vector3.up) < -0.999f)
@@ -635,11 +587,7 @@ namespace BabyBlocks
             return Quaternion.FromToRotation(Vector3.up, normal);
         }
 
-        // Places the prop so its nearest face (in the surface-normal direction) sits on the hit point,
-        // accounting for the prop's spawn rotation so the offset is correct for rotated placements.
-        // scale lets callers account for an object whose localScale differs from the prop's default
-        // (1,1,1) bounds — e.g. surface-snapping an already-thinned object — so the offset reflects
-        // its current size rather than floating/sinking relative to the surface.
+        // places prop flush on hit surface using rotated-AABB extent; scale accounts for non-default localScale
         static Vector3 ComputeSpawnPosition(PropInfo prop, RaycastHit hit, Quaternion rotation, Vector3? scale = null)
         {
             var bounds = PropLibrary.GetPropBounds(prop);
@@ -666,8 +614,7 @@ namespace BabyBlocks
             if (_propGhost == null || _ghostProp != prop)
             {
                 DestroyPropGhost();
-                // Intentionally not resetting _dragStep here: the chosen R orientation
-                // persists across props dragged from the library (gizmo drags still reset it).
+                // _dragStep intentionally not reset here; R orientation persists across palette drags
                 PropLibrary.LoadPropData(prop);
                 if (prop.HasMesh) { _propGhost = CreateGhostObject(prop); _ghostProp = prop; }
                 _nextGhostSendTime = 0f;
@@ -736,7 +683,7 @@ namespace BabyBlocks
                 child.transform.SetParent(root.transform, false);
                 child.transform.localPosition = part.localPosition;
                 child.transform.localRotation = part.localRotation;
-                child.transform.localScale    = part.localScale;
+                child.transform.localScale = part.localScale;
                 child.AddComponent<MeshFilter>().mesh = part.mesh;
                 var mr = child.AddComponent<MeshRenderer>();
                 if (part.materials != null) mr.sharedMaterials = part.materials;
@@ -777,19 +724,14 @@ namespace BabyBlocks
 
         static void TryBeginDrag()
         {
-            var ray    = Camera.main.ScreenPointToRay(Input.mousePosition);
+            var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
             GizmoHandle chosen = selectedObject != null ? GizmoRenderer.RaycastHandle(ray) : null;
 
             if (chosen == null)
             {
-                // WARNING: do NOT collapse this back into a single Physics.Raycast - this has
-                // regressed multiple times. A plain Raycast (even with QueryTriggerInteraction.Collide)
-                // stops at the first hit, which can be a game-world trigger volume (BBConvoStarter,
-                // conversation zones, etc.) with no LevelEditorObject - making props behind it
-                // (often rocks) unselectable. Bush props need Collide because SetBushPassthrough makes
-                // all their colliders triggers. So gather every hit and take the nearest one that
-                // actually has a LevelEditorObject in its hierarchy, skipping game-world triggers.
-                LevelEditorObject foundLeo  = null;
+                // do NOT use plain Raycast; game-world triggers (BBConvoStarter etc) block it and make props unselectable
+                // RaycastAll + nearest-LEO filter handles bush triggers too (SetBushPassthrough makes all colliders triggers)
+                LevelEditorObject foundLeo = null;
                 float              bestDist = float.MaxValue;
                 foreach (var h in Physics.RaycastAll(ray, 2000f, ~GizmoRenderer.Mask, QueryTriggerInteraction.Collide))
                 {
@@ -812,15 +754,15 @@ namespace BabyBlocks
                 return;
             }
 
-            _isDragging     = true;
-            _dragAxis       = chosen.axisIndex;
-            _dragStep       = 0;
-            _dragStartPos   = selectedObject.transform.position;
+            _isDragging = true;
+            _dragAxis = chosen.axisIndex;
+            _dragStep = 0;
+            _dragStartPos = selectedObject.transform.position;
             _dragStartScale = selectedObject.transform.localScale;
-            _dragStartRot   = selectedObject.transform.rotation;
+            _dragStartRot = selectedObject.transform.rotation;
             _dragStartMouse = new Vector2(Input.mousePosition.x, Input.mousePosition.y);
-            _rawMouseAccum  = Vector2.zero;
-            _dragPivot      = GizmoRenderer.PivotPosition;
+            _rawMouseAccum = Vector2.zero;
+            _dragPivot = GizmoRenderer.PivotPosition;
             if (currentTool == ToolMode.Rotate)
             {
                 GizmoRenderer.SetPivotOverride(_dragPivot);
@@ -846,7 +788,6 @@ namespace BabyBlocks
                 _dragStartRotations.Add(obj.transform.rotation);
                 var grRoot = obj.groupId > 0 ? GroupManager.GetGroupRoot(obj.groupId) : null;
                 _dragScaleRoots.Add(grRoot);
-                // Store display scale (== groupRoot.localScale) as start scale for ratio math.
                 _dragStartRootScales.Add(grRoot != null ? GroupManager.GetGroupDisplayScale(obj.groupId) : default);
                 _dragStartRootPositions.Add(grRoot != null ? grRoot.transform.position : default);
                 _dragStartRootRotations.Add(grRoot != null ? grRoot.transform.rotation : default);
@@ -859,7 +800,6 @@ namespace BabyBlocks
             {
                 if (_dragAxis == GizmoRenderer.FreeRotateAxis)
                 {
-                    // Velocity-based free rotate: reset accumulator; per-frame delta applied in ContinueDrag.
                     _accumulatedFreeRot = Quaternion.identity;
                     return;
                 }
@@ -914,13 +854,11 @@ namespace BabyBlocks
             // is proportional to the visual handle extent and thus naturally scales with camera distance.
             if (currentTool == ToolMode.Scale && selectedObject != null)
             {
-                float camDist   = Vector3.Distance(cam.transform.position, _dragPivot);
+                float camDist = Vector3.Distance(cam.transform.position, _dragPivot);
                 _dragGizmoScale = Mathf.Max(camDist * 0.14f, 0.02f);
             }
         }
 
-        // Throttled per-frame broadcast of dragged networked props' transforms, mirroring
-        // the fly-cam update cadence (mostly Unreliable, periodic ReliableOrdered keyframe).
         static void BroadcastDragTransforms()
         {
             if (_dragObjects.Count == 0) return;
@@ -930,16 +868,13 @@ namespace BabyBlocks
 
             bool reliable = now >= _nextNetTransformReliableTime;
 
-            // During a group scale/rotate drag, the visible size AND rotation frame live on the
-            // group root (display scale + root rotation), not the members' own transforms.
-            // Broadcast the root transform FIRST (once per group) — peers must set the root
-            // before applying per-member transforms, since member world rotation derives from it.
+            // send root transform first so peers apply it before per-member transforms
             if (currentTool == ToolMode.Scale || currentTool == ToolMode.Rotate)
             {
                 _dragGroupScaleScratch.Clear();
                 for (int i = 0; i < _dragObjects.Count; i++)
                 {
-                    var obj  = _dragObjects[i];
+                    var obj = _dragObjects[i];
                     var root = i < _dragScaleRoots.Count ? _dragScaleRoots[i] : null;
                     if (obj == null || obj.groupId <= 0 || root == null) continue;
                     if (_dragGroupScaleScratch.Add(obj.groupId))
@@ -964,7 +899,7 @@ namespace BabyBlocks
         {
             if (selectedObject == null) { _isDragging = false; return; }
 
-            var cam   = Camera.main;
+            var cam = Camera.main;
             var mouse = new Vector2(Input.mousePosition.x, Input.mousePosition.y);
 
             // Accumulate raw axis delta every frame so scale drags continue past screen edges.
@@ -982,8 +917,8 @@ namespace BabyBlocks
                 {
                     // Rotation axis: perpendicular to drag direction in screen space → world space.
                     // (drag right → rotate around cam.up; drag up → rotate around cam.right)
-                    var   rotAxis  = cam.transform.TransformDirection(-rawDelta.y, rawDelta.x, 0f).normalized;
-                    float angle    = rawDelta.magnitude * 0.3f;
+                    var rotAxis = cam.transform.TransformDirection(-rawDelta.y, rawDelta.x, 0f).normalized;
+                    float angle = rawDelta.magnitude * 0.3f;
                     _accumulatedFreeRot = Quaternion.AngleAxis(angle, rotAxis) * _accumulatedFreeRot;
                 }
 
@@ -994,7 +929,7 @@ namespace BabyBlocks
                     if (obj == null) continue;
 
                     var groupRoot = i < _dragScaleRoots.Count ? _dragScaleRoots[i] : null;
-                    var startRot  = groupRoot != null
+                    var startRot = groupRoot != null
                         ? (i < _dragStartRootRotations.Count ? _dragStartRootRotations[i] : Quaternion.identity)
                         : _dragStartRotations[i];
 
@@ -1036,13 +971,13 @@ namespace BabyBlocks
             // RING ROTATE
             if (currentTool == ToolMode.Rotate)
             {
-                var rotRay   = cam.ScreenPointToRay(Input.mousePosition);
+                var rotRay = cam.ScreenPointToRay(Input.mousePosition);
                 var rotPlane = new Plane(_dragPlaneNormal, _dragPivot);
                 if (!rotPlane.Raycast(rotRay, out float rotEnter)) return;
                 var hit = rotRay.GetPoint(rotEnter);
 
                 var from = _dragStartHit - _dragPivot;
-                var to   = hit - _dragPivot;
+                var to = hit - _dragPivot;
                 if (from.sqrMagnitude < 0.001f || to.sqrMagnitude < 0.001f) return;
 
                 float angle = Vector3.SignedAngle(from, to, _dragPlaneNormal);
@@ -1076,7 +1011,7 @@ namespace BabyBlocks
             }
 
             // TRANSLATE + SCALE: ray-plane intersection
-            var ray   = cam.ScreenPointToRay(Input.mousePosition);
+            var ray = cam.ScreenPointToRay(Input.mousePosition);
             var plane = new Plane(_dragPlaneNormal, _dragPivot);
             if (!plane.Raycast(ray, out float enter)) return;
             var delta = ray.GetPoint(enter) - _dragStartHit;
@@ -1089,9 +1024,9 @@ namespace BabyBlocks
                     // Project accumulated mouse delta onto the screen-diagonal direction (cam.right+cam.up).
                     // Moving one gizmo-unit along that direction doubles the scale (factor = 1 + dist/handleSize).
                     var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
-                    var   scaleDir       = (cam.transform.right + cam.transform.up).normalized;
-                    float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, scaleDir, cam);
-                    float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
+                    var scaleDir = (cam.transform.right + cam.transform.up).normalized;
+                    float dist_cl = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, scaleDir, cam);
+                    float factor = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
                     ApplyScaleToDragObjects(factor, factor, factor, true, true, true);
                 }
                 else if (currentTool == ToolMode.Translate
@@ -1112,15 +1047,15 @@ namespace BabyBlocks
                     {
                         // Diagonal of the plane handle's two (possibly camera-flipped) axes.
                         // GetEffectivePivotRot already accounts for the per-axis flip state.
-                        var   rot    = selectedObject != null && selectedObject.groupId > 0
+                        var rot = selectedObject != null && selectedObject.groupId > 0
                             ? (_dragStartRootRotations.Count > 0 ? _dragStartRootRotations[0] : Quaternion.identity)
                             : selectedObject.transform.rotation;
-                        var   dirA   = GizmoRenderer.GetEffectivePivotRot(aIdx) * Vector3.up;
-                        var   dirB   = GizmoRenderer.GetEffectivePivotRot(bIdx) * Vector3.up;
+                        var dirA = GizmoRenderer.GetEffectivePivotRot(aIdx) * Vector3.up;
+                        var dirB = GizmoRenderer.GetEffectivePivotRot(bIdx) * Vector3.up;
                         var   localDiag = rot * (dirA + dirB).normalized;
                         var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
-                        float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localDiag, cam);
-                        float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
+                        float dist_cl = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localDiag, cam);
+                        float factor = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
                         ApplyScaleToDragObjects(
                             aIdx == 0 || bIdx == 0 ? factor : 1f,
                             aIdx == 1 || bIdx == 1 ? factor : 1f,
@@ -1147,12 +1082,12 @@ namespace BabyBlocks
                                                     cam.WorldToScreenPoint(_dragPivot + axA).y - oScreen.y);
                         var   screenB = new Vector2(cam.WorldToScreenPoint(_dragPivot + axB).x - oScreen.x,
                                                     cam.WorldToScreenPoint(_dragPivot + axB).y - oScreen.y);
-                        var   sd      = mouse - _dragStartMouse;
-                        float det     = screenA.x * screenB.y - screenB.x * screenA.y;
+                        var sd = mouse - _dragStartMouse;
+                        float det = screenA.x * screenB.y - screenB.x * screenA.y;
                         if (Mathf.Abs(det) > 0.5f)
                         {
-                            float a  = (sd.x * screenB.y - sd.y * screenB.x) / det;
-                            float b  = (sd.y * screenA.x - sd.x * screenA.y) / det;
+                            float a = (sd.x * screenB.y - sd.y * screenB.x) / det;
+                            float b = (sd.y * screenA.x - sd.x * screenA.y) / det;
                             var   td = axA * a + axB * b;
                             for (int i = 0; i < _dragObjects.Count; i++)
                             {
@@ -1177,13 +1112,13 @@ namespace BabyBlocks
             {
                 // Project onto the effective arrow direction (accounts for camera-side flip).
                 // In local mode the gizmo inherits obj.rotation, so we apply it here too.
-                var   scaleObjRot    = selectedObject != null && selectedObject.groupId > 0
+                var scaleObjRot = selectedObject != null && selectedObject.groupId > 0
                     ? (_dragStartRootRotations.Count > 0 ? _dragStartRootRotations[0] : Quaternion.identity)
                     : selectedObject.transform.rotation;
-                var   localAxis      = scaleObjRot * (GizmoRenderer.GetEffectivePivotRot(_dragAxis) * Vector3.up);
+                var localAxis = scaleObjRot * (GizmoRenderer.GetEffectivePivotRot(_dragAxis) * Vector3.up);
                 var   effectiveMouse = _dragStartMouse + _rawMouseAccum;
-                float dist_cl        = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localAxis, cam);
-                float factor         = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
+                float dist_cl = CalcLineTranslation(_dragStartMouse, effectiveMouse, _dragPivot, localAxis, cam);
+                float factor = Mathf.Max(0.001f, 1f + dist_cl / _dragGizmoScale);
                 ApplyScaleToDragObjects(
                     _dragAxis == 0 ? factor : 1f,
                     _dragAxis == 1 ? factor : 1f,
@@ -1234,9 +1169,9 @@ namespace BabyBlocks
                 if (obj.physicsMode != PhysicsMode.Static) PhysicsObjectManager.ClearPhysics(obj, restoreMaterial: mode == PhysicsMode.Static);
             if (mode == PhysicsMode.Static) return;
 
-            int sharedLogicalGroup  = targets.All(o => o.groupId > 0 && o.groupId == targets[0].groupId)
+            int sharedLogicalGroup = targets.All(o => o.groupId > 0 && o.groupId == targets[0].groupId)
                 ? targets[0].groupId : 0;
-            int sharedPhysicsGroup  = targets.All(o => o.physicsGroupId > 0 && o.physicsGroupId == targets[0].physicsGroupId)
+            int sharedPhysicsGroup = targets.All(o => o.physicsGroupId > 0 && o.physicsGroupId == targets[0].physicsGroupId)
                 ? targets[0].physicsGroupId : 0;
 
             bool multi = targets.Count > 1;
@@ -1328,7 +1263,7 @@ namespace BabyBlocks
                 foreach (var obj in targets)
                 {
                     if (obj.physicsMode != PhysicsMode.Static) PhysicsObjectManager.ClearPhysics(obj);
-                    obj.physicsMode    = PhysicsMode.Static;
+                    obj.physicsMode = PhysicsMode.Static;
                     obj.physicsGroupId = 0;
                 }
             }
@@ -1432,10 +1367,10 @@ namespace BabyBlocks
                     rotation = obj.transform.rotation,
                     isAddressable = !string.IsNullOrEmpty(obj.addressableKey),
                     materialConstructionId = obj.materialConstructionId,
-                    physicsMode       = obj.physicsMode,
-                    sunglassesNeeded  = obj.sunglassesNeeded,
+                    physicsMode = obj.physicsMode,
+                    sunglassesNeeded = obj.sunglassesNeeded,
                     playerPassthrough = obj.playerPassthrough,
-                    freezeUntilHit    = obj.freezeUntilHit,
+                    freezeUntilHit = obj.freezeUntilHit,
                 };
 
                 if (!entry.isAddressable)
@@ -1503,9 +1438,9 @@ namespace BabyBlocks
                     SetPhysicsMode(entry.physicsMode);
                 }
 
-                obj.sunglassesNeeded  = entry.sunglassesNeeded;
+                obj.sunglassesNeeded = entry.sunglassesNeeded;
                 obj.playerPassthrough = entry.playerPassthrough;
-                obj.freezeUntilHit    = entry.freezeUntilHit;
+                obj.freezeUntilHit = entry.freezeUntilHit;
                 if (entry.sunglassesNeeded && obj.GetComponent<BbSunglassesChecker>() == null)
                     obj.gameObject.AddComponent<BbSunglassesChecker>();
                 if (entry.playerPassthrough)
@@ -1562,9 +1497,9 @@ namespace BabyBlocks
             var cam = Camera.main;
             var ray = cam.ScreenPointToRay(Input.mousePosition);
 
-            RaycastHit hit       = default;
-            float      bestDist  = float.MaxValue;
-            bool       found     = false;
+            RaycastHit hit = default;
+            float bestDist = float.MaxValue;
+            bool found = false;
             // RaycastAll + filter: a plain Raycast can hit the object being dragged itself
             // (it now sits under the cursor), which causes the snap point to jitter toward
             // the camera and back as the object repeatedly occludes/unoccludes the surface.
@@ -1572,8 +1507,8 @@ namespace BabyBlocks
             {
                 if (h.distance >= bestDist || IsDraggedTransform(h.collider.transform)) continue;
                 bestDist = h.distance;
-                hit      = h;
-                found    = true;
+                hit = h;
+                found = true;
             }
             if (!found) return;
 
@@ -1581,8 +1516,8 @@ namespace BabyBlocks
 
             // Reuse the same placement math as palette dragging (ComputeSpawnPosition) so the
             // prop's nearest face sits flush on the surface instead of snapping by its center.
-            var primary  = _dragObjects[0];
-            var prop     = primary != null ? PropLibrary.FindById(primary.addressableKey) : null;
+            var primary = _dragObjects[0];
+            var prop = primary != null ? PropLibrary.FindById(primary.addressableKey) : null;
             Vector3 targetPos;
             if (prop != null)
             {
@@ -1663,7 +1598,7 @@ namespace BabyBlocks
                         // Scale the pivot offset in the group root's local space so the
                         // position correctly follows the group's orientation after rotation.
                         var startRootRot = i < _dragStartRootRotations.Count ? _dragStartRootRotations[i] : Quaternion.identity;
-                        var localRel     = Quaternion.Inverse(startRootRot) * (_dragStartRootPositions[i] - _dragPivot);
+                        var localRel = Quaternion.Inverse(startRootRot) * (_dragStartRootPositions[i] - _dragPivot);
                         if (scaleX) localRel.x *= rx;
                         if (scaleY) localRel.y *= ry;
                         if (scaleZ) localRel.z *= rz;
@@ -1729,14 +1664,14 @@ namespace BabyBlocks
         static float CalcLineTranslation(Vector2 srcMouse, Vector2 dstMouse,
                                          Vector3 origin,   Vector3 unitDir, Camera cam)
         {
-            var p1        = cam.WorldToScreenPoint(origin);
-            var p2        = cam.WorldToScreenPoint(origin + unitDir);
+            var p1 = cam.WorldToScreenPoint(origin);
+            var p2 = cam.WorldToScreenPoint(origin + unitDir);
             var screenDir = new Vector2(p2.x - p1.x, p2.y - p1.y);
-            float sqMag   = screenDir.sqrMagnitude;
+            float sqMag = screenDir.sqrMagnitude;
             if (sqMag < 0.01f) return 0f;
             var   o2d = new Vector2(p1.x, p1.y);
-            float t0  = Vector2.Dot(srcMouse - o2d, screenDir) / sqMag;
-            float t1  = Vector2.Dot(dstMouse - o2d, screenDir) / sqMag;
+            float t0 = Vector2.Dot(srcMouse - o2d, screenDir) / sqMag;
+            float t1 = Vector2.Dot(dstMouse - o2d, screenDir) / sqMag;
             return t1 - t0;
         }
     }

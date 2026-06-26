@@ -57,9 +57,9 @@ namespace BabyBlocks
                 int count = br.ReadInt32();
                 for (int i = 0; i < count; i++)
                 {
-                    string id  = MaterialBaker.ReadStr(br);
+                    string id = MaterialBaker.ReadStr(br);
                     int jpgLen = br.ReadInt32();
-                    var bytes  = br.ReadBytes(jpgLen);
+                    var bytes = br.ReadBytes(jpgLen);
                     _entries[id] = bytes;
                 }
             }

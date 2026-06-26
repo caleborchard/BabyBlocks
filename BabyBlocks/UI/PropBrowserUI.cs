@@ -32,7 +32,7 @@ namespace BabyBlocks.UI
             Universe.Init(1f, OnReady, null, new UniverseLibConfig
             {
                 Disable_EventSystem_Override = false,
-                Force_Unlock_Mouse           = true,
+                Force_Unlock_Mouse = true,
             });
         }
 
@@ -43,19 +43,18 @@ namespace BabyBlocks.UI
             // Scale all UI with screen resolution so layout holds at any resolution.
             var scaler = _uiBase.RootObject.GetComponent<UnityEngine.UI.CanvasScaler>()
                       ?? _uiBase.RootObject.AddComponent<UnityEngine.UI.CanvasScaler>();
-            scaler.uiScaleMode       = UnityEngine.UI.CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.uiScaleMode = UnityEngine.UI.CanvasScaler.ScaleMode.ScaleWithScreenSize;
             scaler.referenceResolution = new Vector2(1920f, 1080f);
-            scaler.screenMatchMode   = UnityEngine.UI.CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
+            scaler.screenMatchMode = UnityEngine.UI.CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
             scaler.matchWidthOrHeight = 0.5f;
 
             try
             {
-                _topBar           = new TopBarPanel(_uiBase);
-                _panel            = new PropLibraryPanel(_uiBase);
-                _fileBrowser      = new FileBrowserPanel(_uiBase);
-                _propertiesPanel  = new PropertiesPanel(_uiBase);
+                _topBar = new TopBarPanel(_uiBase);
+                _panel = new PropLibraryPanel(_uiBase);
+                _fileBrowser = new FileBrowserPanel(_uiBase);
+                _propertiesPanel = new PropertiesPanel(_uiBase);
                 Ready = true;
-                MelonLogger.Msg("[BabyBlocks] Prop browser UI ready.");
             }
             catch (System.Exception e)
             {
@@ -75,8 +74,8 @@ namespace BabyBlocks.UI
         {
             if (!Ready) return;
             // In DebugMode the old ImGui palette takes over; hide the UniverseLib UI entirely.
-            bool inEditor      = FlyCamController.FlyCamActive && FlyCamController.CursorMode && !Core.DebugMode;
-            bool freeCamNow    = FlyCamController.FlyCamActive && !FlyCamController.CursorMode;
+            bool inEditor = FlyCamController.FlyCamActive && FlyCamController.CursorMode && !Core.DebugMode;
+            bool freeCamNow = FlyCamController.FlyCamActive && !FlyCamController.CursorMode;
 
             if (_uiBase.Enabled != inEditor)
             {
@@ -152,11 +151,11 @@ namespace BabyBlocks.UI
         internal static void ApplyButtonColors(ButtonRef btn)
         {
             var c = btn.Component.colors;
-            c.normalColor      = new Color(0.22f, 0.22f, 0.26f, 1f);
+            c.normalColor = new Color(0.22f, 0.22f, 0.26f, 1f);
             c.highlightedColor = new Color(0.32f, 0.32f, 0.38f, 1f);
-            c.pressedColor     = new Color(0.18f, 0.45f, 0.75f, 1f);
-            c.selectedColor    = new Color(0.22f, 0.22f, 0.26f, 1f);
-            c.colorMultiplier  = 1f;
+            c.pressedColor = new Color(0.18f, 0.45f, 0.75f, 1f);
+            c.selectedColor = new Color(0.22f, 0.22f, 0.26f, 1f);
+            c.colorMultiplier = 1f;
             btn.Component.colors = c;
 
             // Disable keyboard navigation so Space/Enter can never re-fire this button.
@@ -195,7 +194,7 @@ namespace BabyBlocks.UI
             if (inEditorCursor) return;
             bool menuOpen = Menu.me != null && Menu.me.paused;
             if (menuOpen) return;
-            Cursor.visible   = false;
+            Cursor.visible = false;
             Cursor.lockState = CursorLockMode.Locked;
         }
     }
@@ -205,9 +204,7 @@ namespace BabyBlocks.UI
         public PropBrowserUIBase(string id, Action update) : base(id, update) { }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
     //  Top bar — full-width menu bar
-    // ─────────────────────────────────────────────────────────────────────────
     class TopBarPanel : PanelBase
     {
         internal const int BarHeight = 28;
@@ -221,11 +218,11 @@ namespace BabyBlocks.UI
 
         public override void SetDefaultSizeAndPosition()
         {
-            Rect.pivot            = new Vector2(0.5f, 1f);
-            Rect.anchorMin        = new Vector2(0f, 1f);
-            Rect.anchorMax        = new Vector2(1f, 1f);
+            Rect.pivot = new Vector2(0.5f, 1f);
+            Rect.anchorMin = new Vector2(0f, 1f);
+            Rect.anchorMax = new Vector2(1f, 1f);
             Rect.anchoredPosition = Vector2.zero;
-            Rect.sizeDelta        = new Vector2(0f, BarHeight);
+            Rect.sizeDelta = new Vector2(0f, BarHeight);
         }
 
         GameObject _fileDropdown;
@@ -251,7 +248,7 @@ namespace BabyBlocks.UI
         ButtonRef _weatherBtn;
 
         const float CatDropdownOffsetX = 4f;
-        const float BarSpacing          = 4f;
+        const float BarSpacing = 4f;
 
         // Width for a "Current → Next" cycle button: "longest → longest" label at ~9 px/char + 8 padding.
         static int CycleButtonWidth(params string[] opts)
@@ -377,11 +374,11 @@ namespace BabyBlocks.UI
         {
             var go = UIFactory.CreateUIObject("FileDropdown", Owner.RootObject);
             var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin        = new Vector2(0f, 1f);
-            rt.anchorMax        = new Vector2(0f, 1f);
-            rt.pivot            = new Vector2(0f, 1f);
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(0f, 1f);
+            rt.pivot = new Vector2(0f, 1f);
             rt.anchoredPosition = new Vector2(60f + BarSpacing, -(BarHeight + 1f)); // X updated in RebuildCatItems
-            rt.sizeDelta        = new Vector2(150f, 10f); // height set by layout
+            rt.sizeDelta = new Vector2(150f, 10f); // height set by layout
 
             go.AddComponent<Image>().color = new Color(0.13f, 0.13f, 0.16f, 0.97f);
 
@@ -441,7 +438,7 @@ namespace BabyBlocks.UI
             }
             else
             {
-                _pendingClear     = true;
+                _pendingClear = true;
                 _pendingClearTime = Time.realtimeSinceStartup;
                 RebuildFileItems(); // show "Confirm clear?" with red tint
             }
@@ -463,7 +460,7 @@ namespace BabyBlocks.UI
 
         void CloseFile()
         {
-            _fileOpen     = false;
+            _fileOpen = false;
             _pendingClear = false;
             _fileDropdown.SetActive(false);
         }
@@ -474,11 +471,11 @@ namespace BabyBlocks.UI
         {
             var go = UIFactory.CreateUIObject("CatDropdown", Owner.RootObject);
             var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin        = new Vector2(0f, 1f);
-            rt.anchorMax        = new Vector2(0f, 1f);
-            rt.pivot            = new Vector2(0f, 1f);
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(0f, 1f);
+            rt.pivot = new Vector2(0f, 1f);
             rt.anchoredPosition = new Vector2(CatDropdownOffsetX, -(BarHeight + 1f));
-            rt.sizeDelta        = new Vector2(PropLibraryPanel.PanelWidth, 10f);
+            rt.sizeDelta = new Vector2(PropLibraryPanel.PanelWidth, 10f);
 
             var bg = go.AddComponent<Image>();
             bg.color = new Color(0.13f, 0.13f, 0.16f, 0.97f);
@@ -570,7 +567,7 @@ namespace BabyBlocks.UI
             }
 
             string capturedCat = category;
-            bool capturedMats  = showingMats;
+            bool capturedMats = showingMats;
             btn.OnClick += () =>
             {
                 PropBrowserUI.Deselect();
@@ -667,7 +664,7 @@ namespace BabyBlocks.UI
             if (_weatherBtn != null)
             {
                 int count = BaseMapController.DayWeatherPlaylistCount;
-                int cur   = BaseMapController.WeatherPreset;
+                int cur = BaseMapController.WeatherPreset;
                 string label;
                 if (count == 0)
                     label = "Weather: ...";
@@ -707,40 +704,38 @@ namespace BabyBlocks.UI
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
     //  Prop Library Panel — full-height left sidebar, paged prop/material cards
-    // ─────────────────────────────────────────────────────────────────────────
     class PropLibraryPanel : PanelBase
     {
-        const int   SlotCount        = 8;
+        const int SlotCount = 8;
         internal const int PanelWidth = 290;
-        const int   CardHeight  = 120;
-        const int   PreviewSize = CardHeight;
-        const int   LabelFontSz = 18;
-        const float ScrollPx   = 36f;
+        const int CardHeight = 120;
+        const int PreviewSize = CardHeight;
+        const int LabelFontSz = 18;
+        const float ScrollPx = 36f;
         const float DragThreshold = 8f;
 
         static readonly Color CardNormalColor = new Color(0.13f, 0.13f, 0.16f);
-        static readonly Color CardHoverColor  = new Color(0.24f, 0.24f, 0.29f, 1f);
+        static readonly Color CardHoverColor = new Color(0.24f, 0.24f, 0.29f, 1f);
 
-        public override string  Name             => "Prop Library";
-        public override int     MinWidth         => PanelWidth;
-        public override int     MinHeight        => 200;
+        public override string Name => "Prop Library";
+        public override int MinWidth => PanelWidth;
+        public override int MinHeight => 200;
         public override Vector2 DefaultAnchorMin => new(0f, 1f);
         public override Vector2 DefaultAnchorMax => new(0f, 1f);
-        public override bool    CanDragAndResize => false;
+        public override bool CanDragAndResize => false;
 
         internal bool IsSearchFocused => _searchInput?.Component?.isFocused == true;
-        internal bool IsSearchActive  => !string.IsNullOrEmpty(_searchText);
+        internal bool IsSearchActive => !string.IsNullOrEmpty(_searchText);
 
         public override void SetDefaultSizeAndPosition()
         {
             int h = TopBarPanel.BarHeight;
-            Rect.pivot            = new Vector2(0f, 1f);
-            Rect.anchorMin        = new Vector2(0f, 0f);
-            Rect.anchorMax        = new Vector2(0f, 1f);
+            Rect.pivot = new Vector2(0f, 1f);
+            Rect.anchorMin = new Vector2(0f, 0f);
+            Rect.anchorMax = new Vector2(0f, 1f);
             Rect.anchoredPosition = new Vector2(0f, -h);
-            Rect.sizeDelta        = new Vector2(PanelWidth, -h);
+            Rect.sizeDelta = new Vector2(PanelWidth, -h);
         }
 
         struct PropCard
@@ -766,25 +761,25 @@ namespace BabyBlocks.UI
         static Texture2D    _undoIconTex;
         static readonly MaterialConstructionEntry _resetEntry = new MaterialConstructionEntry
         {
-            id           = int.MinValue,
-            name         = "Reset to Default",
+            id = int.MinValue,
+            name = "Reset to Default",
             materialName = PropMetadataStore.NoOverrideLabel,
         };
 
-        int  _lastPropCount    = -1;
-        int  _lastMatCount     = -1;
-        bool _wasShowingMats   = false;
-        int  _lastScreenH      = -1;
-        int  _activeSlotCount  = SlotCount;
+        int _lastPropCount = -1;
+        int _lastMatCount = -1;
+        bool _wasShowingMats = false;
+        int _lastScreenH = -1;
+        int _activeSlotCount = SlotCount;
 
         // Search
         InputFieldRef _searchInput;
-        string        _searchText        = "";
-        bool          _searchInputActive = false; // true only while user explicitly has focus
-        string        _preSrchCategory   = null;  // category active before search started
-        int           _preSrchOffset     = 0;     // scroll offset before search started
+        string _searchText = "";
+        bool _searchInputActive = false; // true only while user explicitly has focus
+        string _preSrchCategory = null; // category active before search started
+        int _preSrchOffset = 0; // scroll offset before search started
         readonly List<PropInfo>                          _propSearchResults = new();
-        readonly List<MaterialConstructionEntry>         _matSearchResults  = new();
+        readonly List<MaterialConstructionEntry> _matSearchResults = new();
         readonly List<PropHistory.ResolvedHistoryEntry>  _histSearchResults = new();
 
         // Drag state
@@ -852,15 +847,15 @@ namespace BabyBlocks.UI
             // Use UIFactory so font and component setup match UniverseLib conventions.
             var dragBgGO = UIFactory.CreateUIObject("DragLabelBg", Owner.RootObject);
             dragBgGO.AddComponent<Image>().color = new Color(0.1f, 0.1f, 0.15f, 0.85f);
-            _dragLabelRT           = dragBgGO.GetComponent<RectTransform>();
+            _dragLabelRT = dragBgGO.GetComponent<RectTransform>();
             _dragLabelRT.anchorMin = new Vector2(0.5f, 0.5f);
             _dragLabelRT.anchorMax = new Vector2(0.5f, 0.5f);
-            _dragLabelRT.pivot     = new Vector2(0f, 1f); // top-left of card anchored to canvas center
+            _dragLabelRT.pivot = new Vector2(0f, 1f); // top-left of card anchored to canvas center
             _dragLabelRT.sizeDelta = new Vector2(200f, 28f);
 
             _dragLabel = UIFactory.CreateLabel(dragBgGO, "DragLabelText", "",
                 TextAnchor.MiddleCenter, new Color(1f, 1f, 0.4f, 0.9f), fontSize: 15);
-            var dlRT       = _dragLabel.GetComponent<RectTransform>();
+            var dlRT = _dragLabel.GetComponent<RectTransform>();
             dlRT.anchorMin = Vector2.zero;
             dlRT.anchorMax = Vector2.one;
             dlRT.sizeDelta = Vector2.zero;
@@ -875,10 +870,10 @@ namespace BabyBlocks.UI
             const int sz = 8;
             var tex = new Texture2D(sz, sz, TextureFormat.RGBA32, false);
             tex.filterMode = FilterMode.Point;
-            tex.wrapMode   = TextureWrapMode.Repeat;
+            tex.wrapMode = TextureWrapMode.Repeat;
             var pixels = new Color32[sz * sz];
-            var dark   = new Color32(28, 28, 33, 255);
-            var light  = new Color32(62, 62, 72, 255);
+            var dark = new Color32(28, 28, 33, 255);
+            var light = new Color32(62, 62, 72, 255);
             for (int y = 0; y < sz; y++)
             for (int x = 0; x < sz; x++)
                 pixels[y * sz + x] = ((x + y) % 2 == 0) ? light : dark;
@@ -891,9 +886,9 @@ namespace BabyBlocks.UI
         {
             var txt = btn.Component.GetComponentInChildren<Text>();
             if (txt == null) return;
-            txt.text             = $"{arrow}\n{key}";
+            txt.text = $"{arrow}\n{key}";
             txt.verticalOverflow = VerticalWrapMode.Overflow;
-            txt.lineSpacing      = 0.8f;
+            txt.lineSpacing = 0.8f;
         }
 
         PropCard BuildCard(GameObject parent, int index)
@@ -905,50 +900,50 @@ namespace BabyBlocks.UI
             var cardLE = cardGO.GetComponent<LayoutElement>();
 
             var previewGO = UIFactory.CreateUIObject($"Preview{index}", cardGO);
-            var preview   = previewGO.AddComponent<RawImage>();
+            var preview = previewGO.AddComponent<RawImage>();
             preview.texture = _debugTex;
-            preview.uvRect  = new Rect(0f, 0f, 4f, 4f);
+            preview.uvRect = new Rect(0f, 0f, 4f, 4f);
             var previewRect = previewGO.GetComponent<RectTransform>();
-            previewRect.anchorMin        = new Vector2(0f, 0f);
-            previewRect.anchorMax        = new Vector2(0f, 1f);
-            previewRect.pivot            = new Vector2(0f, 0.5f);
+            previewRect.anchorMin = new Vector2(0f, 0f);
+            previewRect.anchorMax = new Vector2(0f, 1f);
+            previewRect.pivot = new Vector2(0f, 0.5f);
             previewRect.anchoredPosition = Vector2.zero;
-            previewRect.sizeDelta        = new Vector2(PreviewSize, 0f);
+            previewRect.sizeDelta = new Vector2(PreviewSize, 0f);
 
             const float gap = 4f;
-            var maskGO   = UIFactory.CreateUIObject($"LabelMask{index}", cardGO);
+            var maskGO = UIFactory.CreateUIObject($"LabelMask{index}", cardGO);
             maskGO.AddComponent<RectMask2D>();
             var maskRect = maskGO.GetComponent<RectTransform>();
-            maskRect.anchorMin        = new Vector2(0f, 0f);
-            maskRect.anchorMax        = new Vector2(1f, 1f);
-            maskRect.pivot            = new Vector2(0f, 0.5f);
+            maskRect.anchorMin = new Vector2(0f, 0f);
+            maskRect.anchorMax = new Vector2(1f, 1f);
+            maskRect.pivot = new Vector2(0f, 0.5f);
             maskRect.anchoredPosition = new Vector2(PreviewSize + gap, 0f);
-            maskRect.sizeDelta        = new Vector2(-(PreviewSize + gap), 0f);
+            maskRect.sizeDelta = new Vector2(-(PreviewSize + gap), 0f);
 
             var lbl = UIFactory.CreateLabel(maskGO, $"LabelText{index}", "",
                 TextAnchor.MiddleLeft, new Color(0.95f, 0.95f, 0.95f),
                 supportRichText: false, fontSize: LabelFontSz);
             lbl.horizontalOverflow = HorizontalWrapMode.Overflow;
-            lbl.verticalOverflow   = VerticalWrapMode.Overflow;
+            lbl.verticalOverflow = VerticalWrapMode.Overflow;
 
             var lblRect = lbl.GetComponent<RectTransform>();
-            lblRect.anchorMin        = new Vector2(0f, 0f);
-            lblRect.anchorMax        = new Vector2(0f, 1f);
-            lblRect.pivot            = new Vector2(0f, 0.5f);
+            lblRect.anchorMin = new Vector2(0f, 0f);
+            lblRect.anchorMax = new Vector2(0f, 1f);
+            lblRect.pivot = new Vector2(0f, 0.5f);
             lblRect.anchoredPosition = Vector2.zero;
-            lblRect.sizeDelta        = new Vector2(200f, 0f);
+            lblRect.sizeDelta = new Vector2(200f, 0f);
 
             return new PropCard
             {
-                Root      = cardGO,
-                RootRT    = cardGO.GetComponent<RectTransform>(),
-                Preview   = preview,
+                Root = cardGO,
+                RootRT = cardGO.GetComponent<RectTransform>(),
+                Preview = preview,
                 PreviewRT = previewRect,
-                Label     = lbl,
+                Label = lbl,
                 LabelRect = lblRect,
                 LabelMask = maskRect,
-                CardBg    = cardBg,
-                CardLE    = cardLE,
+                CardBg = cardBg,
+                CardLE = cardLE,
             };
         }
 
@@ -1098,7 +1093,7 @@ namespace BabyBlocks.UI
                     {
                         // Search just started — remember where we were.
                         _preSrchCategory = PropPalette.SelectedCategory;
-                        _preSrchOffset   = _offset;
+                        _preSrchOffset = _offset;
                     }
                     else if (!wasEmpty && nowEmpty)
                     {
@@ -1138,7 +1133,7 @@ namespace BabyBlocks.UI
         {
             if (_pageLabel == null) return;
             int total = GetCurrentCount();
-            int totalPages  = total <= 0 ? 1 : (total - 1) / _activeSlotCount + 1;
+            int totalPages = total <= 0 ? 1 : (total - 1) / _activeSlotCount + 1;
             int currentPage = _offset / _activeSlotCount + 1;
             _pageLabel.text = $"{currentPage} / {totalPages}";
         }
@@ -1146,9 +1141,9 @@ namespace BabyBlocks.UI
         void UpdateCardLayout()
         {
             // Fixed overhead: navRow(56) + pageLabel(20) + searchBar(26) + padTop(2) + padBottom(2) + spacing(2).
-            const int FixedBase   = 56 + 20 + 26 + 2 + 2 + 2; // 108
+            const int FixedBase = 56 + 20 + 26 + 2 + 2 + 2; // 108
             const int TargetCardH = 80;
-            const int MinLabelW   = 100; // always leave this many px for the name label
+            const int MinLabelW = 100; // always leave this many px for the name label
             var canvasRT = Owner.RootObject.GetComponent<RectTransform>();
             float canvasH = canvasRT != null ? canvasRT.rect.height : Screen.height;
             int available = Mathf.RoundToInt(canvasH) - TopBarPanel.BarHeight;
@@ -1170,12 +1165,12 @@ namespace BabyBlocks.UI
                 ref var card = ref _cards[i];
                 if (!active && card.Root != null) card.Root.SetActive(false);
                 if (!active) continue;
-                if (card.CardLE    != null) card.CardLE.minHeight             = cardH;
-                if (card.PreviewRT != null) card.PreviewRT.sizeDelta          = new Vector2(previewSize, 0f);
+                if (card.CardLE != null) card.CardLE.minHeight = cardH;
+                if (card.PreviewRT != null) card.PreviewRT.sizeDelta = new Vector2(previewSize, 0f);
                 if (card.LabelMask != null)
                 {
                     card.LabelMask.anchoredPosition = new Vector2(previewSize + gap, 0f);
-                    card.LabelMask.sizeDelta        = new Vector2(-(previewSize + gap), 0f);
+                    card.LabelMask.sizeDelta = new Vector2(-(previewSize + gap), 0f);
                 }
             }
         }
@@ -1211,7 +1206,7 @@ namespace BabyBlocks.UI
                         if (card.RootRT != null && RectTransformUtility.RectangleContainsScreenPoint(card.RootRT, Input.mousePosition, null))
                         {
                             _mouseDownCard = i;
-                            _mouseDownPos  = Input.mousePosition;
+                            _mouseDownPos = Input.mousePosition;
                             break;
                         }
                     }
@@ -1242,7 +1237,7 @@ namespace BabyBlocks.UI
             if (PropPalette.ShowingMaterials)
             {
                 var mats = GetPanelMaterials();
-                int idx  = _offset + cardIndex;
+                int idx = _offset + cardIndex;
                 if (idx < mats.Count)
                 {
                     _matDragEntry = mats[idx];
@@ -1274,7 +1269,7 @@ namespace BabyBlocks.UI
             else
             {
                 var props = GetPanelProps();
-                int idx   = _offset + cardIndex;
+                int idx = _offset + cardIndex;
                 if (idx < props.Count)
                 {
                     var dragInfo = props[idx];
@@ -1443,7 +1438,7 @@ namespace BabyBlocks.UI
                     if (card.Preview != null)
                     {
                         card.Preview.texture = tex ?? _debugTex;
-                        card.Preview.uvRect  = tex != null ? new Rect(0f, 0f, 1f, 1f) : new Rect(0f, 0f, 4f, 4f);
+                        card.Preview.uvRect = tex != null ? new Rect(0f, 0f, 1f, 1f) : new Rect(0f, 0f, 4f, 4f);
                     }
                     string matName = entry.Mat.name;
                     if (card.DisplayedName != matName)
@@ -1460,7 +1455,7 @@ namespace BabyBlocks.UI
                     if (card.Preview != null)
                     {
                         card.Preview.texture = tex ?? _debugTex;
-                        card.Preview.uvRect  = tex != null ? new Rect(0f, 0f, 1f, 1f) : new Rect(0f, 0f, 4f, 4f);
+                        card.Preview.uvRect = tex != null ? new Rect(0f, 0f, 1f, 1f) : new Rect(0f, 0f, 4f, 4f);
                     }
                     string displayName = PropMetadataStore.GetDisplayName(info.id) ?? info.displayName;
                     if (card.DisplayedName != displayName)
@@ -1615,7 +1610,7 @@ namespace BabyBlocks.UI
             tex.Apply();
 
             tex.filterMode = FilterMode.Bilinear;
-            tex.hideFlags  = HideFlags.DontUnloadUnusedAsset;
+            tex.hideFlags = HideFlags.DontUnloadUnusedAsset;
             return tex;
         }
 
@@ -1647,7 +1642,7 @@ namespace BabyBlocks.UI
             }
 
             // Arrowhead: base spans full arc thickness at 60°, tip 28 px along CCW tangent (150°)
-            float rad60  = 60f * Mathf.Deg2Rad;
+            float rad60 = 60f * Mathf.Deg2Rad;
             float ibx = cx + innerR * Mathf.Cos(rad60), iby = cy + innerR * Mathf.Sin(rad60);
             float obx = cx + outerR * Mathf.Cos(rad60), oby = cy + outerR * Mathf.Sin(rad60);
             float tmx = (ibx + obx) * 0.5f, tmy = (iby + oby) * 0.5f;
@@ -1665,7 +1660,7 @@ namespace BabyBlocks.UI
 
             var tex = new Texture2D(S, S, TextureFormat.RGBA32, false);
             tex.filterMode = FilterMode.Bilinear;
-            tex.hideFlags  = HideFlags.DontUnloadUnusedAsset;
+            tex.hideFlags = HideFlags.DontUnloadUnusedAsset;
             tex.SetPixels32(pixels);
             tex.Apply();
             return tex;
@@ -1705,7 +1700,7 @@ namespace BabyBlocks.UI
                 if (card.DisplayedName != name)
                 {
                     card.DisplayedName = name;
-                    card.IsDoubled     = false;
+                    card.IsDoubled = false;
                     if (card.Label != null) card.Label.text = name;
                     if (card.LabelRect != null) card.LabelRect.anchoredPosition = Vector2.zero;
                 }
@@ -1732,7 +1727,7 @@ namespace BabyBlocks.UI
                 if (card.DisplayedName != name)
                 {
                     card.DisplayedName = name;
-                    card.IsDoubled     = false;
+                    card.IsDoubled = false;
                     if (card.Label != null) card.Label.text = name;
                     if (card.LabelRect != null) card.LabelRect.anchoredPosition = Vector2.zero;
                 }
@@ -1762,7 +1757,7 @@ namespace BabyBlocks.UI
 
                 string name = card.DisplayedName ?? "";
                 card.Label.text = name + "   •   " + name + "   •   ";
-                card.IsDoubled  = true;
+                card.IsDoubled = true;
             }
 
             float textW = card.Label.preferredWidth;

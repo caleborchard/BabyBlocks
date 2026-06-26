@@ -143,7 +143,7 @@ namespace BabyBlocks
                 if (mf == null) continue;
                 int key = mr.GetInstanceID();
                 if (!_bakeStash.TryGetValue(key, out var stash)) continue;
-                mf.sharedMesh      = stash.mesh;
+                mf.sharedMesh = stash.mesh;
                 mr.sharedMaterials = stash.mats;
                 _bakeStash.Remove(key);
             }
@@ -202,11 +202,11 @@ namespace BabyBlocks
                 result.Add(new BakedPartData
                 {
                     rendererPath = GetRelativePath(root.transform, mr.transform),
-                    positions    = mesh.vertices,
-                    normals      = mesh.normals,
-                    uv           = mesh.uv,
-                    triangles    = mesh.triangles,
-                    atlasImage   = atlas.EncodeToJPG(90),
+                    positions = mesh.vertices,
+                    normals = mesh.normals,
+                    uv = mesh.uv,
+                    triangles = mesh.triangles,
+                    atlasImage = atlas.EncodeToJPG(90),
                 });
             }
             return result;
@@ -249,8 +249,8 @@ namespace BabyBlocks
                 if (part.positions.Length > 65535)
                     bakedMesh.indexFormat = IndexFormat.UInt32;
                 bakedMesh.vertices = part.positions;
-                bakedMesh.normals  = part.normals;
-                bakedMesh.uv       = part.uv;
+                bakedMesh.normals = part.normals;
+                bakedMesh.uv = part.uv;
                 bakedMesh.SetTriangles(part.triangles, 0);
                 bakedMesh.RecalculateBounds();
 
@@ -364,7 +364,7 @@ namespace BabyBlocks
         // ---------------------------------------------------------------------------
 
         static readonly Vector3[] BakeDirs = { Vector3.right, Vector3.left, Vector3.up, Vector3.down, Vector3.forward, Vector3.back };
-        static readonly Vector3[] BakeUps  = { Vector3.up,    Vector3.up,   Vector3.forward, Vector3.forward, Vector3.up, Vector3.up };
+        static readonly Vector3[] BakeUps = { Vector3.up, Vector3.up, Vector3.forward, Vector3.forward, Vector3.up, Vector3.up };
 
         // Resolution of each directional source photo. These are intermediate captures -
         // every triangle resamples its own small region out of one of these - so this just
@@ -376,9 +376,9 @@ namespace BabyBlocks
         {
             ClassifyTriangleDirections(positions, normals, submeshTris, mr.transform, out var triDir, out var dirUsed);
 
-            var bounds   = mr.bounds;
-            var camGOs   = new GameObject[6];
-            var cams     = new Camera[6];
+            var bounds = mr.bounds;
+            var camGOs = new GameObject[6];
+            var cams = new Camera[6];
             var captures = new Color[6][];
 
             try
@@ -411,15 +411,13 @@ namespace BabyBlocks
                 if (bakePositions.Length > 65535)
                     bakedMesh.indexFormat = IndexFormat.UInt32;
                 bakedMesh.vertices = bakePositions;
-                bakedMesh.normals  = bakeNormals;
-                bakedMesh.uv       = bakeUVOut;
+                bakedMesh.normals = bakeNormals;
+                bakedMesh.uv = bakeUVOut;
                 bakedMesh.SetTriangles(bakeTris, 0);
                 bakedMesh.RecalculateBounds();
                 mf.sharedMesh = bakedMesh;
 
                 mr.sharedMaterials = new[] { CreateBakedMaterial(mats, atlas) };
-
-                MelonLogger.Msg($"[BabyBlocks] Baked \"{mr.name}\": {bakedMesh.triangles.Length / 3} tris, atlas {atlas.width}x{atlas.height}");
             }
             finally
             {
@@ -480,17 +478,17 @@ namespace BabyBlocks
                 o.probes[i].enabled = false;
             }
 
-            o.prevAmbientMode  = RenderSettings.ambientMode;
+            o.prevAmbientMode = RenderSettings.ambientMode;
             o.prevAmbientLight = RenderSettings.ambientLight;
-            RenderSettings.ambientMode  = AmbientMode.Flat;
+            RenderSettings.ambientMode = AmbientMode.Flat;
             RenderSettings.ambientLight = Color.white * CaptureAmbient;
 
-            o.prevReflectionMode      = RenderSettings.defaultReflectionMode;
-            o.prevReflectionTexture   = RenderSettings.customReflectionTexture;
+            o.prevReflectionMode = RenderSettings.defaultReflectionMode;
+            o.prevReflectionTexture = RenderSettings.customReflectionTexture;
             o.prevReflectionIntensity = RenderSettings.reflectionIntensity;
-            RenderSettings.defaultReflectionMode   = DefaultReflectionMode.Custom;
+            RenderSettings.defaultReflectionMode = DefaultReflectionMode.Custom;
             RenderSettings.customReflectionTexture = NeutralCubemap();
-            RenderSettings.reflectionIntensity     = 0f;
+            RenderSettings.reflectionIntensity = 0f;
 
             // Some shaders (e.g. MicroSplat's terrain/rock blend) barely respond to ambient
             // alone - with no direct light, even a pure-white surface came back ~17% gray.
@@ -500,10 +498,10 @@ namespace BabyBlocks
             // per-direction seams.
             o.bakeLightGO = new GameObject("BabyBlocks_BakeLight");
             o.bakeLight = o.bakeLightGO.AddComponent<Light>();
-            o.bakeLight.type      = LightType.Directional;
-            o.bakeLight.color     = Color.white;
+            o.bakeLight.type = LightType.Directional;
+            o.bakeLight.color = Color.white;
             o.bakeLight.intensity = BakeLightIntensity;
-            o.bakeLight.shadows   = LightShadows.None;
+            o.bakeLight.shadows = LightShadows.None;
 
             return o;
         }
@@ -515,12 +513,12 @@ namespace BabyBlocks
             for (int i = 0; i < o.probes.Length; i++)
                 if (o.probes[i] != null) o.probes[i].enabled = o.probeWasEnabled[i];
 
-            RenderSettings.ambientMode  = o.prevAmbientMode;
+            RenderSettings.ambientMode = o.prevAmbientMode;
             RenderSettings.ambientLight = o.prevAmbientLight;
 
-            RenderSettings.defaultReflectionMode   = o.prevReflectionMode;
+            RenderSettings.defaultReflectionMode = o.prevReflectionMode;
             RenderSettings.customReflectionTexture = o.prevReflectionTexture;
-            RenderSettings.reflectionIntensity     = o.prevReflectionIntensity;
+            RenderSettings.reflectionIntensity = o.prevReflectionIntensity;
 
             if (o.bakeLightGO != null) UnityEngine.Object.Destroy(o.bakeLightGO);
         }
@@ -561,7 +559,7 @@ namespace BabyBlocks
         {
             int totalTris = 0;
             foreach (var st in submeshTris) totalTris += st.Length / 3;
-            triDir  = new int[totalTris];
+            triDir = new int[totalTris];
             dirUsed = new bool[6];
 
             int ti = 0;
@@ -573,7 +571,7 @@ namespace BabyBlocks
                     Vector3 wp0 = transform.TransformPoint(positions[i0]);
                     Vector3 wp1 = transform.TransformPoint(positions[i1]);
                     Vector3 wp2 = transform.TransformPoint(positions[i2]);
-                    Vector3 fn  = Vector3.Cross(wp1 - wp0, wp2 - wp0);
+                    Vector3 fn = Vector3.Cross(wp1 - wp0, wp2 - wp0);
 
                     float ax = fn.x, ay = fn.y, az = fn.z;
                     float aax = Mathf.Abs(ax), aay = Mathf.Abs(ay), aaz = Mathf.Abs(az);
@@ -627,7 +625,7 @@ namespace BabyBlocks
             Vector3 right = Vector3.Cross(up, dir).normalized;
             Vector3 ext = worldBounds.extents;
             float extRight = Mathf.Max(Mathf.Abs(Vector3.Dot(ext, right)), 0.02f);
-            float extUp    = Mathf.Max(Mathf.Abs(Vector3.Dot(ext, up)), 0.02f);
+            float extUp = Mathf.Max(Mathf.Abs(Vector3.Dot(ext, up)), 0.02f);
 
             float depth;
             if (Mathf.Abs(dir.x) > 0.5f)      depth = ext.x;
@@ -638,7 +636,7 @@ namespace BabyBlocks
             cam.orthographicSize = Mathf.Max(extRight, extUp) * 1.02f;
             cam.aspect = 1f;
             cam.nearClipPlane = 0.01f;
-            cam.farClipPlane  = depth * 2f + 0.5f;
+            cam.farClipPlane = depth * 2f + 0.5f;
 
             go.transform.position = worldBounds.center + dir.normalized * (depth + 0.25f);
             go.transform.rotation = Quaternion.LookRotation(-dir, up);
@@ -1179,12 +1177,12 @@ namespace BabyBlocks
             Vector3[] positions, Vector3[] normals, int[][] submeshTris, Vector2[][] triUV,
             out Vector3[] outPositions, out Vector3[] outNormals, out Vector2[] outUV, out int[] outTris)
         {
-            int totalTris    = triUV.Length;
+            int totalTris = triUV.Length;
             int totalCorners = totalTris * 3;
             outPositions = new Vector3[totalCorners];
-            outNormals   = new Vector3[totalCorners];
-            outUV        = new Vector2[totalCorners];
-            outTris      = new int[totalCorners];
+            outNormals = new Vector3[totalCorners];
+            outUV = new Vector2[totalCorners];
+            outTris = new int[totalCorners];
 
             int corner = 0, ti = 0;
             foreach (var st in submeshTris)
@@ -1196,9 +1194,9 @@ namespace BabyBlocks
                     {
                         int vi = idx[c];
                         outPositions[corner + c] = positions[vi];
-                        outNormals[corner + c]   = normals[vi];
-                        outUV[corner + c]        = triUV[ti][c];
-                        outTris[corner + c]      = corner + c;
+                        outNormals[corner + c] = normals[vi];
+                        outUV[corner + c] = triUV[ti][c];
+                        outTris[corner + c] = corner + c;
                     }
                     corner += 3;
                     ti++;
@@ -1294,12 +1292,12 @@ namespace BabyBlocks
 
         static bool TryReadMeshForBake(Mesh src, out Vector3[] positions, out Vector3[] normals, out int[][] submeshTris)
         {
-            positions   = null;
-            normals     = null;
+            positions = null;
+            normals = null;
             submeshTris = null;
             try
             {
-                int normalFIdx  = -1;
+                int normalFIdx = -1;
                 int floatCursor = 0;
                 bool posOk = false;
 
@@ -1321,10 +1319,10 @@ namespace BabyBlocks
                 }
                 if (!posOk) return false;
 
-                var vb    = src.GetVertexBuffer(0);
+                var vb = src.GetVertexBuffer(0);
                 int fPerV = vb.stride / 4;
-                int vCnt  = src.vertexCount;
-                var raw   = new Il2CppStructArray<float>(vCnt * fPerV);
+                int vCnt = src.vertexCount;
+                var raw = new Il2CppStructArray<float>(vCnt * fPerV);
                 vb.GetData(raw.Cast<Il2CppSystem.Array>());
                 vb.Release();
 
@@ -1349,7 +1347,7 @@ namespace BabyBlocks
                     for (int i = 0; i < vCnt; i++) normals[i] = Vector3.up;
                 }
 
-                var ib   = src.GetIndexBuffer();
+                var ib = src.GetIndexBuffer();
                 int iCnt = ib.count;
                 var tris = new int[iCnt];
                 if (ib.stride == 2)
@@ -1370,9 +1368,9 @@ namespace BabyBlocks
                 submeshTris = new int[subs][];
                 for (int s = 0; s < subs; s++)
                 {
-                    var sm  = src.GetSubMesh(s);
+                    var sm = src.GetSubMesh(s);
                     int end = sm.indexStart + sm.indexCount;
-                    var st  = new int[sm.indexCount];
+                    var st = new int[sm.indexCount];
                     for (int j = sm.indexStart; j < end; j++)
                         st[j - sm.indexStart] = tris[j];
                     submeshTris[s] = st;

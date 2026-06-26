@@ -27,7 +27,7 @@ namespace BabyBlocks.UI
         // Sentinel entry: id = int.MinValue triggers Reset-to-Default logic in ApplyToInstance
         static readonly MaterialConstructionEntry _resetEntry = new MaterialConstructionEntry
         {
-            id   = int.MinValue,
+            id = int.MinValue,
             name = "Reset to Default",
         };
 
@@ -37,8 +37,8 @@ namespace BabyBlocks.UI
         readonly InputFieldRef[] _fields = new InputFieldRef[18];
 
         // Drag-to-edit state
-        int        _dragId     = -1;
-        int        _editId     = -1;   // field currently in text-entry mode (-1 = none)
+        int _dragId = -1;
+        int _editId = -1;   // field currently in text-entry mode (-1 = none)
         string     _editOriginalText = "";
         bool       _editWasFocused;    // tracks isFocused frame-over-frame to detect Enter-to-commit via focus loss
         bool       _wasHeld;           // LMB state last frame, used to synthesize 'up' (GetMouseButtonUp unreliable in IL2CPP)
@@ -57,7 +57,7 @@ namespace BabyBlocks.UI
         Vector3[]            _grpScSnapMemberScales;
         Vector3[]            _grpScSnapMemberLocalPos;
         Vector3[]            _grpScSnapMemberWorldPos;
-        float      _lastClickTime  = -1f;
+        float _lastClickTime = -1f;
         int        _lastClickField = -1;
 
         // Physics dropdown
@@ -126,10 +126,10 @@ namespace BabyBlocks.UI
         static readonly Dictionary<int, string> _rawMatNames = new();
 
         // Horizontal drag sensitivity per field group
-        const float SensPos       = 0.05f;
+        const float SensPos = 0.05f;
         const float SensOffsetPos = 0.003f;
-        const float SensScale     = 0.005f;
-        const float SensRot       = 0.5f;
+        const float SensScale = 0.005f;
+        const float SensRot = 0.5f;
 
         // Used by PropBrowserUI.IsTypingInUI
         public bool IsMatSearchFocused => _matOpen && (_matSearch?.Component?.isFocused == true);
@@ -142,10 +142,10 @@ namespace BabyBlocks.UI
 
         public override void SetDefaultSizeAndPosition()
         {
-            Rect.pivot            = new Vector2(0.5f, 0.5f);
-            Rect.anchorMin        = new Vector2(0.5f, 0.5f);
-            Rect.anchorMax        = new Vector2(0.5f, 0.5f);
-            Rect.sizeDelta        = new Vector2(300f, 860f);
+            Rect.pivot = new Vector2(0.5f, 0.5f);
+            Rect.anchorMin = new Vector2(0.5f, 0.5f);
+            Rect.anchorMax = new Vector2(0.5f, 0.5f);
+            Rect.sizeDelta = new Vector2(300f, 860f);
             Rect.anchoredPosition = new Vector2(250f, 0f);
         }
 
@@ -156,20 +156,18 @@ namespace BabyBlocks.UI
             var canvasRT = Owner.RootObject.GetComponent<RectTransform>();
             if (canvasRT == null) { base.EnsureValidPosition(); return; }
 
-            float hw  = Rect.sizeDelta.x * 0.5f;
-            float hh  = Rect.sizeDelta.y * 0.5f;
-            float sw  = canvasRT.rect.width;
-            float sh  = canvasRT.rect.height;
-            var   ap  = Rect.anchoredPosition;
+            float hw = Rect.sizeDelta.x * 0.5f;
+            float hh = Rect.sizeDelta.y * 0.5f;
+            float sw = canvasRT.rect.width;
+            float sh = canvasRT.rect.height;
+            var ap = Rect.anchoredPosition;
 
             float cx = Mathf.Clamp(sw * 0.5f + ap.x, hw, sw - hw) - sw * 0.5f;
             float cy = Mathf.Clamp(ap.y, -(Mathf.Abs(hh - sh * 0.5f)), Mathf.Abs(hh - sh * 0.5f));
             Rect.anchoredPosition = new Vector2(cx, cy);
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Panel construction
-        // ─────────────────────────────────────────────────────────────────────
 
         protected override void ConstructPanelContent()
         {
@@ -191,7 +189,7 @@ namespace BabyBlocks.UI
             _lineRT = lineGO.GetComponent<RectTransform>();
             _lineRT.anchorMin = new Vector2(0.5f, 0.5f);
             _lineRT.anchorMax = new Vector2(0.5f, 0.5f);
-            _lineRT.pivot     = new Vector2(0.5f, 0.5f);
+            _lineRT.pivot = new Vector2(0.5f, 0.5f);
             _lineRT.sizeDelta = new Vector2(100f, 2f);
             lineGO.AddComponent<Image>().color = new Color(0.85f, 0.85f, 0.95f, 0.35f);
             lineGO.SetActive(false);
@@ -201,7 +199,6 @@ namespace BabyBlocks.UI
                 childControlWidth: true, childControlHeight: true,
                 spacing: 4, padTop: 6, padBottom: 8, padLeft: 8, padRight: 8);
 
-            // ── Group / Ungroup ───────────────────────────────────────────────
             _groupBtn = UIFactory.CreateButton(ContentRoot, "GroupBtn", "Group");
             UIFactory.SetLayoutElement(_groupBtn.Component.gameObject, minHeight: 28, flexibleWidth: 9999);
             PropBrowserUI.ApplyButtonColors(_groupBtn);
@@ -210,13 +207,11 @@ namespace BabyBlocks.UI
             _groupBtnGO = _groupBtn.Component.gameObject;
             _groupBtnGO.SetActive(false);
 
-            // ── Transform ─────────────────────────────────────────────────────
             SectionHdr("Transform");
             Vec3Row("Position", 0);
             Vec3Row("Scale",    3);
             Vec3Row("Rotation", 6);
 
-            // ── Physics ───────────────────────────────────────────────────────
             SectionHdr("Physics");
             _physBtn = UIFactory.CreateButton(ContentRoot, "PhysBtn", "Static");
             UIFactory.SetLayoutElement(_physBtn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
@@ -225,7 +220,6 @@ namespace BabyBlocks.UI
             _physBtn.OnClick += TogglePhysDd;
             BuildPhysDd();
 
-            // ── Material Override ──────────────────────────────────────────────
             SectionHdr("Material Override");
             _matBtn = UIFactory.CreateButton(ContentRoot, "MatBtn", "None");
             UIFactory.SetLayoutElement(_matBtn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
@@ -234,10 +228,8 @@ namespace BabyBlocks.UI
             _matBtn.OnClick += ToggleMatDd;
             BuildMatDd();
 
-            // ── Material Tint ──────────────────────────────────────────────────
             BuildTintSection();
 
-            // ── Surface Type ───────────────────────────────────────────────────
             SectionHdr("Surface Type");
             _surfBtn = UIFactory.CreateButton(ContentRoot, "SurfBtn", "(none)");
             UIFactory.SetLayoutElement(_surfBtn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
@@ -246,7 +238,6 @@ namespace BabyBlocks.UI
             _surfBtn.OnClick += ToggleSurfDd;
             BuildSurfDd();
 
-            // ── Flags ─────────────────────────────────────────────────────────
             SectionHdr("Flags");
 
             _sunglassesBtn = UIFactory.CreateButton(ContentRoot, "SunglassesBtn", "");
@@ -269,7 +260,6 @@ namespace BabyBlocks.UI
             _freezeUntilHitBtnGO = _freezeUntilHitBtn.Component.gameObject;
             _freezeUntilHitBtnGO.SetActive(false);
 
-            // ── Offsets (Hat / Grabable) ──────────────────────────────────────
             _offsetRoot = UIFactory.CreateUIObject("OffsetSection", ContentRoot);
             UIFactory.SetLayoutGroup<VerticalLayoutGroup>(_offsetRoot,
                 forceWidth: true, forceHeight: false,
@@ -351,13 +341,13 @@ namespace BabyBlocks.UI
             handleRT.sizeDelta = new Vector2(20f, 0f);
 
             _hairSlider = hairSliderGO.AddComponent<Slider>();
-            _hairSlider.fillRect     = fillRT;
-            _hairSlider.handleRect   = handleRT;
+            _hairSlider.fillRect = fillRT;
+            _hairSlider.handleRect = handleRT;
             _hairSlider.targetGraphic = handleImg;
-            _hairSlider.direction    = Slider.Direction.LeftToRight;
-            _hairSlider.minValue     = 0f;
-            _hairSlider.maxValue     = 1f;
-            _hairSlider.value        = 0f;
+            _hairSlider.direction = Slider.Direction.LeftToRight;
+            _hairSlider.minValue = 0f;
+            _hairSlider.maxValue = 1f;
+            _hairSlider.value = 0f;
 
             _hairSlider.onValueChanged.AddListener((float v) =>
             {
@@ -422,7 +412,7 @@ namespace BabyBlocks.UI
                 UIFactory.SetLayoutElement(f.Component.gameObject,
                     flexibleWidth: 1, minHeight: 22, minWidth: 44, preferredWidth: 55);
                 f.Component.characterLimit = 14;
-                f.Component.contentType    = InputField.ContentType.DecimalNumber;
+                f.Component.contentType = InputField.ContentType.DecimalNumber;
                 // Prevent content-driven resizing so all fields stay the same width.
                 var csf = f.Component.GetComponent<ContentSizeFitter>();
                 if (csf != null) csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
@@ -430,9 +420,7 @@ namespace BabyBlocks.UI
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Physics dropdown
-        // ─────────────────────────────────────────────────────────────────────
 
         void BuildPhysDd()
         {
@@ -470,9 +458,7 @@ namespace BabyBlocks.UI
             _physDDGO.transform.SetAsLastSibling();
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Material override dropdown
-        // ─────────────────────────────────────────────────────────────────────
 
         void BuildMatDd()
         {
@@ -504,7 +490,7 @@ namespace BabyBlocks.UI
             bool want = !_matOpen;
             CloseAllDds();
             if (!want) return;
-            _matOpen  = true;
+            _matOpen = true;
             _matQuery = "";
             if (_matSearch != null) _matSearch.Component.text = "";
             MaterialCatalog.EnsureMaterialList();
@@ -532,7 +518,7 @@ namespace BabyBlocks.UI
             for (int i = 1; i < MaterialCatalog.MaterialLabels.Count; i++)
             {
                 string label = MaterialCatalog.MaterialLabels[i];
-                string name  = MaterialCatalog.MaterialNames[i];
+                string name = MaterialCatalog.MaterialNames[i];
                 if (!string.IsNullOrEmpty(_matQuery) &&
                     label.IndexOf(_matQuery, StringComparison.OrdinalIgnoreCase) < 0)
                     continue;
@@ -547,12 +533,11 @@ namespace BabyBlocks.UI
         void ApplyRawMaterial(string matName)
         {
             if (_target == null) return;
-            int key   = _target.gameObject.GetInstanceID();
+            int key = _target.gameObject.GetInstanceID();
             var grpGO = GetGroupRoot();
 
             if (string.IsNullOrEmpty(matName))
             {
-                MelonLoader.MelonLogger.Msg($"[PP Reset] key={key} matConstructId={_target.materialConstructionId} rawHasKey={_rawMatNames.ContainsKey(key)} rawVal={(_rawMatNames.TryGetValue(key, out var dbgV) ? dbgV : "<none>")}");
                 if (grpGO != null)
                 {
                     foreach (var m in GetGroupMembers())
@@ -562,7 +547,6 @@ namespace BabyBlocks.UI
                         _rawMatNames.Remove(mKey);
                         MaterialConstructionPanel.ApplyToInstance(m, _resetEntry);
                         m.materialConstructionId = -1;
-                        // _resetEntry.id == int.MinValue is the reset-to-default sentinel.
                         if (m.netId != 0)
                             Networking.ModNetworking.SendMaterialApplied(m.netId, _resetEntry);
                     }
@@ -570,9 +554,7 @@ namespace BabyBlocks.UI
                 else
                 {
                     _rawMatNames.Remove(key);
-                    MelonLoader.MelonLogger.Msg($"[PP Reset] after Remove: rawHasKey={_rawMatNames.ContainsKey(key)}");
                     MaterialConstructionPanel.ApplyToInstance(_target, _resetEntry);
-                    MelonLoader.MelonLogger.Msg($"[PP Reset] after ApplyToInstance: matConstructId={_target.materialConstructionId} rawHasKey={_rawMatNames.ContainsKey(key)}");
                     _target.materialConstructionId = -1;
                     if (_target.netId != 0)
                         Networking.ModNetworking.SendMaterialApplied(_target.netId, _resetEntry);
@@ -611,9 +593,7 @@ namespace BabyBlocks.UI
             RefreshMatLabel();
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Material tint
-        // ─────────────────────────────────────────────────────────────────────
 
         void BuildTintSection()
         {
@@ -642,7 +622,7 @@ namespace BabyBlocks.UI
                 UIFactory.SetLayoutElement(f.Component.gameObject,
                     flexibleWidth: 1, minHeight: 22, minWidth: 44, preferredWidth: 55);
                 f.Component.characterLimit = 3;
-                f.Component.contentType    = InputField.ContentType.IntegerNumber;
+                f.Component.contentType = InputField.ContentType.IntegerNumber;
                 var csf = f.Component.GetComponent<ContentSizeFitter>();
                 if (csf != null) csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
                 _fields[15 + i] = f;
@@ -693,9 +673,7 @@ namespace BabyBlocks.UI
                 _tintPreview.color = new Color(tint.x / 255f, tint.y / 255f, tint.z / 255f, 1f);
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Surface type dropdown
-        // ─────────────────────────────────────────────────────────────────────
 
         void BuildSurfDd()
         {
@@ -710,7 +688,7 @@ namespace BabyBlocks.UI
             // reliably — ScrollRect intercepts pointer-drag events and swallows clicks.
             foreach (var tag in PropMetadataEditor.KnownSurfaceTags)
             {
-                var cap   = tag;
+                var cap = tag;
                 string lbl = string.IsNullOrEmpty(tag) ? "(none)" : tag;
                 var btn = UIFactory.CreateButton(_surfDDGO, $"SI_{lbl}", lbl);
                 UIFactory.SetLayoutElement(btn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
@@ -747,9 +725,7 @@ namespace BabyBlocks.UI
             _surfDDGO.transform.SetAsLastSibling();
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Dropdown helpers
-        // ─────────────────────────────────────────────────────────────────────
 
         // Returns true when the pointer is over any of our floating dropdown panels.
         // Called by PropBrowserUI.IsPointerOverPanel so the GraphicRaycaster stays
@@ -778,7 +754,7 @@ namespace BabyBlocks.UI
         void CloseAllDds()
         {
             _physOpen = false; _physDDGO?.SetActive(false);
-            _matOpen  = false; _matDDGO?.SetActive(false);
+            _matOpen = false; _matDDGO?.SetActive(false);
             _surfOpen = false; _surfDDGO?.SetActive(false);
         }
 
@@ -824,26 +800,24 @@ namespace BabyBlocks.UI
             if (blLocal.y - height < canvasBottom)
             {
                 // Not enough room below — open upward from the button's top edge.
-                rt.pivot            = new Vector2(0f, 0f);  // bottom-left: opens upward
+                rt.pivot = new Vector2(0f, 0f);  // bottom-left: opens upward
                 rt.anchoredPosition = tlLocal;
             }
             else
             {
-                rt.pivot            = new Vector2(0f, 1f);  // top-left: opens downward
+                rt.pivot = new Vector2(0f, 1f);  // top-left: opens downward
                 rt.anchoredPosition = blLocal;
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Public API
-        // ─────────────────────────────────────────────────────────────────────
 
         public static void ShowForProp(LevelEditorObject leo)
         {
             if (Instance == null || leo == null) return;
             Instance.DeactivateEditField();
             Instance._lastClickField = -1;
-            Instance._lastClickTime  = -1f;
+            Instance._lastClickTime = -1f;
             if (Instance._target != leo)
             {
                 // Keep the preview when switching between members of the same group —
@@ -854,7 +828,7 @@ namespace BabyBlocks.UI
                 if (!sameGroup)
                 {
                     Instance._preview?.Teardown();
-                    Instance._preview       = null;
+                    Instance._preview = null;
                 }
                 Instance._hatModeIsHead = true;
                 if (Instance._hairSlider != null)
@@ -882,7 +856,7 @@ namespace BabyBlocks.UI
             if (Instance == null) return;
             Instance.DeactivateEditField();
             Instance._lastClickField = -1;
-            Instance._lastClickTime  = -1f;
+            Instance._lastClickTime = -1f;
             Instance._target = null;
             Instance._preview?.Teardown();
             Instance._preview = null;
@@ -892,9 +866,7 @@ namespace BabyBlocks.UI
                 Instance._lineRT.gameObject.SetActive(false);
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Tick (called each frame from PropBrowserUI.OnUpdate)
-        // ─────────────────────────────────────────────────────────────────────
 
         public void Tick()
         {
@@ -980,9 +952,7 @@ namespace BabyBlocks.UI
                 EnsureValidPosition();
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Label refresh
-        // ─────────────────────────────────────────────────────────────────────
 
         void RefreshAll()
         {
@@ -1030,9 +1000,9 @@ namespace BabyBlocks.UI
             // it during the normal LateUpdate canvas pass, which is too late for same-frame queries.
             var contentRT = ContentRoot.GetComponent<RectTransform>();
             UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(contentRT);
-            float contentH    = UnityEngine.UI.LayoutUtility.GetPreferredHeight(contentRT);
+            float contentH = UnityEngine.UI.LayoutUtility.GetPreferredHeight(contentRT);
             float previewExtra = showOffsets ? HatPreviewRenderer.PreviewSize + 8f : 0f;
-            float targetH     = Mathf.Max(contentH + 4f + previewExtra, (float)MinHeight);
+            float targetH = Mathf.Max(contentH + 4f + previewExtra, (float)MinHeight);
             if (!Mathf.Approximately(Rect.rect.height, targetH))
             {
                 Rect.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, targetH);
@@ -1066,7 +1036,7 @@ namespace BabyBlocks.UI
             }
 
             // Grabable always shows hand-mode preview; Hat respects _hatModeIsHead.
-            bool wantPreview   = mode == PhysicsMode.Hat || mode == PhysicsMode.Grabable;
+            bool wantPreview = mode == PhysicsMode.Hat || mode == PhysicsMode.Grabable;
             bool previewHeadMode = mode == PhysicsMode.Hat && _hatModeIsHead;
             if (wantPreview)
             {
@@ -1111,7 +1081,7 @@ namespace BabyBlocks.UI
             if (_offsetRoot != null && _offsetRoot.activeSelf)
             {
                 bool useHat = _target.physicsMode == PhysicsMode.Hat && _hatModeIsHead;
-                var op  = useHat ? _target.hatOffsetPos : _target.grabOffsetPos;
+                var op = useHat ? _target.hatOffsetPos : _target.grabOffsetPos;
                 var or_ = useHat ? _target.hatOffsetRot : _target.grabOffsetRot;
                 SetF(9, op.x);  SetF(10, op.y); SetF(11, op.z);
                 SetF(12, or_.x); SetF(13, or_.y); SetF(14, or_.z);
@@ -1139,9 +1109,7 @@ namespace BabyBlocks.UI
             };
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Group helpers
-        // ─────────────────────────────────────────────────────────────────────
 
         GameObject GetGroupRoot() =>
             _target != null && _target.groupId > 0 ? GroupManager.GetGroupRoot(_target.groupId) : null;
@@ -1210,15 +1178,15 @@ namespace BabyBlocks.UI
         {
             if (_groupBtnGO == null || _groupLabel == null) return;
             bool isGrouped = _target != null && _target.groupId > 0;
-            int  selCount  = LevelEditor.SelectedObjects?.Count ?? 0;
-            bool show      = isGrouped || selCount > 1;
+            int selCount = LevelEditor.SelectedObjects?.Count ?? 0;
+            bool show = isGrouped || selCount > 1;
             if (_groupBtnGO.activeSelf != show) _groupBtnGO.SetActive(show);
             if (show) _groupLabel.text = isGrouped ? "Ungroup" : "Group";
         }
 
         string GetMatLabel(LevelEditorObject leo)
         {
-            int id  = leo.materialConstructionId;
+            int id = leo.materialConstructionId;
             int key = leo.gameObject.GetInstanceID();
             if (id >= 0)
             {
@@ -1240,8 +1208,8 @@ namespace BabyBlocks.UI
                 var members = GetGroupMembers();
                 if (members.Count > 1)
                 {
-                    string first  = GetMatLabel(members[0]);
-                    bool   differ = false;
+                    string first = GetMatLabel(members[0]);
+                    bool differ = false;
                     for (int i = 1; i < members.Count; i++)
                         if (members[i] != null && GetMatLabel(members[i]) != first) { differ = true; break; }
                     _matLabel.text = differ ? "Multiple" : first;
@@ -1249,7 +1217,7 @@ namespace BabyBlocks.UI
                 }
             }
 
-            int id  = _target.materialConstructionId;
+            int id = _target.materialConstructionId;
             int key = _target.gameObject.GetInstanceID();
             if (id >= 0)
             {
@@ -1290,8 +1258,8 @@ namespace BabyBlocks.UI
                 var members = GetGroupMembers();
                 if (members.Count > 1)
                 {
-                    string first  = members[0]?.surfaceTypeTag ?? "";
-                    bool   differ = false;
+                    string first = members[0]?.surfaceTypeTag ?? "";
+                    bool differ = false;
                     for (int i = 1; i < members.Count; i++)
                         if (members[i] != null && members[i].surfaceTypeTag != first) { differ = true; break; }
                     if (differ) { _surfLabel.text = "Multiple"; return; }
@@ -1304,9 +1272,7 @@ namespace BabyBlocks.UI
             _surfLabel.text = string.IsNullOrEmpty(tag) || tag == "Untagged" ? "(none)" : tag;
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Flag toggles
-        // ─────────────────────────────────────────────────────────────────────
 
         void ToggleHatSunglasses()
         {
@@ -1435,9 +1401,7 @@ namespace BabyBlocks.UI
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Physics apply
-        // ─────────────────────────────────────────────────────────────────────
 
         void ApplyPhysicsMode(PhysicsMode mode)
         {
@@ -1448,9 +1412,7 @@ namespace BabyBlocks.UI
             RefreshPhysLabel();
         }
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Drag-to-edit transform fields
-        // ─────────────────────────────────────────────────────────────────────
 
         void CommitEditField()
         {
@@ -1522,11 +1484,11 @@ namespace BabyBlocks.UI
         {
             if (_target == null) return;
             var grpGO = GetGroupRoot();
-            var workT  = grpGO != null ? grpGO.transform : _target.transform;
-            bool dn   = Input.GetMouseButtonDown(0);
+            var workT = grpGO != null ? grpGO.transform : _target.transform;
+            bool dn = Input.GetMouseButtonDown(0);
             bool held = Input.GetMouseButton(0);
-            bool up   = !held && _wasHeld; // synthesized — GetMouseButtonUp(0) is unreliable in IL2CPP
-            _wasHeld  = held;
+            bool up = !held && _wasHeld; // synthesized — GetMouseButtonUp(0) is unreliable in IL2CPP
+            _wasHeld = held;
             Vector2 mp = Input.mousePosition;
 
             // While in text-edit mode: let native InputField handle typing.
@@ -1558,7 +1520,7 @@ namespace BabyBlocks.UI
                 if (!inPanel)
                 {
                     _lastClickField = -1;
-                    _lastClickTime  = -1f;
+                    _lastClickTime = -1f;
                 }
             }
 
@@ -1593,7 +1555,7 @@ namespace BabyBlocks.UI
                 }
                 else
                     RestoreVec(_dragPos0, _dragScale0, _dragRot0);
-                _dragId         = -1;
+                _dragId = -1;
                 _lastClickField = -1;
             }
 
@@ -1616,12 +1578,12 @@ namespace BabyBlocks.UI
                 }
                 if (clickedField >= 0)
                 {
-                    _dragId        = clickedField;
-                    _dragStartMx   = mp.x;
-                    _dragStartVal  = clickedField >= 15 ? Mathf.Min(GetVal(clickedField), 255f) : GetVal(clickedField);
-                    _dragPos0      = workT.position;
-                    _dragScale0    = workT.localScale;
-                    _dragRot0      = workT.rotation;
+                    _dragId = clickedField;
+                    _dragStartMx = mp.x;
+                    _dragStartVal = clickedField >= 15 ? Mathf.Min(GetVal(clickedField), 255f) : GetVal(clickedField);
+                    _dragPos0 = workT.position;
+                    _dragScale0 = workT.localScale;
+                    _dragRot0 = workT.rotation;
                     _dragRot0Euler = workT.eulerAngles;
                     // Snapshot before-state for group scale drags (root may be null for loaded groups).
                     if (clickedField >= 3 && clickedField <= 5 && _target?.groupId > 0)
@@ -1686,12 +1648,12 @@ namespace BabyBlocks.UI
                             f.Component.Select();
                         }
                         _lastClickField = -1;
-                        _lastClickTime  = -1f;
+                        _lastClickTime = -1f;
                     }
                     else
                     {
                         _lastClickField = _dragId;
-                        _lastClickTime  = Time.unscaledTime;
+                        _lastClickTime = Time.unscaledTime;
                     }
                 }
                 else
@@ -1780,12 +1742,12 @@ namespace BabyBlocks.UI
                         // Use snapshot start values so repeated SetVal calls during drag don't compound the orbit.
                         bool hasSnap3 = _grpScSnapGroupId == _target.groupId;
                         var  startDs3 = hasSnap3 ? _grpScSnapDisplayScale : GroupManager.GetGroupDisplayScale(_target.groupId);
-                        float r3      = startDs3.x > 0.0001f ? v / startDs3.x : 1f;
-                        var pivot3    = GizmoRenderer.PivotPosition;
-                        var rot3      = grpGO.transform.rotation;
+                        float r3 = startDs3.x > 0.0001f ? v / startDs3.x : 1f;
+                        var pivot3 = GizmoRenderer.PivotPosition;
+                        var rot3 = grpGO.transform.rotation;
                         var startPos3 = hasSnap3 ? _grpScSnapRootPos : grpGO.transform.position;
                         var localRel3 = Quaternion.Inverse(rot3) * (startPos3 - pivot3);
-                        var curDs3    = GroupManager.GetGroupDisplayScale(_target.groupId);
+                        var curDs3 = GroupManager.GetGroupDisplayScale(_target.groupId);
                         GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(v, curDs3.y, curDs3.z));
                         localRel3.x  *= r3;
                         grpGO.transform.position = pivot3 + rot3 * localRel3;
@@ -1799,12 +1761,12 @@ namespace BabyBlocks.UI
                     {
                         bool hasSnap4 = _grpScSnapGroupId == _target.groupId;
                         var  startDs4 = hasSnap4 ? _grpScSnapDisplayScale : GroupManager.GetGroupDisplayScale(_target.groupId);
-                        float r4      = startDs4.y > 0.0001f ? v / startDs4.y : 1f;
-                        var pivot4    = GizmoRenderer.PivotPosition;
-                        var rot4      = grpGO.transform.rotation;
+                        float r4 = startDs4.y > 0.0001f ? v / startDs4.y : 1f;
+                        var pivot4 = GizmoRenderer.PivotPosition;
+                        var rot4 = grpGO.transform.rotation;
                         var startPos4 = hasSnap4 ? _grpScSnapRootPos : grpGO.transform.position;
                         var localRel4 = Quaternion.Inverse(rot4) * (startPos4 - pivot4);
-                        var curDs4    = GroupManager.GetGroupDisplayScale(_target.groupId);
+                        var curDs4 = GroupManager.GetGroupDisplayScale(_target.groupId);
                         GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(curDs4.x, v, curDs4.z));
                         localRel4.y  *= r4;
                         grpGO.transform.position = pivot4 + rot4 * localRel4;
@@ -1818,12 +1780,12 @@ namespace BabyBlocks.UI
                     {
                         bool hasSnap5 = _grpScSnapGroupId == _target.groupId;
                         var  startDs5 = hasSnap5 ? _grpScSnapDisplayScale : GroupManager.GetGroupDisplayScale(_target.groupId);
-                        float r5      = startDs5.z > 0.0001f ? v / startDs5.z : 1f;
-                        var pivot5    = GizmoRenderer.PivotPosition;
-                        var rot5      = grpGO.transform.rotation;
+                        float r5 = startDs5.z > 0.0001f ? v / startDs5.z : 1f;
+                        var pivot5 = GizmoRenderer.PivotPosition;
+                        var rot5 = grpGO.transform.rotation;
                         var startPos5 = hasSnap5 ? _grpScSnapRootPos : grpGO.transform.position;
                         var localRel5 = Quaternion.Inverse(rot5) * (startPos5 - pivot5);
-                        var curDs5    = GroupManager.GetGroupDisplayScale(_target.groupId);
+                        var curDs5 = GroupManager.GetGroupDisplayScale(_target.groupId);
                         GroupManager.SetGroupDisplayScale(_target.groupId, new Vector3(curDs5.x, curDs5.y, v));
                         localRel5.z  *= r5;
                         grpGO.transform.position = pivot5 + rot5 * localRel5;
@@ -1881,14 +1843,14 @@ namespace BabyBlocks.UI
         void BeginGroupScaleSnapshot(int groupId, GameObject groupRoot)
         {
             _grpScSnapGroupId = groupId;
-            _grpScSnapRoot    = groupRoot;
-            _grpScSnapRootPos      = groupRoot?.transform.position ?? Vector3.zero;
+            _grpScSnapRoot = groupRoot;
+            _grpScSnapRootPos = groupRoot?.transform.position ?? Vector3.zero;
             _grpScSnapDisplayScale = GroupManager.GetGroupDisplayScale(groupId);
             var members = LevelEditorManager.Instance?.Objects
                 .Where(o => o != null && o.groupId == groupId).ToArray()
                 ?? System.Array.Empty<LevelEditorObject>();
-            _grpScSnapMembers        = members;
-            _grpScSnapMemberScales   = members.Select(m => m.transform.localScale).ToArray();
+            _grpScSnapMembers = members;
+            _grpScSnapMemberScales = members.Select(m => m.transform.localScale).ToArray();
             _grpScSnapMemberLocalPos = members.Select(m => m.transform.localPosition).ToArray();
             _grpScSnapMemberWorldPos = members.Select(m => m.transform.position).ToArray();
         }
@@ -1976,7 +1938,7 @@ namespace BabyBlocks.UI
                 {
                     var m = _grpScSnapMembers[mi];
                     if (m == null) continue;
-                    m.transform.localScale    = _grpScSnapMemberScales[mi];
+                    m.transform.localScale = _grpScSnapMemberScales[mi];
                     m.transform.localPosition = _grpScSnapMemberLocalPos[mi];
                 }
             }
@@ -2050,9 +2012,7 @@ namespace BabyBlocks.UI
         static float TryParse(string s, float fallback) =>
             float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
 
-        // ─────────────────────────────────────────────────────────────────────
         //  Connector line
-        // ─────────────────────────────────────────────────────────────────────
 
         void UpdateLine()
         {
@@ -2085,15 +2045,15 @@ namespace BabyBlocks.UI
 
             // Closest point on the full panel perimeter to the prop.
             Vector2 panelEdge = ClosestPointOnRect(xMin, xMax, yMin, yMax, propLocal);
-            Vector2 dir       = propLocal - panelEdge;
-            float   dist      = dir.magnitude;
+            Vector2 dir = propLocal - panelEdge;
+            float dist = dir.magnitude;
 
             if (dist < 10f) { _lineRT.gameObject.SetActive(false); return; }
 
             // _lineRT anchor (0.5, 0.5) → anchoredPosition = canvas-local offset from canvas center.
             _lineRT.gameObject.SetActive(true);
             _lineRT.anchoredPosition = (panelEdge + propLocal) * 0.5f;
-            _lineRT.sizeDelta        = new Vector2(dist, 2f);
+            _lineRT.sizeDelta = new Vector2(dist, 2f);
             _lineRT.localEulerAngles = new Vector3(0f, 0f, Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg);
         }
 
@@ -2117,12 +2077,12 @@ namespace BabyBlocks.UI
         static Vector3 GetPropWorldCenter(LevelEditorObject leo)
         {
             var groupRoot = leo.groupId > 0 ? GroupManager.GetGroupRoot(leo.groupId) : null;
-            var source    = groupRoot != null ? groupRoot : leo.gameObject;
+            var source = groupRoot != null ? groupRoot : leo.gameObject;
             var renderers = source.GetComponentsInChildren<Renderer>();
-            var fallback  = groupRoot != null ? groupRoot.transform.position : leo.transform.position;
+            var fallback = groupRoot != null ? groupRoot.transform.position : leo.transform.position;
             if (renderers == null || renderers.Length == 0) return fallback;
-            var  sum   = Vector3.zero;
-            int  count = 0;
+            var sum = Vector3.zero;
+            int count = 0;
             foreach (var r in renderers)
             {
                 if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
@@ -2137,7 +2097,7 @@ namespace BabyBlocks.UI
         {
             var cam = Camera.main;
             if (cam == null) return null;
-            var ray  = cam.ScreenPointToRay(Input.mousePosition);
+            var ray = cam.ScreenPointToRay(Input.mousePosition);
             LevelEditorObject found = null;
             float best = float.MaxValue;
             foreach (var h in Physics.RaycastAll(ray, 2000f, ~GizmoRenderer.Mask,
@@ -2147,7 +2107,7 @@ namespace BabyBlocks.UI
                 var leo = h.collider.GetComponent<LevelEditorObject>()
                        ?? h.collider.GetComponentInParent<LevelEditorObject>();
                 if (leo == null) continue;
-                best  = h.distance;
+                best = h.distance;
                 found = leo;
             }
             return found;

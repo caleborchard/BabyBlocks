@@ -1,3 +1,5 @@
+//Boo! Did I scare you?
+
 using Il2Cpp;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes;
@@ -29,12 +31,11 @@ namespace BabyBlocks
 
             var box = go.GetComponent<BoxCollider>();
             if (box == null) box = go.AddComponent<BoxCollider>();
-            box.center    = Vector3.zero;
-            box.size      = Vector3.one;
+            box.center = Vector3.zero;
+            box.size = Vector3.one;
             box.isTrigger = true;
 
-            if (go.GetComponent<GhostCollisionCutter>() == null)
-                go.AddComponent<GhostCollisionCutter>();
+            if (go.GetComponent<GhostCollisionCutter>() == null) go.AddComponent<GhostCollisionCutter>();
         }
 
         internal static void BuildFrame(GameObject root)
@@ -74,18 +75,18 @@ namespace BabyBlocks
                 edgeGo.layer = root.layer;
 
                 var line = edgeGo.AddComponent<LineRenderer>();
-                line.useWorldSpace     = false;
-                line.positionCount     = 2;
+                line.useWorldSpace = false;
+                line.positionCount = 2;
                 line.SetPosition(0, edges[i].a);
                 line.SetPosition(1, edges[i].b);
-                line.startWidth        = 0.01f;
-                line.endWidth          = 0.01f;
-                line.numCapVertices    = 0;
+                line.startWidth = 0.01f;
+                line.endWidth = 0.01f;
+                line.numCapVertices = 0;
                 line.numCornerVertices = 0;
-                line.alignment         = LineAlignment.View;
-                line.material          = mat;
-                line.startColor        = new Color(1f, 0.95f, 0.3f, 0.9f);
-                line.endColor          = new Color(1f, 0.95f, 0.3f, 0.9f);
+                line.alignment = LineAlignment.View;
+                line.material = mat;
+                line.startColor = new Color(1f, 0.95f, 0.3f, 0.9f);
+                line.endColor = new Color(1f, 0.95f, 0.3f, 0.9f);
             }
         }
 
@@ -131,34 +132,31 @@ namespace BabyBlocks
         // static readonly Dictionary<MeshFilter,   CarvedMeshState> _carvedFilters   = new();
         static readonly Dictionary<UnityEngine.Terrain,      CarvedTerrainState> _carvedTerrains = new();
 
-        // All enabled cutters, so the editor-mode-transition / post-load hooks can
-        // drive a one-shot collider carve pass across every ghost cube at once.
+        // All enabled cutters, so the post load hooks can drive a one shot collider carve pass across every ghost cube at once.
         static readonly List<GhostCollisionCutter> _instances = new();
 
         // readonly HashSet<Transform> _activeRoots = new();
         BoxCollider _volume;
 
-        // Extra margin added to the overlap-detection box (but NOT the carve box)
+        // Extra margin added to the overlap detection box (but NOT the carve box)
         // to stabilize Physics.OverlapBox results for colliders near the boundary.
         // const float DetectionPadding = 0.05f;
 
-        // Cached cutter pose used to debounce carve rebuilds — tiny per-frame
-        // float jitter in the transform must not trigger a restore+reapply
-        // cycle (which manifests as the terrain holes flickering on/off).
+        // debounce carve rebuilds. tiny per frame float jitter must not trigger restore+reapply (shows up as flickering terrain holes)
         const float PositionTolerance = 0.01f;
-        const float AngleTolerance    = 0.05f;
+        const float AngleTolerance = 0.05f;
 
-        bool       _hasLastCarvePose;
-        Vector3    _lastCenter;
-        Vector3    _lastHalfExtents;
+        bool _hasLastCarvePose;
+        Vector3 _lastCenter;
+        Vector3 _lastHalfExtents;
         Quaternion _lastRotation;
-        string     _lastCarveKey;
+        string _lastCarveKey;
 
         Transform _frameRoot;
 
         void Awake()
         {
-            _volume    = GetComponent<BoxCollider>();
+            _volume = GetComponent<BoxCollider>();
             if (_volume != null) _volume.isTrigger = true;
 
             _frameRoot = transform.Find("GhostFrame");
@@ -171,7 +169,7 @@ namespace BabyBlocks
         }
 
         void FixedUpdate() => Refresh();
-        void Update()      => UpdateFrameVisibility();
+        void Update() => UpdateFrameVisibility();
 
         void OnDisable()
         {
@@ -185,8 +183,6 @@ namespace BabyBlocks
             ReleaseAll();
         }
 
-        // The yellow wireframe is only useful while editing - hide it during
-        // normal gameplay so it doesn't show up around hole props in-game.
         void UpdateFrameVisibility()
         {
             if (_frameRoot == null) _frameRoot = transform.Find("GhostFrame");
@@ -202,11 +198,11 @@ namespace BabyBlocks
             if (_volume == null) _volume = GetComponent<BoxCollider>();
             if (_volume == null || !gameObject.activeInHierarchy) return;
 
-            var scale       = transform.lossyScale;
+            var scale = transform.lossyScale;
             var worldCenter = transform.TransformPoint(_volume.center);
             var halfExtents = Vector3.Scale(_volume.size * 0.5f,
                 new Vector3(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z)));
-            var rotation    = transform.rotation;
+            var rotation = transform.rotation;
 
             string carveKey = GetDebouncedCarveKey(worldCenter, halfExtents, rotation);
             RefreshTerrains(carveKey, worldCenter, rotation, halfExtents);
@@ -221,11 +217,11 @@ namespace BabyBlocks
             if (_volume == null) _volume = GetComponent<BoxCollider>();
             if (_volume == null || !gameObject.activeInHierarchy) return;
 
-            var scale       = transform.lossyScale;
+            var scale = transform.lossyScale;
             var worldCenter = transform.TransformPoint(_volume.center);
             var halfExtents = Vector3.Scale(_volume.size * 0.5f,
                 new Vector3(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z)));
-            var rotation    = transform.rotation;
+            var rotation = transform.rotation;
             string carveKey = BuildCarveKey(worldCenter, halfExtents, rotation);
 
             // Pad the detection volume slightly beyond the visual/carve box so props
@@ -286,11 +282,10 @@ namespace BabyBlocks
         // carving calls TerrainData.SetHoles, which makes Unity rebuild the
         // TerrainCollider's physics representation over the next few frames. While
         // that rebuild is in flight, OverlapBox stops reporting the collider, which
-        // (with the old physics-driven logic) looked like the cutter moved away —
+        // (with the old physics-driven logic) looked like the cutter moved away
         // triggering a restore, which triggers another SetHoles, which triggers
-        // another rebuild... a self-sustaining flicker loop entirely of our own
-        // making. Instead, find/track terrains via Terrain.activeTerrains and decide
-        // overlap with a plain geometric bounds test that doesn't depend on collider
+        // another rebuild... no good. Instead, find/track terrains via Terrain.activeTerrains
+        // and decide overlap with a plain geometric bounds test that doesn't depend on collider
         // state at all.
         void RefreshTerrains(string carveKey, Vector3 cutterCenter, Quaternion cutterRotation, Vector3 cutterHalfExtents)
         {
@@ -317,9 +312,9 @@ namespace BabyBlocks
             foreach (var terrain in toRestore) RestoreTerrain(terrain);
         }
 
-        // Cheap world-space AABB-vs-OBB overlap test (terrains are axis-aligned and
+        // Cheap world-space AABB-vs-OBB overlap test (terrains are axis aligned and
         // unrotated, so this is just the cutter corners projected into terrain-local
-        // space — the same bounds check TryBuildTerrainHolePatch performs before
+        // space. same bounds check TryBuildTerrainHolePatch performs before
         // building a patch, factored out so RefreshTerrains can use it standalone).
         static bool CutterOverlapsTerrainBounds(Terrain terrain, Vector3 cutterCenter, Quaternion cutterRotation, Vector3 cutterHalfExtents)
         {
@@ -358,7 +353,7 @@ namespace BabyBlocks
             // RestoreColliderCarve();
 
             // Terrains are tracked independently of _activeRoots (see RefreshTerrains),
-            // so they need to be restored here too — otherwise deleting/disabling the
+            // so they need to be restored here too otherwise deleting/disabling the
             // ghost cube would leave its carved holes behind permanently.
             if (_carvedTerrains.Count > 0)
             {
@@ -401,7 +396,7 @@ namespace BabyBlocks
                     if (mc == null) continue;
                     if (!_carvedColliders.TryGetValue(mc, out var st) || !st.IsValid) continue;
                     mc.sharedMesh = st.originalMesh;
-                    mc.convex     = st.originalConvex;
+                    mc.convex = st.originalConvex;
                     if (st.carvedMesh != null) UnityEngine.Object.Destroy(st.carvedMesh);
                     _carvedColliders.Remove(mc);
                 }
@@ -446,10 +441,10 @@ namespace BabyBlocks
             var carved = BuildCarvedMeshPhysics(state.originalMesh, collider.transform, transform, CutterHalfSize);
             if (carved == null) return;
 
-            collider.sharedMesh        = carved;
-            collider.convex            = false;
-            state.carvedMesh           = carved;
-            state.carveKey             = carveKey;
+            collider.sharedMesh = carved;
+            collider.convex = false;
+            state.carvedMesh = carved;
+            state.carveKey = carveKey;
             _carvedColliders[collider] = state;
         }
 
@@ -470,10 +465,10 @@ namespace BabyBlocks
             var carved = BuildCarvedMeshVisual(state.originalMesh, filter.transform, CutterCenter, transform.rotation, CutterHalfSize);
             if (carved == null) return;
 
-            filter.sharedMesh       = carved;
-            state.carvedMesh        = carved;
-            state.carveKey          = carveKey;
-            _carvedFilters[filter]  = state;
+            filter.sharedMesh = carved;
+            state.carvedMesh = carved;
+            state.carveKey = carveKey;
+            _carvedFilters[filter] = state;
         }
         */
 
@@ -485,14 +480,14 @@ namespace BabyBlocks
             int resolution = data.holesResolution;
             if (resolution <= 0) return;
 
-            bool hadState   = _carvedTerrains.TryGetValue(terrain, out var state);
+            bool hadState = _carvedTerrains.TryGetValue(terrain, out var state);
             bool sameNative = hadState && IsSameNativeObject(state.originalData, data);
 
             if (!hadState || !state.IsValid || !sameNative)
             {
                 state = new CarvedTerrainState
                 {
-                    originalData  = data,
+                    originalData = data,
                     originalHoles = data.GetHoles(0, 0, resolution, resolution).Cast<Il2CppSystem.Array>()
                 };
             }
@@ -524,10 +519,10 @@ namespace BabyBlocks
 
             data.SetHoles(xBase, yBase, holes);
 
-            state.xBase   = xBase;
-            state.yBase   = yBase;
-            state.width   = holes.GetLength(1);
-            state.height  = holes.GetLength(0);
+            state.xBase = xBase;
+            state.yBase = yBase;
+            state.width = holes.GetLength(1);
+            state.height = holes.GetLength(0);
             state.carveKey = carveKey;
             _carvedTerrains[terrain] = state;
         }
@@ -603,7 +598,7 @@ namespace BabyBlocks
             int y0 = Mathf.Clamp(Mathf.FloorToInt((minZ / size.z) * (resolution - 1)), 0, resolution - 1);
             int y1 = Mathf.Clamp(Mathf.CeilToInt((maxZ / size.z) * (resolution - 1)), 0, resolution - 1);
 
-            int width  = x1 - x0 + 1;
+            int width = x1 - x0 + 1;
             int height = y1 - y0 + 1;
             if (width <= 0 || height <= 0) return false;
 
@@ -615,13 +610,13 @@ namespace BabyBlocks
             );
 
             // Only punch a hole where the cutter box actually intersects the terrain
-            // surface — sample the terrain height at each grid point and test it
-            // against the cutter's 3D bounds (in cutter-local space, so rotation is
+            // surface. sample the terrain height at each grid point and test it
+            // against the cutter's 3D bounds (in cutter local space, so rotation is
             // respected). Without this, every cell within the XZ footprint became a
             // hole regardless of how high above (or below) the terrain the cube was.
-            var invRot      = Quaternion.Inverse(cutterRotation);
-            int resMinus1   = Mathf.Max(resolution - 1, 1);
-            bool anyHole    = false;
+            var invRot = Quaternion.Inverse(cutterRotation);
+            int resMinus1 = Mathf.Max(resolution - 1, 1);
+            bool anyHole = false;
 
             for (int y = 0; y < height; y++)
             {
@@ -686,11 +681,11 @@ namespace BabyBlocks
 
         // Il2Cpp interop returns a fresh managed wrapper on every property access,
         // so reference/`!=` comparison on Il2Cpp objects (e.g. terrain.terrainData)
-        // is always "different" even when it's the same native object — comparing
+        // is always "different" even when it's the same native object. comparing
         // by native pointer is the correct way to detect an actual change. Without
         // this, CarvedTerrainState was rebuilt from scratch every frame, discarding
-        // the cached carve key (and re-snapshotting already-carved holes as
-        // "original"), which produced the continuous restore/reapply flicker.
+        // the cached carve key (and resnapshotting already carved holes as
+        // "original"), which produced that continuous restore/reapply flicker.
         static bool IsSameNativeObject(Il2CppObjectBase a, Il2CppObjectBase b)
         {
             if (a == null || b == null) return false;
@@ -703,8 +698,8 @@ namespace BabyBlocks
         // Returns the carve key to use this frame, only recomputing it (and thus
         // only triggering a carve rebuild) when the cutter's position, size, or
         // rotation has actually moved beyond a small tolerance. Without this,
-        // sub-millimeter float jitter changes the key every frame and causes the
-        // carved holes to be restored and reapplied continuously (visible as flicker).
+        // tiny float jitter changes the key every frame and causes the
+        // carved holes to be restored and reapplied continuously.
         string GetDebouncedCarveKey(Vector3 center, Vector3 halfExtents, Quaternion rotation)
         {
             if (_hasLastCarvePose
@@ -717,16 +712,15 @@ namespace BabyBlocks
 
             string newKey = BuildCarveKey(center, halfExtents, rotation);
 
-            _lastCenter       = center;
-            _lastHalfExtents  = halfExtents;
-            _lastRotation     = rotation;
-            _lastCarveKey     = newKey;
+            _lastCenter = center;
+            _lastHalfExtents = halfExtents;
+            _lastRotation = rotation;
+            _lastCarveKey = newKey;
             _hasLastCarvePose = true;
             return _lastCarveKey;
         }
 
         /*
-        // ── Physics carve ────────────────────────────────────────────────────────
         // Exact original algorithm: flat triangle loop, centroid+vertex inside test,
         // single-submesh output. Signature mirrors the original to preserve behaviour.
         static Mesh BuildCarvedMeshPhysics(Mesh source, Transform sourceTransform,
@@ -748,10 +742,10 @@ namespace BabyBlocks
                 }
                 if (!posOk) return null;
 
-                var vb        = source.GetVertexBuffer(0);
+                var vb = source.GetVertexBuffer(0);
                 int floatsPerV = vb.stride / 4;
-                int vCount     = source.vertexCount;
-                var floatBuf   = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<float>(vCount * floatsPerV);
+                int vCount = source.vertexCount;
+                var floatBuf = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<float>(vCount * floatsPerV);
                 vb.GetData(floatBuf.Cast<Il2CppSystem.Array>());
                 vb.Release();
 
@@ -762,7 +756,7 @@ namespace BabyBlocks
                     positions[i] = new Vector3(floatBuf[b], floatBuf[b + 1], floatBuf[b + 2]);
                 }
 
-                var ib     = source.GetIndexBuffer();
+                var ib = source.GetIndexBuffer();
                 int iCount = ib.count;
                 int[] tris = new int[iCount];
                 if (ib.stride == 2)
@@ -778,10 +772,10 @@ namespace BabyBlocks
                     for (int i = 0; i < iCount; i++) tris[i] = buf[i];
                 }
 
-                var kept           = new List<int>(tris.Length);
-                var cutterCenter   = cutterTransform.position;
+                var kept = new List<int>(tris.Length);
+                var cutterCenter = cutterTransform.position;
                 var cutterRotation = cutterTransform.rotation;
-                var half           = cutterHalfExtents;
+                var half = cutterHalfExtents;
 
                 for (int i = 0; i + 2 < tris.Length; i += 3)
                 {
@@ -815,7 +809,7 @@ namespace BabyBlocks
                 }
 
                 var carved = new Mesh { name = source.name + "_ghostcarve" };
-                carved.vertices  = positions;
+                carved.vertices = positions;
                 carved.triangles = kept.ToArray();
                 carved.RecalculateNormals();
                 carved.RecalculateBounds();
@@ -828,7 +822,6 @@ namespace BabyBlocks
             }
         }
 
-        // ── Visual carve ─────────────────────────────────────────────────────────
         // Per-submesh filtering preserves material slot assignments.
         // Normals and UV0 are copied from the raw vertex buffer (bypasses read-write
         // restrictions) so textures and lighting remain correct on carved geometry.
@@ -839,9 +832,9 @@ namespace BabyBlocks
 
             try
             {
-                bool posOk       = false;
-                int  normalFIdx  = -1;
-                int  uv0FIdx     = -1;
+                bool posOk = false;
+                int normalFIdx = -1;
+                int uv0FIdx = -1;
                 int  floatCursor = 0;
 
                 foreach (var a in source.GetVertexAttributes())
@@ -866,10 +859,10 @@ namespace BabyBlocks
 
                 if (!posOk) return null;
 
-                var vb        = source.GetVertexBuffer(0);
+                var vb = source.GetVertexBuffer(0);
                 int floatsPerV = vb.stride / 4;
-                int vCount     = source.vertexCount;
-                var floatBuf   = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<float>(vCount * floatsPerV);
+                int vCount = source.vertexCount;
+                var floatBuf = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<float>(vCount * floatsPerV);
                 vb.GetData(floatBuf.Cast<Il2CppSystem.Array>());
                 vb.Release();
 
@@ -880,7 +873,7 @@ namespace BabyBlocks
                     positions[i] = new Vector3(floatBuf[b], floatBuf[b + 1], floatBuf[b + 2]);
                 }
 
-                var ib     = source.GetIndexBuffer();
+                var ib = source.GetIndexBuffer();
                 int iCount = ib.count;
                 int[] tris = new int[iCount];
                 if (ib.stride == 2)
@@ -897,15 +890,15 @@ namespace BabyBlocks
                 }
                 ib.Release();
 
-                var invRot   = Quaternion.Inverse(cutterRotation);
+                var invRot = Quaternion.Inverse(cutterRotation);
                 int subCount = source.subMeshCount;
                 var keptPerSub = new List<int>[subCount];
                 for (int s = 0; s < subCount; s++) keptPerSub[s] = new List<int>();
 
                 for (int s = 0; s < subCount; s++)
                 {
-                    var sm   = source.GetSubMesh(s);
-                    int end  = sm.indexStart + sm.indexCount;
+                    var sm = source.GetSubMesh(s);
+                    int end = sm.indexStart + sm.indexCount;
                     var kept = keptPerSub[s];
 
                     for (int i = sm.indexStart; i + 2 < end; i += 3)

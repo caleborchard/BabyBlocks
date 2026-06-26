@@ -16,7 +16,7 @@ namespace BabyBlocks
     internal static class MaterialPathCatalog
     {
         internal static readonly Dictionary<string, string> MaterialCatalogPathsDict = new(StringComparer.OrdinalIgnoreCase); // materialName → full catalog path
-        internal static readonly Dictionary<string, string> MaterialPathToKey        = new(StringComparer.OrdinalIgnoreCase); // catalog path → assigned key (prevents double-numbering the same path)
+        internal static readonly Dictionary<string, string> MaterialPathToKey = new(StringComparer.OrdinalIgnoreCase); // catalog path → assigned key (prevents double-numbering the same path)
         internal static bool CatalogIndexed; // true once IndexAllCatalogMaterials has run (or cache proves it already did)
         public static IReadOnlyDictionary<string, string> MaterialCatalogPaths => MaterialCatalogPathsDict;
 

@@ -10,8 +10,8 @@ namespace BabyBlocks
     public class LevelEditorObject : MonoBehaviour
     {
         public LevelEditorObject(IntPtr ptr) : base(ptr) { }
-        public string objectType     = "Cube"; // primitive type name, or "Addressable"
-        public string addressableKey = "";     // non-empty for game asset props; stable ID for save/load
+        public string objectType = "Cube"; // primitive type name, or "Addressable"
+        public string addressableKey = ""; // non-empty for game asset props, stable ID for save/load
         public int chunkIndex = -1;
         public Vector2Int chunkCoord = new Vector2Int(-1, -1);
         public Vector3 loopBasePosition;
@@ -21,7 +21,7 @@ namespace BabyBlocks
         public bool hasLoopBaseRotation;
         public bool hasLoopBaseScale;
 
-        // Per-instance physics mode — saved in .bbb, not in metadata
+        // Per instance physics mode saved in .bbb, not in metadata
         public PhysicsMode physicsMode = PhysicsMode.Static;
         public float hatHairAmt = 0f;
         public int groupId = 0;
@@ -38,7 +38,7 @@ namespace BabyBlocks
         public bool editorFreezeUseGravity;
         public RigidbodyConstraints editorFreezeConstraints;
 
-        // Grabable: offset (in hand-local space) where the object sits when held
+        // Grabable: offset (in hand local space) where the object sits when held
         public Vector3 grabOffsetPos = Vector3.zero;
         public Vector3 grabOffsetRot = Vector3.zero; // Euler degrees
 
@@ -46,54 +46,46 @@ namespace BabyBlocks
         public Vector3 hatOffsetPos = Vector3.zero;
         public Vector3 hatOffsetRot = Vector3.zero; // Euler degrees
 
-        // Per-instance material/surface override applied via MaterialConstructionPanel —
-        // an id into MaterialConstructionLibrary.Entries, -1 if none.
+        // Per-instance material/surface override applied via MaterialConstructionPanel
         public int materialConstructionId = -1;
 
         // Per-instance overrides independent of any material construction entry.
-        public bool sunglassesNeeded;   // adds BbSunglassesChecker (prop invisible without sunglasses hat)
-        public bool playerPassthrough;  // makes all colliders triggers so player walks through the prop
-        public bool freezeUntilHit;     // Rigidbody stays kinematic until something collides with it
+        public bool sunglassesNeeded; // adds BbSunglassesChecker (prop invisible without sunglasses hat)
+        public bool playerPassthrough; // makes all colliders triggers so player walks through the prop
+        public bool freezeUntilHit; // Rigidbody stays kinematic until something collides with it
 
         // Mirrors the surface tag applied via ApplySurfaceType so the UI can read it back
         // without relying on gameObject.tag (Il2Cpp can return stale cached values).
         public string surfaceTypeTag = "";
 
-        // Material tint; (255,255,255) = no tint (white).
+        // Material tint. (255,255,255) = no tint (white).
         public Vector3 materialTint = new Vector3(255f, 255f, 255f);
 
-        // Backing store for tint overlay: renderers snapshotted on first tint;
-        // per-prop Material instance from the BabyBlocks/TintOverlay shader.
+        // Backing store for tint overlay: renderers snapshotted on first tint
+        // Per prop Material instance from the BabyBlocks/TintOverlay shader.
         internal Renderer[] _tintRenderers;
         internal Material   _tintMaterial;
 
-        // Non-zero once this object has been synced over the network (placed or
-        // received via ModNetworking). Shared between both clients' copies of the
-        // same logical prop so transform updates apply in-place instead of
-        // respawning a duplicate. 0 = not network-tracked.
+        // Non zero once this object has been synced over the network (placed or received via ModNetworking).
+        // Shared between both clients' copies of the same logical prop so transform updates apply in-place
+        // instead of respawning a duplicate. 0 = not network-tracked.
         public ulong netId = 0;
 
         // Fired by Unity when this Rigidbody prop is struck by another physics object.
-        // Handles the freezeUntilHit gameplay unfreeze; no-ops for all other props.
+        // Handles the freezeUntilHit gameplay unfreeze, no ops for all other props.
         public void OnCollisionEnter(Collision collision)
         {
             if (!freezeUntilHit || !PhysicsObjectManager.HasFreezeUntilHit(this)) return;
-            var  otherRb      = collision.rigidbody;
-            int  otherLayer   = collision.collider.gameObject.layer;
-            bool isPlayer     = otherLayer == LayerCache.RagdollLayer;
+            var otherRb = collision.rigidbody;
+            int otherLayer = collision.collider.gameObject.layer;
+            bool isPlayer = otherLayer == LayerCache.RagdollLayer;
             bool isActiveProp = otherRb != null
                                 && !otherRb.isKinematic
                                 && otherRb.GetComponentInParent<LevelEditorObject>(true) != null;
-            MelonLoader.MelonLogger.Msg(
-                $"[FUH] '{name}' hit by '{collision.collider.gameObject.name}' " +
-                $"layer={otherLayer} rb={(otherRb == null ? "null" : otherRb.isKinematic ? "kinematic" : "dynamic")} " +
-                $"hasLEO={(otherRb != null ? (otherRb.GetComponentInParent<LevelEditorObject>(true) != null ? "yes" : "no") : "n/a")} " +
-                $"isPlayer={isPlayer} isActiveProp={isActiveProp} → {(isPlayer || isActiveProp ? "UNFREEZE" : "ignore")}");
             if (!isPlayer && !isActiveProp) return;
             PhysicsObjectManager.OnFreezeUntilHitTriggered(this);
             PhysicsObjectManager.UnfreezeHitProp(this, collision);
-            if (netId != 0)
-                ModNetworking.SendPropFreezeReleased(netId);
+            if (netId != 0) ModNetworking.SendPropFreezeReleased(netId);
         }
     }
 }

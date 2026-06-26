@@ -5,13 +5,13 @@ namespace BabyBlocks
 {
     static class PropPalette
     {
-        const float Pad    = 8f;
-        const float ItemH  = 60f;
+        const float Pad = 8f;
+        const float ItemH = 60f;
         const float PanelW = 110f;
-        const float ItemW  = PanelW - Pad * 2f; // 94
+        const float ItemW = PanelW - Pad * 2f; // 94
 
         // Category panel (non-debug mode only)
-        const float CatPad   = 6f;
+        const float CatPad = 6f;
         const float CatItemH = 26f;
 
         static GUIStyle _itemStyle;
@@ -24,15 +24,15 @@ namespace BabyBlocks
         static int VisibleSlots =>
             Mathf.Clamp(Mathf.FloorToInt((Screen.height - 50f) / (ItemH + Pad)), 4, 15);
 
-        static int   _scrollOffset    = 0;
-        static int   _draggingIndex   = -1; // index into PropLibrary.FilteredProps
-        static int   _dragStartFrame  = -1;
+        static int _scrollOffset = 0;
+        static int _draggingIndex = -1; // index into PropLibrary.FilteredProps
+        static int _dragStartFrame = -1;
         static int   _lastFilterCount = -1;
         static float _scrollTimer;
         static bool  _scrollActive;
         static bool  _scrollInDelay;
 
-        const float ScrollInitialDelay  = 0.35f;
+        const float ScrollInitialDelay = 0.35f;
         const float ScrollRepeatInterval = 0.08f;
 
         // Advances a paged scroll offset by one page in `dir`, wrapping around to the
@@ -76,7 +76,7 @@ namespace BabyBlocks
         public static void BeginDrag(int filteredIndex, PropInfo info)
         {
             if (!info.isLoaded) PropLibrary.LoadPropData(info);
-            _draggingIndex  = filteredIndex;
+            _draggingIndex = filteredIndex;
             _overrideDragInfo = null;
             _dragStartFrame = Time.frameCount;
         }
@@ -85,7 +85,7 @@ namespace BabyBlocks
         public static void BeginDragDirect(PropInfo info)
         {
             if (!info.isLoaded) PropLibrary.LoadPropData(info);
-            _draggingIndex  = -1;
+            _draggingIndex = -1;
             _overrideDragInfo = info;
             _dragStartFrame = Time.frameCount;
         }
@@ -103,13 +103,13 @@ namespace BabyBlocks
             int total = PropLibrary.FilteredProps.Count;
             if (total == 0) return;
 
-            bool minusHeld  = Input.GetKey(KeyCode.Minus);
+            bool minusHeld = Input.GetKey(KeyCode.Minus);
             bool equalsHeld = Input.GetKey(KeyCode.Equals);
 
             if (!minusHeld && !equalsHeld)
             {
                 _scrollActive = false;
-                _scrollTimer  = 0f;
+                _scrollTimer = 0f;
                 return;
             }
 
@@ -119,10 +119,10 @@ namespace BabyBlocks
 
             if (!_scrollActive)
             {
-                _scrollActive  = true;
+                _scrollActive = true;
                 _scrollInDelay = true;
-                _scrollTimer   = 0f;
-                _scrollOffset  = StepPageOffset(_scrollOffset, dir, page, total);
+                _scrollTimer = 0f;
+                _scrollOffset = StepPageOffset(_scrollOffset, dir, page, total);
                 return;
             }
 
@@ -130,9 +130,9 @@ namespace BabyBlocks
             float threshold = _scrollInDelay ? ScrollInitialDelay : ScrollRepeatInterval;
             if (_scrollTimer >= threshold)
             {
-                _scrollTimer  -= threshold;
+                _scrollTimer -= threshold;
                 _scrollInDelay = false;
-                _scrollOffset  = StepPageOffset(_scrollOffset, dir, page, total);
+                _scrollOffset = StepPageOffset(_scrollOffset, dir, page, total);
             }
         }
 
@@ -176,20 +176,20 @@ namespace BabyBlocks
                 return;
             }
 
-            var props   = PropLibrary.FilteredProps;
-            int total   = props.Count;
+            var props = PropLibrary.FilteredProps;
+            int total = props.Count;
             int visible = VisibleSlots;
 
             if (total != _lastFilterCount)
             {
-                _scrollOffset    = 0;
+                _scrollOffset = 0;
                 _lastFilterCount = total;
             }
 
             _scrollOffset = Mathf.Clamp(_scrollOffset, 0, Mathf.Max(0, total - 1));
 
-            float panelH    = Pad + visible * (ItemH + Pad) + 22f;
-            var   panelRect = new Rect(10f, 10f, PanelW, panelH);
+            float panelH = Pad + visible * (ItemH + Pad) + 22f;
+            var panelRect = new Rect(10f, 10f, PanelW, panelH);
             PanelRect = panelRect;
 
             GUI.color = new Color(0f, 0f, 0f, 0.65f);
@@ -198,16 +198,16 @@ namespace BabyBlocks
 
             for (int i = 0; i < visible; i++)
             {
-                int   propIdx  = _scrollOffset + i;
-                float y        = 10f + Pad + i * (ItemH + Pad);
-                var   itemRect = new Rect(10f + Pad, y, ItemW, ItemH);
+                int propIdx = _scrollOffset + i;
+                float y = 10f + Pad + i * (ItemH + Pad);
+                var itemRect = new Rect(10f + Pad, y, ItemW, ItemH);
 
                 if (propIdx < total)
                 {
-                    var  prop       = props[propIdx];
-                    bool invalid    = prop.isLoaded && !prop.HasMesh;
+                    var prop = props[propIdx];
+                    bool invalid = prop.isLoaded && !prop.HasMesh;
                     bool isExcluded = PropMetadataStore.IsExcluded(prop.id);
-                    bool hovered    = itemRect.Contains(e.mousePosition) && !IsDragging && !invalid && !isExcluded;
+                    bool hovered = itemRect.Contains(e.mousePosition) && !IsDragging && !invalid && !isExcluded;
 
                     // In non-debug mode use the metadata display name; debug mode uses raw name.
                     string label = Core.DebugMode
@@ -232,7 +232,7 @@ namespace BabyBlocks
                                 PropMetadataEditor.SetPaletteSelection(prop.id);
                             else
                             {
-                                _draggingIndex  = propIdx;
+                                _draggingIndex = propIdx;
                                 _dragStartFrame = Time.frameCount;
                                 // Dragging straight out of a focused search field (without
                                 // clicking elsewhere first to defocus it) can leave Unity's
@@ -310,7 +310,7 @@ namespace BabyBlocks
 
             // Page label at bottom of panel.
             {
-                int pageCount   = total > 0 ? Mathf.CeilToInt(total / (float)visible) : 0;
+                int pageCount = total > 0 ? Mathf.CeilToInt(total / (float)visible) : 0;
                 int currentPage = total > 0 ? (_scrollOffset / visible) + 1 : 0;
                 GUI.color = new Color(0.75f, 0.75f, 0.75f, 1f);
                 var pageLabelRect = new Rect(10f + Pad, 10f + Pad + visible * (ItemH + Pad) + 2f, ItemW, 18f);
@@ -319,7 +319,7 @@ namespace BabyBlocks
                 if (Core.DebugMode && total > 0)
                 {
                     int pageStart = _scrollOffset;
-                    int pageEnd   = Mathf.Min(_scrollOffset + visible, total);
+                    int pageEnd = Mathf.Min(_scrollOffset + visible, total);
                     bool allChecked = true;
                     for (int i = pageStart; i < pageEnd; i++)
                     {
@@ -362,9 +362,9 @@ namespace BabyBlocks
             int count = cats.Count + 2;
 
             float catPanelX = mainPanelRect.xMax + 10f;
-            float catItemW  = PanelW - CatPad * 2f;
+            float catItemW = PanelW - CatPad * 2f;
             float catPanelH = CatPad + count * (CatItemH + CatPad);
-            var   catPanel  = new Rect(catPanelX, 10f, PanelW, catPanelH);
+            var catPanel = new Rect(catPanelX, 10f, PanelW, catPanelH);
 
             GUI.color = new Color(0f, 0f, 0f, 0.65f);
             GUI.Box(catPanel, "");
@@ -373,14 +373,14 @@ namespace BabyBlocks
             for (int i = 0; i < count; i++)
             {
                 bool   isMaterials = i == count - 1;
-                string cat         = (i == 0 || isMaterials) ? null : cats[i - 1];
-                string label       = isMaterials ? "Materials" : (cat ?? "(All)");
-                bool   sel         = isMaterials
+                string cat = (i == 0 || isMaterials) ? null : cats[i - 1];
+                string label = isMaterials ? "Materials" : (cat ?? "(All)");
+                bool sel = isMaterials
                     ? ShowingMaterials
                     : !ShowingMaterials && ((cat == null && SelectedCategory == null)
                           || (cat != null && string.Equals(cat, SelectedCategory, StringComparison.OrdinalIgnoreCase)));
-                float  iy      = 10f + CatPad + i * (CatItemH + CatPad);
-                var    itemR   = new Rect(catPanelX + CatPad, iy, catItemW, CatItemH);
+                float iy = 10f + CatPad + i * (CatItemH + CatPad);
+                var itemR = new Rect(catPanelX + CatPad, iy, catItemW, CatItemH);
 
                 GUI.color = sel
                     ? new Color(1f, 0.85f, 0.3f, 0.95f)
@@ -413,7 +413,7 @@ namespace BabyBlocks
             {
                 _excludedXStyle = new GUIStyle(GUI.skin.label)
                 {
-                    fontSize  = 38,
+                    fontSize = 38,
                     fontStyle = FontStyle.Bold,
                     alignment = TextAnchor.MiddleCenter,
                 };
@@ -424,7 +424,7 @@ namespace BabyBlocks
             {
                 _warningStyle = new GUIStyle(GUI.skin.label)
                 {
-                    fontSize  = 38,
+                    fontSize = 38,
                     fontStyle = FontStyle.Bold,
                     alignment = TextAnchor.MiddleCenter,
                 };
@@ -436,11 +436,11 @@ namespace BabyBlocks
                 var padding = new RectOffset { left = 4, right = 4, top = 2, bottom = 2 };
                 _catStyle = new GUIStyle(GUI.skin.button)
                 {
-                    wordWrap  = false,
+                    wordWrap = false,
                     alignment = TextAnchor.MiddleCenter,
-                    clipping  = TextClipping.Clip,
-                    padding   = padding,
-                    fontSize  = 11,
+                    clipping = TextClipping.Clip,
+                    padding = padding,
+                    fontSize = 11,
                 };
             }
         }

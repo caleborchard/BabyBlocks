@@ -25,8 +25,8 @@ namespace BabyBlocks
         internal static readonly string[] PrimitiveNames = { "Cube", "Sphere", "Capsule", "Cylinder", "Plane", "Quad", "Torus", "Cone", "Helix", "Egg" };
         static Type _bestRegionType;
 
-        static readonly Dictionary<string, int>   _refCounts    = new(StringComparer.Ordinal); // propId → live instance count
-        static readonly Dictionary<string, float> _zeroRefTime  = new(StringComparer.Ordinal); // propId → Time.realtimeSinceStartup when count hit 0
+        static readonly Dictionary<string, int> _refCounts = new(StringComparer.Ordinal); // propId → live instance count
+        static readonly Dictionary<string, float> _zeroRefTime = new(StringComparer.Ordinal); // propId → Time.realtimeSinceStartup when count hit 0
         const float UnloadDelay = 30f; // seconds after last instance removed before mesh data is freed
 
         // Keeps primitive meshes alive: prevents managed-GC collection of Il2Cpp Mesh wrappers
@@ -330,7 +330,7 @@ namespace BabyBlocks
 
             info.parts.Clear();
             info.colliderParts.Clear();
-            info.isLoaded  = false;
+            info.isLoaded = false;
             info.isInvalid = false;
         }
 
@@ -361,12 +361,12 @@ namespace BabyBlocks
                     if (p == null || p.mesh == null) continue;
                     var mb = p.mesh.bounds;
                     Vector3 center = mb.center;
-                    Vector3 ext    = mb.extents;
+                    Vector3 ext = mb.extents;
                     for (int xi = -1; xi <= 1; xi += 2)
                     for (int yi = -1; yi <= 1; yi += 2)
                     for (int zi = -1; zi <= 1; zi += 2)
                     {
-                        var corner    = center + new Vector3(xi * ext.x, yi * ext.y, zi * ext.z);
+                        var corner = center + new Vector3(xi * ext.x, yi * ext.y, zi * ext.z);
                         var worldLocal = p.localPosition + p.localRotation * Vector3.Scale(corner, p.localScale);
                         if (acc == null) acc = new Bounds(worldLocal, Vector3.zero);
                         else { var b = acc.Value; b.Encapsulate(worldLocal); acc = b; }
@@ -384,12 +384,12 @@ namespace BabyBlocks
                     {
                         var mb = cp.mesh.bounds;
                         Vector3 center = mb.center;
-                        Vector3 ext    = mb.extents;
+                        Vector3 ext = mb.extents;
                         for (int xi = -1; xi <= 1; xi += 2)
                         for (int yi = -1; yi <= 1; yi += 2)
                         for (int zi = -1; zi <= 1; zi += 2)
                         {
-                            var corner     = center + new Vector3(xi * ext.x, yi * ext.y, zi * ext.z);
+                            var corner = center + new Vector3(xi * ext.x, yi * ext.y, zi * ext.z);
                             var worldLocal = cp.localPosition + cp.localRotation * Vector3.Scale(corner, cp.localScale);
                             if (acc == null) acc = new Bounds(worldLocal, Vector3.zero);
                             else { var b = acc.Value; b.Encapsulate(worldLocal); acc = b; }
@@ -403,7 +403,7 @@ namespace BabyBlocks
                         for (int yi = -1; yi <= 1; yi += 2)
                         for (int zi = -1; zi <= 1; zi += 2)
                         {
-                            var corner     = cp.center + new Vector3(xi * hs.x, yi * hs.y, zi * hs.z);
+                            var corner = cp.center + new Vector3(xi * hs.x, yi * hs.y, zi * hs.z);
                             var worldLocal = cp.localPosition + cp.localRotation * Vector3.Scale(corner, cp.localScale);
                             if (acc == null) acc = new Bounds(worldLocal, Vector3.zero);
                             else { var b = acc.Value; b.Encapsulate(worldLocal); acc = b; }
@@ -549,7 +549,7 @@ namespace BabyBlocks
                     MelonLogger.Warning($"[PropLibrary] Mesh for \"{info.displayName}\" was destroyed — retrying.");
                 info.parts.Clear();
                 info.colliderParts.Clear();
-                info.isLoaded  = false;
+                info.isLoaded = false;
                 info.isInvalid = false;
             }
 
@@ -617,7 +617,7 @@ namespace BabyBlocks
                     if (info.HasMesh)
                     {
                         info.sourcePrefab = go;
-                        info.isLoaded  = true;
+                        info.isLoaded = true;
                         info.isInvalid = false;
                         return true;
                     }
@@ -660,7 +660,7 @@ namespace BabyBlocks
                         ExtractPartsFromInstance(root, info);
                         if (info.HasMesh)
                         {
-                            info.isLoaded  = true;
+                            info.isLoaded = true;
                             info.isInvalid = false;
                             BBLog.Msg($"[PropLibrary] Found \"{info.displayName}\" in scene \"{scene.name}\" (root).");
                             return true;
@@ -682,7 +682,7 @@ namespace BabyBlocks
                         ExtractPartsFromInstance(t.gameObject, info);
                         if (info.HasMesh)
                         {
-                            info.isLoaded  = true;
+                            info.isLoaded = true;
                             info.isInvalid = false;
                             BBLog.Msg($"[PropLibrary] Found \"{info.displayName}\" in scene \"{scene.name}\" (child of \"{root.name}\").");
                             return true;
@@ -705,7 +705,7 @@ namespace BabyBlocks
             {
                 try
                 {
-                    var handle   = Addressables.LoadAssetAsync<GameObject>(info.visualPath);
+                    var handle = Addressables.LoadAssetAsync<GameObject>(info.visualPath);
                     var visualGO = handle.WaitForCompletion();
                     if (visualGO != null)
                     {
@@ -777,8 +777,8 @@ namespace BabyBlocks
                 {
                     try
                     {
-                        var handle  = Addressables.LoadAssetAsync<GameObject>(playerPath);
-                        var prefab  = handle.WaitForCompletion();
+                        var handle = Addressables.LoadAssetAsync<GameObject>(playerPath);
+                        var prefab = handle.WaitForCompletion();
                         if (prefab != null)
                         {
                             if (info._addressableAsset == null) info._addressableAsset = prefab;
@@ -805,7 +805,7 @@ namespace BabyBlocks
             }
 
             BBLog.Msg($"[PropLibrary] GPUI \"{info.displayName}\" done: HasMesh={info.HasMesh}");
-            info.isLoaded  = true;
+            info.isLoaded = true;
             info.isInvalid = !info.HasMesh;
         }
 
@@ -1100,7 +1100,7 @@ namespace BabyBlocks
                 {
                     localPosition = rootT.InverseTransformPoint(t.position),
                     localRotation = Quaternion.Inverse(rootT.rotation) * t.rotation,
-                    localScale    = new Vector3(
+                    localScale = new Vector3(
                         t.lossyScale.x / (rootScale.x != 0f ? rootScale.x : 1f),
                         t.lossyScale.y / (rootScale.y != 0f ? rootScale.y : 1f),
                         t.lossyScale.z / (rootScale.z != 0f ? rootScale.z : 1f))
@@ -1108,28 +1108,28 @@ namespace BabyBlocks
                 var asMesh = col.TryCast<MeshCollider>();
                 if (asMesh != null && asMesh.sharedMesh != null)
                 {
-                    cp.type   = PropColliderPart.ColliderType.Mesh;
-                    cp.mesh   = asMesh.sharedMesh;
+                    cp.type = PropColliderPart.ColliderType.Mesh;
+                    cp.mesh = asMesh.sharedMesh;
                     cp.convex = asMesh.convex;
                 }
                 else if (col.TryCast<BoxCollider>() is BoxCollider asBox)
                 {
-                    cp.type   = PropColliderPart.ColliderType.Box;
+                    cp.type = PropColliderPart.ColliderType.Box;
                     cp.center = asBox.center;
-                    cp.size   = asBox.size;
+                    cp.size = asBox.size;
                 }
                 else if (col.TryCast<SphereCollider>() is SphereCollider asSphere)
                 {
-                    cp.type   = PropColliderPart.ColliderType.Sphere;
+                    cp.type = PropColliderPart.ColliderType.Sphere;
                     cp.center = asSphere.center;
                     cp.radius = asSphere.radius;
                 }
                 else if (col.TryCast<CapsuleCollider>() is CapsuleCollider asCapsule)
                 {
-                    cp.type      = PropColliderPart.ColliderType.Capsule;
-                    cp.center    = asCapsule.center;
-                    cp.radius    = asCapsule.radius;
-                    cp.height    = asCapsule.height;
+                    cp.type = PropColliderPart.ColliderType.Capsule;
+                    cp.center = asCapsule.center;
+                    cp.radius = asCapsule.radius;
+                    cp.height = asCapsule.height;
                     cp.direction = asCapsule.direction;
                 }
                 else continue;
@@ -1159,29 +1159,29 @@ namespace BabyBlocks
                     proceduralMesh.hideFlags = HideFlags.HideAndDontSave;
 
                     // Steal a default material from a temporary Unity sphere.
-                    var tempGo  = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                    var tempMr  = tempGo.GetComponent<MeshRenderer>();
+                    var tempGo = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                    var tempMr = tempGo.GetComponent<MeshRenderer>();
                     var defMats = tempMr != null ? tempMr.sharedMaterials : null;
                     UnityEngine.Object.Destroy(tempGo);
 
                     info.parts.Add(new PropMeshPart
                     {
-                        mesh          = proceduralMesh,
-                        materials     = defMats,
+                        mesh = proceduralMesh,
+                        materials = defMats,
                         localPosition = Vector3.zero,
                         localRotation = Quaternion.identity,
-                        localScale    = Vector3.one,
+                        localScale = Vector3.one,
                     });
 
                     _primitiveMeshHolder.Add(proceduralMesh);
-                    info.isLoaded  = true;
+                    info.isLoaded = true;
                     info.isInvalid = false;
                     return;
                 }
 
                 if (!Enum.TryParse<PrimitiveType>(typeName, out var pt))
                 {
-                    info.isLoaded  = true;
+                    info.isLoaded = true;
                     info.isInvalid = true;
                     return;
                 }
@@ -1196,11 +1196,11 @@ namespace BabyBlocks
                     var mesh = mf.sharedMesh;
                     var part = new PropMeshPart
                     {
-                        mesh          = mesh,
-                        materials     = mr != null ? mr.sharedMaterials : null,
+                        mesh = mesh,
+                        materials = mr != null ? mr.sharedMaterials : null,
                         localPosition = Vector3.zero,
                         localRotation = Quaternion.identity,
-                        localScale    = go.transform.localScale,
+                        localScale = go.transform.localScale,
                     };
                     info.parts.Add(part);
                     // Keep a managed-side reference so the Il2Cpp Mesh wrapper isn't collected.
@@ -1209,12 +1209,12 @@ namespace BabyBlocks
 
                 UnityEngine.Object.Destroy(go);
 
-                info.isLoaded  = true;
+                info.isLoaded = true;
                 info.isInvalid = !info.HasMesh;
             }
             catch
             {
-                info.isLoaded  = true;
+                info.isLoaded = true;
                 info.isInvalid = true;
             }
         }
@@ -1241,19 +1241,19 @@ namespace BabyBlocks
 
                 info.parts.Add(new PropMeshPart
                 {
-                    mesh          = BuildEdgeTubeMesh(edges, 0.02f),
-                    materials     = new[] { BuildWireframeMaterial(new Color(1f, 0.95f, 0.3f)) },
+                    mesh = BuildEdgeTubeMesh(edges, 0.02f),
+                    materials = new[] { BuildWireframeMaterial(new Color(1f, 0.95f, 0.3f)) },
                     localPosition = Vector3.zero,
                     localRotation = Quaternion.identity,
-                    localScale    = Vector3.one,
+                    localScale = Vector3.one,
                 });
 
-                info.isLoaded  = true;
+                info.isLoaded = true;
                 info.isInvalid = false;
             }
             catch
             {
-                info.isLoaded  = true;
+                info.isLoaded = true;
                 info.isInvalid = true;
             }
         }
@@ -1288,7 +1288,7 @@ namespace BabyBlocks
 
                 // Forward arrow (local +Z).
                 const float arrowLen = 0.7f;
-                const float headLen  = 0.18f;
+                const float headLen = 0.18f;
                 var arrowBase = new Vector3(0f, 0.05f, 0f);
                 var tip = new Vector3(0f, 0.05f, arrowLen);
                 edges.Add((arrowBase, tip));
@@ -1297,20 +1297,20 @@ namespace BabyBlocks
 
                 info.parts.Add(new PropMeshPart
                 {
-                    mesh          = BuildEdgeTubeMesh(edges.ToArray(), 0.018f),
-                    materials     = new[] { BuildWireframeMaterial(new Color(0.3f, 1f, 0.45f)) },
+                    mesh = BuildEdgeTubeMesh(edges.ToArray(), 0.018f),
+                    materials = new[] { BuildWireframeMaterial(new Color(0.3f, 1f, 0.45f)) },
                     localPosition = Vector3.zero,
                     localRotation = Quaternion.identity,
-                    localScale    = Vector3.one,
+                    localScale = Vector3.one,
                 });
 
-                info.isLoaded  = true;
+                info.isLoaded = true;
                 info.isInvalid = false;
             }
             catch (Exception e)
             {
                 MelonLogger.Warning($"[PropLibrary] Failed to build Spawn Point placeholder: {e.Message}");
-                info.isLoaded  = true;
+                info.isLoaded = true;
                 info.isInvalid = true;
             }
         }
@@ -1345,8 +1345,8 @@ namespace BabyBlocks
         static Mesh BuildEdgeTubeMesh((Vector3 a, Vector3 b)[] edges, float thickness)
         {
             var verts = new List<Vector3>();
-            var tris  = new List<int>();
-            float h   = thickness * 0.5f;
+            var tris = new List<int>();
+            float h = thickness * 0.5f;
 
             foreach (var (a, b) in edges)
             {
@@ -1378,7 +1378,7 @@ namespace BabyBlocks
             }
 
             var mesh = new Mesh { name = "WireframeTubes" };
-            mesh.vertices  = verts.ToArray();
+            mesh.vertices = verts.ToArray();
             mesh.triangles = tris.ToArray();
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();

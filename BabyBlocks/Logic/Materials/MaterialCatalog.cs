@@ -15,7 +15,7 @@ namespace BabyBlocks
 
         // Display names, in the same order/sort as the per-prop override dropdown
         // (index 0 is always PropMetadataStore.NoOverrideLabel).
-        internal static readonly List<string> MaterialNames  = new();
+        internal static readonly List<string> MaterialNames = new();
         internal static readonly List<string> MaterialLabels = new();
         internal static readonly Dictionary<string, Material> MaterialByName = new(StringComparer.OrdinalIgnoreCase);
 
@@ -90,7 +90,7 @@ namespace BabyBlocks
         static float _microSplatRetryTime = float.MinValue;
         // Incremented each time AddMicroSplatLayerMaterials completes a full rebuild, so
         // EnsureMaterialList can detect a rebuild happened and force a full list sort.
-        static int   _microSplatBuildGen  = 0;
+        static int _microSplatBuildGen = 0;
 
         internal static void EnsureMaterialList()
         {
@@ -130,7 +130,6 @@ namespace BabyBlocks
 
             if (MaterialVariantTracker.MaterialsLoaded) return;
             MaterialVariantTracker.MaterialsLoaded = true;
-            MelonLogger.Msg($"[MatList] EnsureMaterialList REBUILD — SourcesLoaded={MaterialSourcesLoaded} SourcesLoading={MaterialSourcesLoading}");
             MaterialNames.Clear();
             MaterialLabels.Clear();
             MaterialByName.Clear();
@@ -203,18 +202,12 @@ namespace BabyBlocks
                     // variants, hashed for all occurrences when multiple states exist.
                     foreach (var kvp in groups)
                     {
-                        var grp      = kvp.Value;
+                        var grp = kvp.Value;
                         sceneVarCounts.TryGetValue(kvp.Key, out int svCount);
                         bool hasVars = grp.Count > 1 || svCount >= 2;
-                        // Log any name that collides (multiple instances or known variants) — these
-                        // produce hashed display names and are the source of variant-resolution issues.
-                        if (hasVars || kvp.Key.IndexOf("New Material", StringComparison.OrdinalIgnoreCase) >= 0)
-                            MelonLogger.Msg($"[MatList] Pass3 \"{kvp.Key}\": count={grp.Count} svCount={svCount} hasVars={hasVars}");
-                        foreach (var (m, sig) in grp)
+                            foreach (var (m, sig) in grp)
                         {
                             string displayName = hasVars ? $"{m.name} [{MaterialPathCatalog.ComputeStableHash(sig)}]" : m.name;
-                            if (hasVars || kvp.Key.IndexOf("New Material", StringComparison.OrdinalIgnoreCase) >= 0)
-                                MelonLogger.Msg($"[MatList]   displayName=\"{displayName}\" sig={sig.Replace("\n",";")} tex={m.mainTexture?.name ?? "null"}");
                             if (MaterialByName.ContainsKey(displayName)) continue;
                             string shaderName = m.shader != null ? m.shader.name : string.Empty;
                             string label = string.IsNullOrEmpty(shaderName) ? displayName : $"{displayName}  [{shaderName}]";
@@ -236,7 +229,7 @@ namespace BabyBlocks
                     pairs.Sort((a, b) => string.Compare(a.label, b.label, StringComparison.OrdinalIgnoreCase));
                     for (int i = 0; i < pairs.Count; i++)
                     {
-                        MaterialNames[i + 1]  = pairs[i].name;
+                        MaterialNames[i + 1] = pairs[i].name;
                         MaterialLabels[i + 1] = pairs[i].label;
                     }
                 }
@@ -320,7 +313,7 @@ namespace BabyBlocks
         {
             if (MaterialSourcesLoaded || MaterialSourcesLoading) yield break;
             MaterialSourcesLoading = true;
-            MaterialSourcesLoaded  = true;
+            MaterialSourcesLoaded = true;
 
             // Iterator methods run synchronously up to their first `yield return` the moment
             // MelonCoroutines.Start calls MoveNext() — without this, CollectSourceCandidates()
@@ -733,7 +726,6 @@ namespace BabyBlocks
                     return;
                 }
 
-                MelonLogger.Msg($"[BB:MicroSplat] {MicroSplatLayerMats.Count} layer materials destroyed by Unity GC/Addressables — rebuilding.");
                 // One or more cached layer materials were destroyed (e.g. Addressables released
                 // their backing assets during a far-teleport chunk drain). Drop their stale
                 // "[MicroSplat] Layer N" entries — by index, since destroyed Materials can't
@@ -978,7 +970,7 @@ namespace BabyBlocks
                 var singleMat = ResolveMaterial(singleOverride, info.materialSourcePropId);
                 if (singleMat == null)
                 {
-                    bool inByName   = MaterialByName.ContainsKey(singleOverride);
+                    bool inByName = MaterialByName.ContainsKey(singleOverride);
                     bool inVerified = VerifiedSourceMaterials.ContainsKey(singleOverride);
                     MelonLogger.Warning(
                         $"[PropMaterial] FAIL \"{propId}\"  override=\"{singleOverride}\"  source=\"{info.materialSourcePropId}\"" +
@@ -1080,27 +1072,21 @@ namespace BabyBlocks
             // be resident in the current scene (which may be a broken/textureless area-local copy).
             if (VerifiedSourceMaterials.TryGetValue(matName, out var verifiedMat) && verifiedMat != null)
             {
-                if (isVariantName) MelonLogger.Msg($"[MatResolve] EARLY-Verified \"{matName}\" shader={verifiedMat.shader?.name ?? "null"} tex={verifiedMat.mainTexture?.name ?? "null"}");
                 MaterialByName[matName] = verifiedMat;
                 return verifiedMat;
             }
 
             if (MaterialVariantTracker.SceneCurrentByName.TryGetValue(matName, out var liveMat) && liveMat != null)
             {
-                if (isVariantName) MelonLogger.Msg($"[MatResolve] EARLY-SceneCurrent \"{matName}\" shader={liveMat.shader?.name ?? "null"} tex={liveMat.mainTexture?.name ?? "null"}");
                 MaterialByName[matName] = liveMat;
                 return liveMat;
             }
             if (MaterialByName.TryGetValue(matName, out var mat) && mat != null)
-            {
-                if (isVariantName) MelonLogger.Msg($"[MatResolve] EARLY-ByName \"{matName}\" shader={mat.shader?.name ?? "null"} tex={mat.mainTexture?.name ?? "null"}");
                 return mat;
-            }
 
             // Scene-variant clones are looked up by display name — no .name access on Il2Cpp objects.
             if (MaterialVariantTracker.SceneVariantByDisplayName.TryGetValue(matName, out var clone) && clone != null)
             {
-                if (isVariantName) MelonLogger.Msg($"[MatResolve] EARLY-SceneVariant \"{matName}\" shader={clone.shader?.name ?? "null"} tex={clone.mainTexture?.name ?? "null"}");
                 MaterialByName[matName] = clone;
                 return clone;
             }

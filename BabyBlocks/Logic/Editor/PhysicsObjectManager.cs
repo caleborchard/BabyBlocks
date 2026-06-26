@@ -11,25 +11,17 @@ using UnityEngine.Rendering;
 
 namespace BabyBlocks
 {
-    // Rigidbody/Grabable/Hat component setup and per-object physics state: physics-mesh
-    // building, collider construction, freeze/unfreeze for editor-mode transitions, and
-    // the per-frame active/sleeping update for loose Rigidbody props. Group-root
-    // management lives in GroupManager.
+    // Rigidbody/Grabable/Hat setup, physics-mesh building, freeze/unfreeze for editor transitions; group management in GroupManager
     internal static class PhysicsObjectManager
     {
-        const float PhysicsActiveRadius    = 25f;
+        const float PhysicsActiveRadius = 25f;
         const float PhysicsActiveRadiusSqr = PhysicsActiveRadius * PhysicsActiveRadius;
 
         internal static readonly HashSet<int> PhysicsControlSeen = new();
         static readonly List<LevelEditorObject> _heldObjectsToRestore = new();
         static readonly List<Vector3> _heldScalesToRestore = new();
 
-        // Tracks LevelEditorObject GO instance IDs that are currently waiting for their
-        // first collision in gameplay ("freeze until hit" pending state).
-        // Uses a HashSet instead of a component to avoid Il2CppInterop's generic
-        // AddComponent<T>/GetComponent<T> static-constructor crash for mod-defined types
-        // (same pattern as BbHatSunglassesFlag).  OnCollisionEnter is handled directly
-        // on LevelEditorObject, which is already registered and working.
+        // HashSet of GO instance IDs waiting for first collision; avoids Il2CppInterop generic AddComponent crash for mod-defined types
         static readonly HashSet<int> _freezeUntilHitPending = new();
 
         internal static bool HasFreezeUntilHit(LevelEditorObject obj)
@@ -47,16 +39,13 @@ namespace BabyBlocks
                 _freezeUntilHitPending.Remove(obj.gameObject.GetInstanceID());
         }
 
-        // Called by LevelEditorObject.OnCollisionEnter when the prop is first hit.
         internal static void OnFreezeUntilHitTriggered(LevelEditorObject obj)
             => RemoveFreezeUntilHit(obj);
 
-        // Called by ModNetworking when a peer's freeze-until-hit prop was hit.
         internal static void RemoveFreezeUntilHitForNetworkPeer(LevelEditorObject obj)
             => RemoveFreezeUntilHit(obj);
 
-        // Behaviour components disabled on keepHierarchy props when entering editor
-        // mode (keyed by LEO instance ID). Re-enabled when gameplay resumes.
+        // behaviours disabled on keepHierarchy props in editor mode; keyed by LEO instance ID
         static readonly Dictionary<int, List<Behaviour>> _frozenKHBehaviours = new();
 
         static readonly Dictionary<int, Dictionary<string, Mesh>> _physicsMeshCache = new();
@@ -92,8 +81,7 @@ namespace BabyBlocks
             }
         }
 
-        // Game meshes ship without Read/Write enabled; GetVertexBuffer/GetIndexBuffer bypass that.
-        // Position is assumed Float32×3 at byte-offset 0 in stream 0 (standard Unity layout).
+        // game meshes lack Read/Write; GetVertexBuffer/GetIndexBuffer bypass that; position assumed Float32×3 at offset 0 stream 0
         internal static Mesh BuildPhysicsMesh(Mesh source, HashSet<int> ignoredSubmeshes = null)
         {
             if (source == null) return null;
@@ -115,17 +103,17 @@ namespace BabyBlocks
                 foreach (var a in source.GetVertexAttributes())
                 {
                     if (a.attribute == UnityEngine.Rendering.VertexAttribute.Position
-                        && a.format    == UnityEngine.Rendering.VertexAttributeFormat.Float32
+                        && a.format == UnityEngine.Rendering.VertexAttributeFormat.Float32
                         && a.dimension == 3
-                        && a.stream    == 0)
+                        && a.stream == 0)
                     { posOk = true; break; }
                 }
                 if (!posOk) { _physicsMeshCache[id] = null; return null; }
 
-                var vb         = source.GetVertexBuffer(0);
+                var vb = source.GetVertexBuffer(0);
                 int floatsPerV = vb.stride / 4;
-                int vCount     = source.vertexCount;
-                var floatBuf   = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<float>(vCount * floatsPerV);
+                int vCount = source.vertexCount;
+                var floatBuf = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<float>(vCount * floatsPerV);
                 vb.GetData(floatBuf.Cast<Il2CppSystem.Array>());
                 vb.Release();
 
@@ -136,7 +124,7 @@ namespace BabyBlocks
                     positions[i] = new Vector3(floatBuf[b], floatBuf[b + 1], floatBuf[b + 2]);
                 }
 
-                var ib     = source.GetIndexBuffer();
+                var ib = source.GetIndexBuffer();
                 int iCount = ib.count;
                 int[] tris = new int[iCount];
                 if (ib.stride == 2)
@@ -175,13 +163,12 @@ namespace BabyBlocks
 
                 ib.Release();
 
-                // When submeshes were filtered out, strip unreferenced vertices so the convex
-                // hull (used in Rigidbody mode) doesn't include geometry from ignored submeshes.
+                // strip unreferenced vertices so convex hull excludes geometry from ignored submeshes
                 if (filteredTris != tris)
                 {
-                    var used   = new HashSet<int>(filteredTris);
+                    var used = new HashSet<int>(filteredTris);
                     var newPos = new Vector3[used.Count];
-                    var remap  = new int[vCount];
+                    var remap = new int[vCount];
                     int ni = 0;
                     for (int i = 0; i < vCount; i++)
                     {
@@ -193,7 +180,7 @@ namespace BabyBlocks
                 }
 
                 result = new Mesh { name = source.name + "_phys" };
-                result.vertices  = positions;
+                result.vertices = positions;
                 result.triangles = filteredTris;
                 result.RecalculateNormals();
                 result.RecalculateBounds();
@@ -227,21 +214,20 @@ namespace BabyBlocks
                     go.transform.SetParent(root.transform, false);
                     go.transform.localPosition = cp.localPosition;
                     go.transform.localRotation = cp.localRotation;
-                    go.transform.localScale    = cp.localScale;
+                    go.transform.localScale = cp.localScale;
                     go.layer = layer;
                     switch (cp.type)
                     {
                         case PropColliderPart.ColliderType.Mesh:
                             var mc = go.AddComponent<MeshCollider>();
-                            // Use an owned physics mesh so scene unloads can't evict the CPU mesh data.
                             var physMesh = BuildPhysicsMesh(cp.mesh);
                             mc.sharedMesh = physMesh ?? cp.mesh;
-                            mc.convex     = cp.convex;
+                            mc.convex = cp.convex;
                             break;
                         case PropColliderPart.ColliderType.Box:
                             var bc2 = go.AddComponent<BoxCollider>();
                             bc2.center = cp.center;
-                            bc2.size   = cp.size;
+                            bc2.size = cp.size;
                             break;
                         case PropColliderPart.ColliderType.Sphere:
                             var sc = go.AddComponent<SphereCollider>();
@@ -250,9 +236,9 @@ namespace BabyBlocks
                             break;
                         case PropColliderPart.ColliderType.Capsule:
                             var cc = go.AddComponent<CapsuleCollider>();
-                            cc.center    = cp.center;
-                            cc.radius    = cp.radius;
-                            cc.height    = cp.height;
+                            cc.center = cp.center;
+                            cc.radius = cp.radius;
+                            cc.height = cp.height;
                             cc.direction = cp.direction;
                             break;
                     }
@@ -268,7 +254,7 @@ namespace BabyBlocks
                 var mr = mf.GetComponent<MeshRenderer>();
                 if (mr == null || !mr.enabled) continue;
 
-                var b   = mf.sharedMesh.bounds;
+                var b = mf.sharedMesh.bounds;
                 string key = $"{b.center.x:F2},{b.center.y:F2},{b.center.z:F2}|{b.size.x:F2},{b.size.y:F2},{b.size.z:F2}";
                 if (!seenBounds.Add(key)) continue;
 
@@ -276,7 +262,7 @@ namespace BabyBlocks
                 go.transform.SetParent(root.transform, false);
                 go.transform.localPosition = mf.transform.localPosition;
                 go.transform.localRotation = mf.transform.localRotation;
-                go.transform.localScale    = mf.transform.localScale;
+                go.transform.localScale = mf.transform.localScale;
                 go.layer = layer;
 
                 var ignoredSubs = PropMetadataStore.GetColliderIgnoredSubmeshes(info.id);
@@ -290,8 +276,6 @@ namespace BabyBlocks
                     UnityEngine.Object.Destroy(go);
             }
         }
-
-        // Physics-state helpers
 
         internal static Vector3 GetPlayerReferencePosition(Transform reference)
         {
@@ -317,13 +301,8 @@ namespace BabyBlocks
             // Props waiting for their first collision manage their own kinematic state.
             if (HasFreezeUntilHit(obj))
             {
-                // Defensive: native scripts re-enabled at gameplay start may later flip isKinematic.
-                if (!rb.isKinematic)
-                {
-                    MelonLoader.MelonLogger.Msg($"[FUH] UpdatePhysics: '{obj.name}' in pending set but not kinematic — re-asserting");
-                    rb.isKinematic = true;
-                    rb.useGravity  = false;
-                }
+                // re-assert kinematic in case native scripts flipped it
+                if (!rb.isKinematic) { rb.isKinematic = true; rb.useGravity = false; }
                 return;
             }
 
@@ -341,10 +320,10 @@ namespace BabyBlocks
             }
             else if (!rb.isKinematic)
             {
-                rb.velocity        = Vector3.zero;
+                rb.velocity = Vector3.zero;
                 rb.angularVelocity = Vector3.zero;
-                rb.isKinematic     = true;
-                rb.useGravity      = false;
+                rb.isKinematic = true;
+                rb.useGravity = false;
                 SetMeshCollidersConvex(control, false); // back to kinematic: concave OK
                 SetColliderLayers(control, LevelEditorManager.PropLayer);
             }
@@ -490,19 +469,13 @@ namespace BabyBlocks
                         ReEnableKeepHierarchyBehaviours(obj);
                     if (obj.freezeUntilHit)
                     {
-                        // Stay kinematic but on the dynamic layer with convex colliders so
-                        // player Rigidbodies can generate OnCollisionEnter on this LEO.
                         obj.editorFreezeStateValid = false;
-                        // Explicitly re-assert kinematic state. ReEnableKeepHierarchyBehaviours above may
-                        // have triggered OnEnable on native scripts (e.g. ConductedDynamicPhysicsProp)
-                        // that call rb.isKinematic = false. We must win that race.
+                        // re-assert kinematic; ReEnableKeepHierarchyBehaviours may have triggered native scripts that flip isKinematic
                         var rbFuh = obj.GetComponent<Rigidbody>();
                         if (rbFuh != null)
                         {
-                            if (!rbFuh.isKinematic)
-                                MelonLoader.MelonLogger.Msg($"[FUH] ExitEditor: '{obj.name}' was DYNAMIC — re-asserting kinematic (native script overrode it)");
                             rbFuh.isKinematic = true;
-                            rbFuh.useGravity  = false;
+                            rbFuh.useGravity = false;
                             rbFuh.constraints = RigidbodyConstraints.FreezeAll;
                         }
                         SetMeshCollidersConvex(obj.gameObject, true);
@@ -527,43 +500,40 @@ namespace BabyBlocks
 
             if (freeze)
             {
-                // Remove any pending freeze-until-hit watcher from a previous gameplay session.
                 RemoveFreezeUntilHit(obj);
 
                 if (!obj.editorFreezeStateValid)
                 {
-                    obj.editorFreezeVelocity        = Vector3.zero;
-                    obj.editorFreezeAngularVelocity  = Vector3.zero;
-                    // UpdatePhysicsObjectState puts Rigidbody props to sleep (kinematic)
-                    // when far from the player. That transient sleeping state is NOT the
-                    // logical gameplay state — always restore to dynamic + gravity.
+                    obj.editorFreezeVelocity = Vector3.zero;
+                    obj.editorFreezeAngularVelocity = Vector3.zero;
+                    // UpdatePhysicsObjectState puts Rigidbody props to sleep when far from player; always restore to dynamic+gravity
                     if (obj.physicsMode == PhysicsMode.Rigidbody)
                     {
                         obj.editorFreezeIsKinematic = false;
-                        obj.editorFreezeUseGravity  = true;
+                        obj.editorFreezeUseGravity = true;
                     }
                     else
                     {
                         obj.editorFreezeIsKinematic = rb.isKinematic;
-                        obj.editorFreezeUseGravity  = rb.useGravity;
+                        obj.editorFreezeUseGravity = rb.useGravity;
                     }
-                    obj.editorFreezeConstraints      = rb.constraints;
-                    obj.editorFreezeStateValid       = true;
+                    obj.editorFreezeConstraints = rb.constraints;
+                    obj.editorFreezeStateValid = true;
                 }
-                rb.velocity        = Vector3.zero;
+                rb.velocity = Vector3.zero;
                 rb.angularVelocity = Vector3.zero;
-                rb.isKinematic     = true;
-                rb.useGravity      = false;
-                rb.constraints     = RigidbodyConstraints.FreezeAll;
+                rb.isKinematic = true;
+                rb.useGravity = false;
+                rb.constraints = RigidbodyConstraints.FreezeAll;
                 SetMeshCollidersConvex(obj.gameObject, false); // kinematic: concave OK
                 SetColliderLayers(obj.gameObject, LevelEditorManager.PropLayer);
             }
             else if (obj.editorFreezeStateValid)
             {
-                rb.constraints     = obj.editorFreezeConstraints;
-                rb.isKinematic     = obj.editorFreezeIsKinematic;
-                rb.useGravity      = obj.editorFreezeUseGravity;
-                rb.velocity        = obj.editorFreezeVelocity;
+                rb.constraints = obj.editorFreezeConstraints;
+                rb.isKinematic = obj.editorFreezeIsKinematic;
+                rb.useGravity = obj.editorFreezeUseGravity;
+                rb.velocity = obj.editorFreezeVelocity;
                 rb.angularVelocity = obj.editorFreezeAngularVelocity;
                 obj.editorFreezeStateValid = false;
                 if (!rb.isKinematic)
@@ -574,8 +544,7 @@ namespace BabyBlocks
             }
         }
 
-        // Called when a freeze-until-hit prop is struck during gameplay.
-        // collision is null for the network peer path (no collision data is sent over the wire).
+        // collision is null for network peer path (no collision data sent over the wire)
         internal static void UnfreezeHitProp(LevelEditorObject obj, Collision collision = null)
         {
             if (obj == null) return;
@@ -583,11 +552,10 @@ namespace BabyBlocks
             if (rb == null) return;
             rb.constraints = RigidbodyConstraints.None;
             rb.isKinematic = false;
-            rb.useGravity  = true;
+            rb.useGravity = true;
             SetMeshCollidersConvex(obj.gameObject, true);
             SetColliderLayers(obj.gameObject, LevelEditorManager.PropsDynamicLayer);
-            // The collision was resolved against a kinematic body (infinite mass), so no impulse
-            // was transferred. Apply the impact velocity manually so the prop reacts immediately.
+            // collision resolved against kinematic body so no impulse transferred; apply velocity manually
             if (collision != null)
                 rb.AddForce(-collision.relativeVelocity, ForceMode.VelocityChange);
         }
@@ -599,11 +567,11 @@ namespace BabyBlocks
             if (rb == null) return;
             if (freeze)
             {
-                rb.velocity        = Vector3.zero;
+                rb.velocity = Vector3.zero;
                 rb.angularVelocity = Vector3.zero;
-                rb.isKinematic     = true;
-                rb.useGravity      = false;
-                rb.constraints     = RigidbodyConstraints.FreezeAll;
+                rb.isKinematic = true;
+                rb.useGravity = false;
+                rb.constraints = RigidbodyConstraints.FreezeAll;
                 SetMeshCollidersConvex(go, false); // kinematic: concave OK
                 SetColliderLayers(go, LevelEditorManager.PropLayer);
             }
@@ -611,7 +579,7 @@ namespace BabyBlocks
             {
                 rb.constraints = RigidbodyConstraints.None;
                 rb.isKinematic = false;
-                rb.useGravity  = true;
+                rb.useGravity = true;
                 SetMeshCollidersConvex(go, true); // going dynamic: need convex
                 SetColliderLayers(go, LevelEditorManager.PropsDynamicLayer);
             }
@@ -623,8 +591,6 @@ namespace BabyBlocks
             && PropMetadataStore.GetKeepOriginalHierarchy(obj.addressableKey)
             && obj.GetComponent<Rigidbody>() != null;
 
-        // Disable all non-LevelEditorObject root Behaviours on a keepHierarchy prop so
-        // native scripts (Skateboard etc.) don't fight RestoreBasePose while in editor.
         internal static void DisableKeepHierarchyBehaviours(LevelEditorObject obj)
         {
             if (obj == null) return;
@@ -643,7 +609,6 @@ namespace BabyBlocks
             _frozenKHBehaviours[id] = disabled;
         }
 
-        // Re-enable Behaviours that DisableKeepHierarchyBehaviours previously disabled.
         internal static void ReEnableKeepHierarchyBehaviours(LevelEditorObject obj)
         {
             if (obj == null) return;
@@ -673,23 +638,18 @@ namespace BabyBlocks
         internal static void RestoreBasePose(LevelEditorObject obj)
         {
             if (obj == null) return;
-            if (obj.hasLoopBasePosition) obj.transform.position   = obj.loopBasePosition;
-            if (obj.hasLoopBaseRotation) obj.transform.rotation   = obj.loopBaseRotation;
-            if (obj.hasLoopBaseScale)    obj.transform.localScale = obj.loopBaseScale;
+            if (obj.hasLoopBasePosition) obj.transform.position = obj.loopBasePosition;
+            if (obj.hasLoopBaseRotation) obj.transform.rotation = obj.loopBaseRotation;
+            if (obj.hasLoopBaseScale) obj.transform.localScale = obj.loopBaseScale;
         }
 
-        // Destroys PropCollider_* direct children and rebuilds them from prop metadata.
-        // Called before physics activation to ensure collider meshes are fresh (so the
-        // convex hull in Rigidbody mode only covers geometry from non-ignored submeshes),
-        // and after clearing physics back to Static to restore non-convex colliders.
+        // destroys and rebuilds PropCollider_* children; ensures fresh meshes for convex hull and non-ignored submeshes
         static void RebuildPropColliders(LevelEditorObject leo)
         {
             if (leo == null || string.IsNullOrEmpty(leo.addressableKey)) return;
             var info = PropLibrary.FindById(leo.addressableKey);
             if (info == null) return;
 
-            // Evict submesh-filtered cache entries so BuildPhysicsMesh produces fresh
-            // vertex-stripped meshes (needed for correct convex hulls in Rigidbody mode).
             var ignoredSubs = PropMetadataStore.GetColliderIgnoredSubmeshes(info.id);
             if (ignoredSubs != null && ignoredSubs.Count > 0)
             {
@@ -761,19 +721,16 @@ namespace BabyBlocks
                 while (p != null && g == null) { g = p.GetComponent<Grabable>(); p = p.parent; }
             }
             if (g == null) return;
-            // grabLocPtsR is consumed by native ToWorld as a prop-local (pre-scale) position via
-            // prop.TransformPoint(-pt). grabOffsetPos is in world-scale units (set by the user in
-            // world space via the preview), so divide by localScale to convert to local space.
-            // PlaceInHandPatch re-multiplies by scale so hand.TransformPoint gets the right offset.
+            // grabOffsetPos is world-scale; divide by localScale so prop.TransformPoint gives correct offset; PlaceInHandPatch re-multiplies
             var s = g.transform.localScale;
             var localPos = new Vector3(
                 s.x != 0f ? leo.grabOffsetPos.x / s.x : leo.grabOffsetPos.x,
                 s.y != 0f ? leo.grabOffsetPos.y / s.y : leo.grabOffsetPos.y,
                 s.z != 0f ? leo.grabOffsetPos.z / s.z : leo.grabOffsetPos.z
             );
-            var ptsR  = new Il2CppSystem.Collections.Generic.List<Vector3>();
+            var ptsR = new Il2CppSystem.Collections.Generic.List<Vector3>();
             var rotsR = new Il2CppSystem.Collections.Generic.List<Quaternion>();
-            var ptsL  = new Il2CppSystem.Collections.Generic.List<Vector3>();
+            var ptsL = new Il2CppSystem.Collections.Generic.List<Vector3>();
             var rotsL = new Il2CppSystem.Collections.Generic.List<Quaternion>();
             ptsR.Add(localPos); rotsR.Add(Quaternion.Euler(leo.grabOffsetRot));
             ptsL.Add(localPos); rotsL.Add(Quaternion.Euler(leo.grabOffsetRot));
@@ -791,12 +748,7 @@ namespace BabyBlocks
             }
         }
 
-        // Re-applies baking (or the lack of it) to every placed instance of `propId` that
-        // currently has physics, after the user toggles PropMetadataPanel's per-prop
-        // "disable baking" setting in the Physics window. Restoring first undoes any
-        // existing bake (no-op if it was never baked), then Bake() re-runs and either
-        // re-bakes (using the disk cache when available) or, if disabled, leaves the
-        // restored plain/native materials in place.
+        // re-applies (or skips) baking to all placed instances of propId after toggling "disable baking" in the Physics panel
         internal static void RefreshBakingForProp(string propId)
         {
             if (string.IsNullOrEmpty(propId)) return;
@@ -810,11 +762,7 @@ namespace BabyBlocks
             }
         }
 
-        // restoreMaterial=false is used when switching directly between physics modes
-        // (Rigidbody/Grabable/Hat <-> each other) - the baked mesh/material is left in
-        // place (and its _bakeStash entry kept) so MaterialBaker.Bake's "already baked"
-        // guard skips recapturing it, instead of restoring the original then re-baking
-        // from scratch. Only a transition to Static restores the original mesh/materials.
+        // restoreMaterial=false when switching between physics modes so bake stash is preserved; only Static restores originals
         public static void ClearPhysics(LevelEditorObject leo, bool restoreMaterial = true)
         {
             if (leo == null || leo.physicsMode == PhysicsMode.Static) return;
@@ -826,8 +774,8 @@ namespace BabyBlocks
                 RemoveGrabableComponents(leo.gameObject);
                 if (restoreMaterial) RebuildPropColliders(leo);
                 leo.isPhysicsManaged = false;
-                leo.physicsMode      = PhysicsMode.Static;
-                leo.physicsGroupId   = 0;
+                leo.physicsMode = PhysicsMode.Static;
+                leo.physicsGroupId = 0;
                 mgr.SyncLoopBase(leo);
             }
             else
@@ -840,16 +788,14 @@ namespace BabyBlocks
                     if (obj == null || obj.physicsGroupId != gid) continue;
                     if (restoreMaterial) MaterialBaker.RestoreOriginal(obj.gameObject);
                     if (restoreMaterial) RebuildPropColliders(obj);
-                    obj.physicsMode      = PhysicsMode.Static;
-                    obj.physicsGroupId   = 0;
+                    obj.physicsMode = PhysicsMode.Static;
+                    obj.physicsGroupId = 0;
                     obj.isPhysicsManaged = false;
                     mgr.SyncLoopBase(obj);
                 }
             }
         }
 
-        // Sets convex on all MeshColliders under `go`. Called when a Rigidbody prop transitions
-        // between kinematic (editor, concave OK) and dynamic (game, convex required by PhysX).
         static void SetMeshCollidersConvex(GameObject go, bool convex)
         {
             if (go == null) return;
@@ -857,9 +803,6 @@ namespace BabyBlocks
                 mc.convex = convex;
         }
 
-        // Switches all colliders under `go` to the given layer. Called alongside
-        // SetMeshCollidersConvex so Rigidbody props use PropsDynamic (24) while active —
-        // matching native dynamic props — and revert to Props (16) when kinematic/in-editor.
         static void SetColliderLayers(GameObject go, int layer)
         {
             if (go == null) return;
@@ -867,11 +810,9 @@ namespace BabyBlocks
                 c.gameObject.layer = layer;
         }
 
-        // kg/m³ — wood-like density; yields ~2 kg for a football-sized sphere (r=0.1 m),
-        // which matches the native Football prop mass.
-        const float PropDensityKgM3 = 500f;
-        const float PropMassMin     = 0.1f;
-        const float PropMassMax     = 200f;
+        const float PropDensityKgM3 = 500f; // wood-like density; ~2 kg for a football-sized sphere, matches native Football prop
+        const float PropMassMin = 0.1f;
+        const float PropMassMax = 200f;
 
         static float ComputePropMass(Collider[] colls)
         {
@@ -901,16 +842,16 @@ namespace BabyBlocks
                 float r, cylH;
                 switch (cc.direction)
                 {
-                    case 0:  // X-axis
-                        r    = cc.radius * Mathf.Max(Mathf.Abs(s.y), Mathf.Abs(s.z));
+                    case 0: // X-axis
+                        r = cc.radius * Mathf.Max(Mathf.Abs(s.y), Mathf.Abs(s.z));
                         cylH = Mathf.Max(0f, cc.height * Mathf.Abs(s.x) - 2f * r);
                         break;
-                    case 2:  // Z-axis
-                        r    = cc.radius * Mathf.Max(Mathf.Abs(s.x), Mathf.Abs(s.y));
+                    case 2: // Z-axis
+                        r = cc.radius * Mathf.Max(Mathf.Abs(s.x), Mathf.Abs(s.y));
                         cylH = Mathf.Max(0f, cc.height * Mathf.Abs(s.z) - 2f * r);
                         break;
                     default: // 1 = Y-axis
-                        r    = cc.radius * Mathf.Max(Mathf.Abs(s.x), Mathf.Abs(s.z));
+                        r = cc.radius * Mathf.Max(Mathf.Abs(s.x), Mathf.Abs(s.z));
                         cylH = Mathf.Max(0f, cc.height * Mathf.Abs(s.y) - 2f * r);
                         break;
                 }
@@ -923,11 +864,11 @@ namespace BabyBlocks
             return b.size.x * b.size.y * b.size.z * 0.5f;
         }
 
-        // Divergence-theorem signed-volume integral — exact for any closed mesh.
+        // divergence-theorem signed-volume integral; exact for any closed mesh
         static float MeshSignedVolume(Mesh mesh, Vector3 scale)
         {
             var verts = mesh.vertices;
-            var tris  = mesh.triangles;
+            var tris = mesh.triangles;
             float vol = 0f;
             for (int i = 0; i + 2 < tris.Length; i += 3)
             {
@@ -945,15 +886,13 @@ namespace BabyBlocks
         internal static void AddRigidBodyComponent(GameObject go, Collider[] colls, string propId = null)
         {
             // MaterialBaker.Bake(go, propId); // disabled for now
-            // Note: convex is NOT set here. Colliders stay concave in editor (isKinematic=true).
-            // SetMeshCollidersConvex is called at unfreeze time when the rb goes dynamic.
+            // convex not set here; stays concave in editor (isKinematic=true); SetMeshCollidersConvex fires at unfreeze
             var rb = go.GetComponent<Rigidbody>() ?? go.AddComponent<Rigidbody>();
-            rb.mass                   = ComputePropMass(colls);
-            rb.isKinematic            = false;
-            rb.useGravity             = true;
+            rb.mass = ComputePropMass(colls);
+            rb.isKinematic = false;
+            rb.useGravity = true;
             rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
-            rb.interpolation          = RigidbodyInterpolation.Interpolate;
-            MelonLoader.MelonLogger.Msg($"[Physics] '{go.name}' mass={rb.mass:F2} kg");
+            rb.interpolation = RigidbodyInterpolation.Interpolate;
         }
 
         internal static void AddGrabableComponent(GameObject go, bool isHat, Collider[] colls, string propId = null)
@@ -962,8 +901,7 @@ namespace BabyBlocks
             // MaterialBaker.Bake(go, propId); // disabled for now
             if (colls == null) colls = Array.Empty<Collider>();
 
-            // Grabable/Hat rigidbodies are always kinematic, so convex is never required.
-            var existingHat      = go.GetComponent<Hat>();
+            var existingHat = go.GetComponent<Hat>();
             var existingGrabable = go.GetComponent<Grabable>();
             Grabable g = null;
 
@@ -981,10 +919,10 @@ namespace BabyBlocks
             if (g == null) return;
 
             var rb = go.GetComponent<Rigidbody>() ?? go.AddComponent<Rigidbody>();
-            rb.mass                   = 5f;
-            rb.isKinematic            = true;
+            rb.mass = 5f;
+            rb.isKinematic = true;
             rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
-            rb.interpolation          = RigidbodyInterpolation.Interpolate;
+            rb.interpolation = RigidbodyInterpolation.Interpolate;
 
             var crusher = go.transform.Find("Crusher");
             if (crusher == null)
@@ -994,18 +932,12 @@ namespace BabyBlocks
                 crusher = co.transform;
             }
 
-            g.rb  = rb;
+            g.rb = rb;
             g.rbs = new Il2CppReferenceArray<Rigidbody>(1); g.rbs[0] = rb;
 
-            // For hats: native WearHat accesses hat.colls[0] and casts it to BoxCollider
-            // (all native game hats use BoxColliders). Prepend a tiny trigger BoxCollider so
-            // the cast succeeds without affecting physics. The actual physics colliders follow
-            // at indices 1+ and are still body-collision-ignored by IgnoreBodyCollisions.
+            // native WearHat casts hat.colls[0] to BoxCollider; prepend a tiny trigger BC so the cast succeeds without affecting physics
             if (isHat)
             {
-                // Reuse or create the stub trigger BC that WearHat expects at hat.colls[0].
-                // Using a named child (like Crusher/Floater) prevents accumulation across
-                // play/edit/play cycles; RemoveGrabableComponents cleans it up each time.
                 var htChild = go.transform.Find("HatBoxTrigger");
                 if (htChild == null)
                 {
@@ -1013,10 +945,10 @@ namespace BabyBlocks
                     htGo.transform.SetParent(go.transform, false);
                     htChild = htGo.transform;
                 }
-                var bc       = htChild.GetComponent<BoxCollider>() ?? htChild.gameObject.AddComponent<BoxCollider>();
-                bc.size      = new Vector3(0.01f, 0.01f, 0.01f);
+                var bc = htChild.GetComponent<BoxCollider>() ?? htChild.gameObject.AddComponent<BoxCollider>();
+                bc.size = new Vector3(0.01f, 0.01f, 0.01f);
                 bc.isTrigger = true;
-                // Build hat.colls: bc at [0], then physics colliders (excluding the stub itself).
+                // build hat.colls: bc at [0], then physics colliders (excluding stub)
                 int n = 0;
                 for (int i = 0; i < colls.Length; i++) if (colls[i] != null && colls[i] != bc) n++;
                 var hatColls = new Il2CppReferenceArray<Collider>(n + 1);
@@ -1032,29 +964,27 @@ namespace BabyBlocks
             }
 
             g.crusher = crusher;
-            g.type    = isHat ? GrabableType.hat : GrabableType.questItem;
+            g.type = isHat ? GrabableType.hat : GrabableType.questItem;
 
             if (isHat && g is Hat hat)
             {
-                hat.enableOnWear  = new Il2CppReferenceArray<GameObject>(0);
+                hat.enableOnWear = new Il2CppReferenceArray<GameObject>(0);
                 hat.disableOnWear = new Il2CppReferenceArray<GameObject>(0);
             }
 
-            var ptsR  = new Il2CppSystem.Collections.Generic.List<Vector3>();
+            var ptsR = new Il2CppSystem.Collections.Generic.List<Vector3>();
             var rotsR = new Il2CppSystem.Collections.Generic.List<Quaternion>();
-            var ptsL  = new Il2CppSystem.Collections.Generic.List<Vector3>();
+            var ptsL = new Il2CppSystem.Collections.Generic.List<Vector3>();
             var rotsL = new Il2CppSystem.Collections.Generic.List<Quaternion>();
-            ptsR.Add(Vector3.zero);  rotsR.Add(Quaternion.identity);
-            ptsL.Add(Vector3.zero);  rotsL.Add(Quaternion.identity);
-            g.grabLocPtsR  = ptsR;  g.grabLocRotsR = rotsR;
-            g.grabLocPtsL  = ptsL;  g.grabLocRotsL = rotsL;
+            ptsR.Add(Vector3.zero); rotsR.Add(Quaternion.identity);
+            ptsL.Add(Vector3.zero); rotsL.Add(Quaternion.identity);
+            g.grabLocPtsR = ptsR; g.grabLocRotsR = rotsR;
+            g.grabLocPtsL = ptsL; g.grabLocRotsL = rotsL;
 
             AddFloater(go);
         }
 
-        // WaterObject.GenerateSimMesh hangs the main thread on high-poly meshes even with
-        // simplifyMesh=true (the simplification step itself is the bottleneck). Cap at a safe
-        // vertex count and fall back to a bounding-box mesh so the prop still floats correctly.
+        // WaterObject.GenerateSimMesh hangs on high-poly meshes; cap vertex count and fall back to bounding-box mesh
         const int FloaterVertexLimit = 5000;
 
         static void AddFloater(GameObject go)
@@ -1064,7 +994,7 @@ namespace BabyBlocks
             var existing = go.transform.Find("Floater");
             if (existing != null) UnityEngine.Object.DestroyImmediate(existing.gameObject);
 
-            var sourceMf   = go.GetComponentInChildren<MeshFilter>();
+            var sourceMf = go.GetComponentInChildren<MeshFilter>();
             var sourceMesh = sourceMf?.sharedMesh;
 
             Mesh floaterMesh = null;
@@ -1076,8 +1006,7 @@ namespace BabyBlocks
                 }
                 else
                 {
-                    // Mesh too complex for GenerateSimMesh — use bounds box so the prop still floats.
-                    floaterMesh = BuildBoundsMesh(sourceMesh.bounds);
+                    floaterMesh = BuildBoundsMesh(sourceMesh.bounds); // too complex for GenerateSimMesh; bounds box still floats
                 }
             }
 
@@ -1096,9 +1025,9 @@ namespace BabyBlocks
             mf.sharedMesh = floaterMesh;
 
             var wo = floater.AddComponent<WaterObject>();
-            wo.convexifyMesh         = true;
-            wo.simplifyMesh          = true;
-            wo.targetTriangleCount   = 16;
+            wo.convexifyMesh = true;
+            wo.simplifyMesh = true;
+            wo.targetTriangleCount = 16;
             wo.calculateWaterNormals = true;
             wo.GenerateSimMesh();
 
@@ -1108,8 +1037,8 @@ namespace BabyBlocks
         static Mesh BuildBoundsMesh(Bounds b)
         {
             var mesh = new Mesh();
-            var c    = b.center;
-            var e    = b.extents;
+            var c = b.center;
+            var e = b.extents;
             mesh.vertices = new Vector3[]
             {
                 new(c.x - e.x, c.y - e.y, c.z - e.z),

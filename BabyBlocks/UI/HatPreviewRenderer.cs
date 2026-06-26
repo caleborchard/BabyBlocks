@@ -6,7 +6,7 @@ namespace BabyBlocks.UI
     internal class HatPreviewRenderer
     {
         static readonly Vector3 HatDefaultLocalPos = new(0f, 0.207f, -0.02f);
-        static readonly Vector3 PreviewOrigin      = new(0f, -9000f, 0f);
+        static readonly Vector3 PreviewOrigin = new(0f, -9000f, 0f);
 
         internal const int PreviewSize = 200;
 
@@ -27,8 +27,8 @@ namespace BabyBlocks.UI
         Camera        _cam;
         RenderTexture _rt;
         float         _orbitAngleY;
-        float         _orbitDist  = 0.5f;
-        bool          _headMode   = true;  // tracks where prop is currently parented
+        float _orbitDist = 0.5f;
+        bool _headMode = true;  // tracks where prop is currently parented
         bool          _propOnHead = true;
         int           _groupRootInstanceId;
 
@@ -36,7 +36,6 @@ namespace BabyBlocks.UI
 
         public static void SetAnchor(RectTransform rt) => _anchorRT = rt;
 
-        // ── IMGUI entry point ───────────────────────────────────────────────────
         public static void DrawWindowGUI()
         {
             if (!FlyCamController.FlyCamActive || !FlyCamController.CursorMode) return;
@@ -49,12 +48,12 @@ namespace BabyBlocks.UI
             Vector3 worldTL = _anchorRT.TransformPoint(new Vector3(ar.xMin, ar.yMax, 0f));
             Vector3 worldTR = _anchorRT.TransformPoint(new Vector3(ar.xMax, ar.yMax, 0f));
 
-            float anchorLeft  = worldTL.x;
+            float anchorLeft = worldTL.x;
             float anchorWidth = worldTR.x - worldTL.x;
-            float imguiTop    = Screen.height - worldTL.y;
+            float imguiTop = Screen.height - worldTL.y;
 
-            float drawSize  = Mathf.Min(inst._rt.width, anchorWidth);
-            float previewX  = anchorLeft + (anchorWidth - drawSize) * 0.5f;
+            float drawSize = Mathf.Min(inst._rt.width, anchorWidth);
+            float previewX = anchorLeft + (anchorWidth - drawSize) * 0.5f;
             var contentRect = new Rect(previewX, imguiTop, drawSize, drawSize);
 
             var e = Event.current;
@@ -62,7 +61,7 @@ namespace BabyBlocks.UI
             {
                 if (e.type == EventType.MouseDown && e.button == 0 && contentRect.Contains(e.mousePosition))
                 {
-                    _orbitDrag  = true;
+                    _orbitDrag = true;
                     _lastMouseX = e.mousePosition.x;
                     _lastMouseY = e.mousePosition.y;
                     e.Use();
@@ -89,11 +88,10 @@ namespace BabyBlocks.UI
             GUI.DrawTexture(contentRect, inst._rt);
         }
 
-        // ── Instance lifecycle ──────────────────────────────────────────────────
         public void Setup(LevelEditorObject target, bool headMode = true)
         {
             Teardown();
-            _target   = target;
+            _target = target;
             _headMode = headMode;
 
             var pm = PlayerMovement.me;
@@ -135,7 +133,7 @@ namespace BabyBlocks.UI
             // Clone the group root (contains all members) if the target is in a group;
             // otherwise clone just the single target prop.
             var groupRoot = ResolveGroupRoot(target);
-            var cloneSrc  = groupRoot != null ? groupRoot : target.gameObject;
+            var cloneSrc = groupRoot != null ? groupRoot : target.gameObject;
             _groupRootInstanceId = cloneSrc.GetInstanceID();
 
             _propClone = UnityEngine.Object.Instantiate(cloneSrc);
@@ -158,27 +156,27 @@ namespace BabyBlocks.UI
 
             _lightGO = new GameObject("[HatPreviewLight]");
             var light = _lightGO.AddComponent<Light>();
-            light.type      = LightType.Point;
-            light.range     = 30f;
+            light.type = LightType.Point;
+            light.range = 30f;
             light.intensity = 3f;
-            light.color     = Color.white;
+            light.color = Color.white;
 
             _rt = new RenderTexture(PreviewSize, PreviewSize, 16, RenderTextureFormat.ARGB32);
             _rt.Create();
 
             var camGO = new GameObject("[HatPreviewCam]");
             _cam = camGO.AddComponent<Camera>();
-            _cam.enabled         = false;
-            _cam.cullingMask     = -1;
-            _cam.fieldOfView     = 50f;
-            _cam.nearClipPlane   = 0.02f;
-            _cam.farClipPlane    = 5000f;
-            _cam.clearFlags      = CameraClearFlags.SolidColor;
+            _cam.enabled = false;
+            _cam.cullingMask = -1;
+            _cam.fieldOfView = 50f;
+            _cam.nearClipPlane = 0.02f;
+            _cam.farClipPlane = 5000f;
+            _cam.clearFlags = CameraClearFlags.SolidColor;
             _cam.backgroundColor = new Color(0.12f, 0.12f, 0.12f, 1f);
-            _cam.targetTexture   = _rt;
+            _cam.targetTexture = _rt;
 
             _orbitAngleY = 0f;
-            _orbitDist   = 0.5f;
+            _orbitDist = 0.5f;
             UpdateCameraPosition();
             _activeInstance = this;
 
@@ -192,7 +190,7 @@ namespace BabyBlocks.UI
         public void SyncPropFromTarget(LevelEditorObject target, bool headMode)
         {
             if (_propClone == null || target == null) return;
-            _target   = target;
+            _target = target;
             _headMode = headMode;
 
             // Scale is stored on individual members (group root stays at (1,1,1)), so sync
@@ -203,9 +201,9 @@ namespace BabyBlocks.UI
                 int n = Mathf.Min(groupRoot.transform.childCount, _propClone.transform.childCount);
                 for (int ci = 0; ci < n; ci++)
                 {
-                    var liveChild  = groupRoot.transform.GetChild(ci);
+                    var liveChild = groupRoot.transform.GetChild(ci);
                     var cloneChild = _propClone.transform.GetChild(ci);
-                    cloneChild.localScale    = liveChild.localScale;
+                    cloneChild.localScale = liveChild.localScale;
                     cloneChild.localPosition = liveChild.localPosition;
                 }
             }
@@ -232,7 +230,7 @@ namespace BabyBlocks.UI
         public bool NeedsRebuildForTarget(LevelEditorObject target)
         {
             var root = ResolveGroupRoot(target);
-            int id   = root != null ? root.GetInstanceID() : (target?.gameObject.GetInstanceID() ?? 0);
+            int id = root != null ? root.GetInstanceID() : (target?.gameObject.GetInstanceID() ?? 0);
             return id != _groupRootInstanceId;
         }
 
@@ -242,7 +240,7 @@ namespace BabyBlocks.UI
         {
             if (_propClone == null || target == null) return;
             var groupRoot = ResolveGroupRoot(target);
-            var liveRoot  = groupRoot != null ? groupRoot : target.gameObject;
+            var liveRoot = groupRoot != null ? groupRoot : target.gameObject;
             var src = liveRoot.GetComponentsInChildren<Renderer>(true);
             var dst = _propClone.GetComponentsInChildren<Renderer>(true);
             int n = src.Length < dst.Length ? src.Length : dst.Length;
@@ -278,8 +276,8 @@ namespace BabyBlocks.UI
                 ? _previewHandBone : _previewHeadBone;
 
             var focusPos = focusBone.position;
-            float rad    = _orbitAngleY * Mathf.Deg2Rad;
-            var offset   = new Vector3(Mathf.Sin(rad) * _orbitDist, 0.15f, Mathf.Cos(rad) * _orbitDist);
+            float rad = _orbitAngleY * Mathf.Deg2Rad;
+            var offset = new Vector3(Mathf.Sin(rad) * _orbitDist, 0.15f, Mathf.Cos(rad) * _orbitDist);
             _cam.transform.position = focusPos + offset;
             _cam.transform.LookAt(focusPos + new Vector3(0f, 0.05f, 0f));
             if (_lightGO != null)
@@ -319,19 +317,19 @@ namespace BabyBlocks.UI
         public void Teardown()
         {
             if (_activeInstance == this) _activeInstance = null;
-            if (_propClone   != null) { UnityEngine.Object.Destroy(_propClone);      _propClone   = null; }
-            if (_playerClone != null) { UnityEngine.Object.Destroy(_playerClone);    _playerClone = null; }
-            if (_lightGO     != null) { UnityEngine.Object.Destroy(_lightGO);        _lightGO     = null; }
-            if (_cam         != null) { UnityEngine.Object.Destroy(_cam.gameObject); _cam         = null; }
-            if (_rt          != null) { _rt.Release(); UnityEngine.Object.Destroy(_rt); _rt       = null; }
+            if (_propClone != null) { UnityEngine.Object.Destroy(_propClone); _propClone = null; }
+            if (_playerClone != null) { UnityEngine.Object.Destroy(_playerClone); _playerClone = null; }
+            if (_lightGO != null) { UnityEngine.Object.Destroy(_lightGO); _lightGO = null; }
+            if (_cam != null) { UnityEngine.Object.Destroy(_cam.gameObject); _cam = null; }
+            if (_rt != null) { _rt.Release(); UnityEngine.Object.Destroy(_rt); _rt = null; }
             _previewHeadBone = null;
             _previewHandBone = null;
-            _target          = null;
+            _target = null;
         }
 
         static Transform FindVisualRoot(PlayerMovement pm)
         {
-            var root  = pm.transform;
+            var root = pm.transform;
             var named = root.Find("IKTargets");
             if (named != null && named.GetComponentInChildren<SkinnedMeshRenderer>() != null)
                 return named;

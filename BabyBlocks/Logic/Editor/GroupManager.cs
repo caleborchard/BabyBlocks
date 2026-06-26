@@ -145,10 +145,10 @@ namespace BabyBlocks
         public static void ApplyGroups()
         {
             var mgr = LevelEditorManager.Instance;
-            var rigidbodySolos   = new List<LevelEditorObject>();
-            var rigidbodyGroups  = new Dictionary<int, List<LevelEditorObject>>();
-            var wearableSolos    = new List<LevelEditorObject>();
-            var wearableGroups   = new Dictionary<int, List<LevelEditorObject>>();
+            var rigidbodySolos = new List<LevelEditorObject>();
+            var rigidbodyGroups = new Dictionary<int, List<LevelEditorObject>>();
+            var wearableSolos = new List<LevelEditorObject>();
+            var wearableGroups = new Dictionary<int, List<LevelEditorObject>>();
             int maxGroupId = 0;
 
             foreach (var leo in mgr.Objects)
@@ -351,9 +351,9 @@ namespace BabyBlocks
                         if (childLeo.physicsMode != PhysicsMode.Static)
                             MaterialBaker.RestoreOriginal(childLeo.gameObject);
                         mgr.SyncLoopBase(childLeo);
-                        childLeo.physicsMode      = PhysicsMode.Static;
-                        childLeo.physicsGroupId   = 0;
-                        childLeo.groupId          = 0;
+                        childLeo.physicsMode = PhysicsMode.Static;
+                        childLeo.physicsGroupId = 0;
+                        childLeo.groupId = 0;
                         childLeo.isPhysicsManaged = false;
                     }
                 }
@@ -369,9 +369,9 @@ namespace BabyBlocks
                     if (obj.physicsMode != PhysicsMode.Static)
                         MaterialBaker.RestoreOriginal(obj.gameObject);
                     PhysicsObjectManager.RemoveGrabableComponents(obj.gameObject);
-                    obj.physicsMode      = PhysicsMode.Static;
-                    obj.physicsGroupId   = 0;
-                    obj.groupId          = 0;
+                    obj.physicsMode = PhysicsMode.Static;
+                    obj.physicsGroupId = 0;
+                    obj.groupId = 0;
                     obj.isPhysicsManaged = false;
                 }
                 RemoveGroupDisplayScale(groupId);

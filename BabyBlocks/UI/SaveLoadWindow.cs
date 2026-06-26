@@ -14,29 +14,29 @@ namespace BabyBlocks
         [StructLayout(LayoutKind.Sequential)]
         struct OPENFILENAME
         {
-            public int    lStructSize;
+            public int lStructSize;
             public IntPtr hwndOwner;
             public IntPtr hInstance;
             public IntPtr lpstrFilter;
             public IntPtr lpstrCustomFilter;
-            public int    nMaxCustFilter;
-            public int    nFilterIndex;
+            public int nMaxCustFilter;
+            public int nFilterIndex;
             public IntPtr lpstrFile;
-            public int    nMaxFile;
+            public int nMaxFile;
             public IntPtr lpstrFileTitle;
-            public int    nMaxFileTitle;
+            public int nMaxFileTitle;
             public IntPtr lpstrInitialDir;
             public IntPtr lpstrTitle;
-            public int    Flags;
-            public short  nFileOffset;
-            public short  nFileExtension;
+            public int Flags;
+            public short nFileOffset;
+            public short nFileExtension;
             public IntPtr lpstrDefExt;
             public IntPtr lCustData;
             public IntPtr lpfnHook;
             public IntPtr lpTemplateName;
             public IntPtr pvReserved;
-            public int    dwReserved;
-            public int    FlagsEx;
+            public int dwReserved;
+            public int FlagsEx;
         }
 
         [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -45,12 +45,12 @@ namespace BabyBlocks
         [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         static extern bool GetSaveFileNameW(ref OPENFILENAME ofn);
 
-        const int OFN_EXPLORER       = 0x00080000;
-        const int OFN_FILEMUSTEXIST  = 0x00001000;
-        const int OFN_PATHMUSTEXIST  = 0x00000800;
-        const int OFN_OVERWRITEPROMPT= 0x00000002;
-        const int OFN_NOCHANGEDIR    = 0x00000008;
-        const int OFN_HIDEREADONLY   = 0x00000004;
+        const int OFN_EXPLORER = 0x00080000;
+        const int OFN_FILEMUSTEXIST = 0x00001000;
+        const int OFN_PATHMUSTEXIST = 0x00000800;
+        const int OFN_OVERWRITEPROMPT = 0x00000002;
+        const int OFN_NOCHANGEDIR = 0x00000008;
+        const int OFN_HIDEREADONLY = 0x00000004;
 
         // Filter string uses \0 between name/pattern pairs and \0\0 to terminate.
         static readonly string FilterStr =
@@ -66,19 +66,19 @@ namespace BabyBlocks
         {
             const int BufSize = 32768;
 
-            string initDir  = null;
+            string initDir = null;
             string initFile = null;
             if (!string.IsNullOrEmpty(initialPath))
             {
-                initDir  = Path.GetDirectoryName(initialPath);
+                initDir = Path.GetDirectoryName(initialPath);
                 initFile = Path.GetFileName(initialPath);
             }
 
-            var fileBuf   = Marshal.AllocHGlobal(BufSize * 2);
+            var fileBuf = Marshal.AllocHGlobal(BufSize * 2);
             var filterBuf = WriteWString(FilterStr);
             var defExtBuf = WriteWString("bbb");
-            var titleBuf  = WriteWString(open ? "Open Level" : "Save Level");
-            var dirBuf    = initDir  != null ? WriteWString(initDir)  : IntPtr.Zero;
+            var titleBuf = WriteWString(open ? "Open Level" : "Save Level");
+            var dirBuf = initDir != null ? WriteWString(initDir) : IntPtr.Zero;
 
             try
             {
@@ -93,15 +93,15 @@ namespace BabyBlocks
 
                 var ofn = new OPENFILENAME
                 {
-                    lStructSize    = Marshal.SizeOf<OPENFILENAME>(),
-                    lpstrFilter    = filterBuf,
-                    nFilterIndex   = 1,
-                    lpstrFile      = fileBuf,
-                    nMaxFile       = BufSize,
-                    lpstrTitle     = titleBuf,
-                    lpstrDefExt    = defExtBuf,
-                    lpstrInitialDir= dirBuf,
-                    Flags          = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_HIDEREADONLY |
+                    lStructSize = Marshal.SizeOf<OPENFILENAME>(),
+                    lpstrFilter = filterBuf,
+                    nFilterIndex = 1,
+                    lpstrFile = fileBuf,
+                    nMaxFile = BufSize,
+                    lpstrTitle = titleBuf,
+                    lpstrDefExt = defExtBuf,
+                    lpstrInitialDir = dirBuf,
+                    Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_HIDEREADONLY |
                                      (open ? OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST
                                            : OFN_OVERWRITEPROMPT),
                 };
@@ -130,7 +130,7 @@ namespace BabyBlocks
         static IntPtr WriteWString(string s)
         {
             var bytes = Encoding.Unicode.GetBytes(s);
-            var buf   = Marshal.AllocHGlobal(bytes.Length + 2); // +2 for null terminator
+            var buf = Marshal.AllocHGlobal(bytes.Length + 2); // +2 for null terminator
             Marshal.Copy(bytes, 0, buf, bytes.Length);
             Marshal.WriteInt16(buf, bytes.Length, 0);           // null terminator
             return buf;
@@ -140,17 +140,17 @@ namespace BabyBlocks
     // Draggable Save / Load window
     static class SaveLoadWindow
     {
-        const float WinW   = 310f;
+        const float WinW = 310f;
         const float BaseWinH = 232f;
-        const float HeaderH= 30f;
-        const float Pad    = 7f;
+        const float HeaderH = 30f;
+        const float Pad = 7f;
         const float DropdownItemH = 18f;
 
-        static Rect   _windowRect;
-        static bool   _initialized;
-        static bool   _dragging;
+        static Rect _windowRect;
+        static bool _initialized;
+        static bool _dragging;
         static Vector2 _dragOffset;
-        static bool   _weatherDropdownOpen;
+        static bool _weatherDropdownOpen;
 
         // Clear/Load both wipe the current scene — the first click swaps that
         // button's label to "Are you sure?" and a second click within
@@ -163,7 +163,7 @@ namespace BabyBlocks
         const float ConfirmTimeout = 3f;
 
         static string _filePath = "";
-        static string _status   = "";
+        static string _status = "";
         static float  _statusTime;
 
         const float StatusDuration = 4f;
@@ -211,7 +211,7 @@ namespace BabyBlocks
             // Drag handling
             if (e.type == EventType.MouseDown && e.button == 0 && headerRect.Contains(e.mousePosition))
             {
-                _dragging   = true;
+                _dragging = true;
                 _dragOffset = e.mousePosition - new Vector2(_windowRect.x, _windowRect.y);
                 e.Use();
             }
@@ -229,13 +229,13 @@ namespace BabyBlocks
 
             float contentY = _windowRect.y + HeaderH + Pad;
             float contentX = _windowRect.x + Pad;
-            float innerW   = WinW - Pad * 2f;
+            float innerW = WinW - Pad * 2f;
 
             float btnW = (innerW - Pad) * 0.5f;
 
             // Auto-revert a pending confirmation if it's not acted on promptly.
             if (_confirmClear && Time.realtimeSinceStartup - _confirmClearTime > ConfirmTimeout) _confirmClear = false;
-            if (_confirmLoad  && Time.realtimeSinceStartup - _confirmLoadTime  > ConfirmTimeout) _confirmLoad  = false;
+            if (_confirmLoad && Time.realtimeSinceStartup - _confirmLoadTime > ConfirmTimeout) _confirmLoad = false;
 
             // Save / Load buttons
             if (GUI.Button(new Rect(contentX, contentY, btnW, 22f), "Save"))
@@ -305,7 +305,7 @@ namespace BabyBlocks
 
             // File path text field + browse button
             float browseW = 26f;
-            float fieldW  = innerW - browseW - Pad;
+            float fieldW = innerW - browseW - Pad;
             _filePath = GUI.TextField(new Rect(contentX, contentY, fieldW, 20f), _filePath ?? "");
             if (GUI.Button(new Rect(contentX + fieldW + Pad, contentY, browseW, 20f), "…"))
                 BrowseForFile();
@@ -348,7 +348,7 @@ namespace BabyBlocks
             }
             else
             {
-                _confirmClear     = true;
+                _confirmClear = true;
                 _confirmClearTime = Time.realtimeSinceStartup;
             }
         }
@@ -386,7 +386,7 @@ namespace BabyBlocks
             }
             else
             {
-                _confirmLoad     = true;
+                _confirmLoad = true;
                 _confirmLoadTime = Time.realtimeSinceStartup;
             }
         }
@@ -469,7 +469,7 @@ namespace BabyBlocks
 
         static void SetStatus(string msg)
         {
-            _status     = msg;
+            _status = msg;
             _statusTime = Time.realtimeSinceStartup;
         }
     }

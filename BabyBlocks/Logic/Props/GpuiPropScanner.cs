@@ -7,9 +7,7 @@ using UnityEngine;
 
 namespace BabyBlocks
 {
-    // Discovers GPUI (Graphics Performance Unity Instancer) props by scanning the
-    // currently-loaded scene plus the Addressables catalog, and assigns them stable
-    // "gpui://" ids in PropLibrary's registry.
+    // discovers GPUI props from scene + Addressables catalog; assigns stable gpui:// ids in PropLibrary
     internal static class GpuiPropScanner
     {
         internal static readonly HashSet<string> GpuiScannedNames = new(StringComparer.OrdinalIgnoreCase);
@@ -21,7 +19,7 @@ namespace BabyBlocks
 
             string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
             int insertAt = PropLibrary.PrimitiveNames.Length;
-            int added    = 0;
+            int added = 0;
             int nextGpuiIndex = 0;
 
             if (PropLibrary.TryLoadGpuiCache(catalogPath, out var cached) && cached != null)
@@ -39,11 +37,11 @@ namespace BabyBlocks
 
                     var info = new PropInfo(stableId, baseName)
                     {
-                        gpuiIndex      = nextGpuiIndex++,
-                        visualPath     = visualPath,
+                        gpuiIndex = nextGpuiIndex++,
+                        visualPath = visualPath,
                         gpuiPrefabName = prefabName,
-                        isLoaded       = false,
-                        isInvalid      = false,
+                        isLoaded = false,
+                        isInvalid = false,
                     };
                     PropLibrary._all.Insert(insertAt++, info);
                     PropLibrary._byId[stableId] = info;
@@ -63,8 +61,8 @@ namespace BabyBlocks
                 return;
             }
 
-            var visualLookup  = BuildGpuiVisualLookup();
-            int gpuiIdx       = nextGpuiIndex;
+            var visualLookup = BuildGpuiVisualLookup();
+            int gpuiIdx = nextGpuiIndex;
 
             for (int i = 0; i < loaded.Length; i++)
             {
@@ -84,7 +82,7 @@ namespace BabyBlocks
                 visualPath   ??= "";
                 string prefabName = prefabGO.name;
 
-                int    gi     = gpuiIdx++;
+                int gi = gpuiIdx++;
                 string gpuiId = PropLibrary.BuildStableGpuiId(baseName, prefabName, visualPath);
                 if (PropLibrary._byId.ContainsKey(gpuiId)) continue;
 
@@ -94,11 +92,11 @@ namespace BabyBlocks
 
                 var info = new PropInfo(gpuiId, baseName)
                 {
-                    gpuiIndex      = gi,
-                    visualPath     = visualPath,
+                    gpuiIndex = gi,
+                    visualPath = visualPath,
                     gpuiPrefabName = prefabName,
-                    isLoaded       = false,
-                    isInvalid      = false,
+                    isLoaded = false,
+                    isInvalid = false,
                 };
 
                 GpuiScannedNames.Add(baseName);
@@ -122,7 +120,7 @@ namespace BabyBlocks
                 visualLookup.TryGetValue(baseName, out string visualPath);
                 visualPath ??= "";
 
-                int    gi     = gpuiIdx++;
+                int gi = gpuiIdx++;
                 string gpuiId = PropLibrary.BuildStableGpuiId(baseName, prefabName, visualPath);
                 if (PropLibrary._byId.ContainsKey(gpuiId)) continue;
 
@@ -132,11 +130,11 @@ namespace BabyBlocks
 
                 var info = new PropInfo(gpuiId, baseName)
                 {
-                    gpuiIndex      = gi,
-                    visualPath     = visualPath,
+                    gpuiIndex = gi,
+                    visualPath = visualPath,
                     gpuiPrefabName = prefabName,
-                    isLoaded       = false,
-                    isInvalid      = false,
+                    isLoaded = false,
+                    isInvalid = false,
                 };
 
                 GpuiScannedNames.Add(baseName);
@@ -162,7 +160,7 @@ namespace BabyBlocks
 
         static Dictionary<string, string> BuildGpuiVisualLookup()
         {
-            var    lookup      = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var lookup = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             string catalogPath = Path.Combine(Application.streamingAssetsPath, "aa", "catalog.json");
             if (!File.Exists(catalogPath)) return lookup;
 
@@ -175,10 +173,10 @@ namespace BabyBlocks
                 if (kdIdx >= 0)
                 {
                     int valStart = json.IndexOf('"', kdIdx + 17) + 1;
-                    int valEnd   = json.IndexOf('"', valStart);
+                    int valEnd = json.IndexOf('"', valStart);
                     if (valStart > 0 && valEnd > valStart)
                     {
-                        byte[] bytes   = Convert.FromBase64String(json.Substring(valStart, valEnd - valStart));
+                        byte[] bytes = Convert.FromBase64String(json.Substring(valStart, valEnd - valStart));
                         string decoded = Encoding.UTF8.GetString(bytes);
                         AddVisualPathsToLookup(decoded, lookup);
                     }
@@ -221,7 +219,7 @@ namespace BabyBlocks
 
         internal static void ExtractPartsFromColliders(GameObject root, PropInfo info)
         {
-            var arr   = root.GetComponentsInChildren<MeshCollider>(true);
+            var arr = root.GetComponentsInChildren<MeshCollider>(true);
             var rootT = root.transform;
             foreach (var mc in arr)
             {

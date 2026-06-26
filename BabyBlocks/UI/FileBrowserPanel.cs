@@ -81,7 +81,7 @@ namespace BabyBlocks.UI
                 Directory.CreateDirectory(LevelsDir);
                 _watcher = new FileSystemWatcher(LevelsDir, "*.bbb")
                 {
-                    NotifyFilter        = NotifyFilters.FileName,
+                    NotifyFilter = NotifyFilters.FileName,
                     EnableRaisingEvents = true,
                 };
                 _watcher.Created += (_, _) => _pendingRefresh = true;
@@ -156,10 +156,10 @@ namespace BabyBlocks.UI
 
         public override void SetDefaultSizeAndPosition()
         {
-            Rect.pivot            = new Vector2(0.5f, 0.5f);
-            Rect.anchorMin        = new Vector2(0.5f, 0.5f);
-            Rect.anchorMax        = new Vector2(0.5f, 0.5f);
-            Rect.sizeDelta        = new Vector2(400f, 520f);
+            Rect.pivot = new Vector2(0.5f, 0.5f);
+            Rect.anchorMin = new Vector2(0.5f, 0.5f);
+            Rect.anchorMax = new Vector2(0.5f, 0.5f);
+            Rect.sizeDelta = new Vector2(400f, 520f);
             Rect.anchoredPosition = Vector2.zero;
         }
 
@@ -170,7 +170,6 @@ namespace BabyBlocks.UI
                 childControlWidth: true, childControlHeight: true,
                 spacing: 4, padTop: 6, padBottom: 6, padLeft: 8, padRight: 8);
 
-            // ── Save row ────────────────────────────────────────────────────
             var saveRow = UIFactory.CreateHorizontalGroup(ContentRoot, "SaveRow",
                 false, false, true, true, spacing: 6);
             UIFactory.SetLayoutElement(saveRow, minHeight: 26, flexibleWidth: 9999);
@@ -192,23 +191,19 @@ namespace BabyBlocks.UI
             PropBrowserUI.ApplyButtonColors(saveBtn);
             saveBtn.OnClick += OnSaveClick;
 
-            // ── Status label ─────────────────────────────────────────────────
             _statusText = UIFactory.CreateLabel(ContentRoot, "Status", "",
                 TextAnchor.MiddleLeft, new Color(1f, 1f, 0.4f), fontSize: 13);
             UIFactory.SetLayoutElement(_statusText.gameObject, minHeight: 18, flexibleWidth: 9999);
 
-            // ── Open folder button ────────────────────────────────────────────
             var openFolderBtn = UIFactory.CreateButton(ContentRoot, "OpenFolderBtn", "Open Levels Folder");
             UIFactory.SetLayoutElement(openFolderBtn.Component.gameObject, minHeight: 24, flexibleWidth: 9999);
             PropBrowserUI.ApplyButtonColors(openFolderBtn);
             openFolderBtn.OnClick += () => OpenFolder(LevelsDir);
 
-            // ── Divider ───────────────────────────────────────────────────────
             var divLbl = UIFactory.CreateLabel(ContentRoot, "DivLbl", "── existing files ──",
                 TextAnchor.MiddleCenter, new Color(0.38f, 0.38f, 0.38f), fontSize: 12);
             UIFactory.SetLayoutElement(divLbl.gameObject, minHeight: 16, flexibleWidth: 9999);
 
-            // ── Scrollable file list ──────────────────────────────────────────
             var scrollView = UIFactory.CreateScrollView(ContentRoot, "FileList",
                 out _fileListContent, out _, new Color(0.09f, 0.09f, 0.11f));
             UIFactory.SetLayoutElement(scrollView, flexibleHeight: 9999, flexibleWidth: 9999, minHeight: 80);
@@ -218,13 +213,12 @@ namespace BabyBlocks.UI
                 spacing: 2, padTop: 2, padBottom: 2, padLeft: 4, padRight: 4);
         }
 
-        // ── File list ───────────────────────────────────────────────────────
 
         void Refresh()
         {
             if (_nameInput != null)
             {
-                string last   = Core.LastSavePath ?? "";
+                string last = Core.LastSavePath ?? "";
                 string defName = Path.GetFileNameWithoutExtension(last);
                 // If the last path was somewhere outside LevelsDir, just suggest "level"
                 if (string.IsNullOrEmpty(defName)) defName = "level";
@@ -260,10 +254,10 @@ namespace BabyBlocks.UI
 
             foreach (var file in files)
             {
-                string path     = file;
+                string path = file;
                 string baseName = Path.GetFileNameWithoutExtension(file);
-                bool loadArmed  = _confirmPath == path && !_confirmDelete;
-                bool delArmed   = _confirmPath == path &&  _confirmDelete;
+                bool loadArmed = _confirmPath == path && !_confirmDelete;
+                bool delArmed = _confirmPath == path && _confirmDelete;
 
                 var row = UIFactory.CreateHorizontalGroup(_fileListContent, $"Row_{baseName}",
                     false, false, true, true, spacing: 4);
@@ -301,7 +295,6 @@ namespace BabyBlocks.UI
             }
         }
 
-        // ── Button handlers ──────────────────────────────────────────────────
 
         void OnSaveClick()
         {
@@ -344,9 +337,9 @@ namespace BabyBlocks.UI
             }
             else
             {
-                _confirmPath   = path;
+                _confirmPath = path;
                 _confirmDelete = false;
-                _confirmTime   = Time.realtimeSinceStartup;
+                _confirmTime = Time.realtimeSinceStartup;
                 SetStatus("Current level will be replaced — click Load again to confirm.");
                 RebuildFileList();
             }
@@ -373,15 +366,14 @@ namespace BabyBlocks.UI
             }
             else
             {
-                _confirmPath   = path;
+                _confirmPath = path;
                 _confirmDelete = true;
-                _confirmTime   = Time.realtimeSinceStartup;
+                _confirmTime = Time.realtimeSinceStartup;
                 SetStatus("Click ✕ again to permanently delete this file.");
                 RebuildFileList();
             }
         }
 
-        // ── Helpers ──────────────────────────────────────────────────────────
 
         void SetStatus(string msg)
         {
@@ -411,10 +403,10 @@ namespace BabyBlocks.UI
             var img = btn.Component.GetComponent<Image>();
             if (img != null) img.color = color;
             var cols = btn.Component.colors;
-            cols.normalColor      = color;
+            cols.normalColor = color;
             cols.highlightedColor = Color.Lerp(color, Color.white, 0.15f);
-            cols.pressedColor     = Color.Lerp(color, Color.black, 0.2f);
-            btn.Component.colors  = cols;
+            cols.pressedColor = Color.Lerp(color, Color.black, 0.2f);
+            btn.Component.colors = cols;
         }
     }
 }

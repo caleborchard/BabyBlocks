@@ -15,10 +15,10 @@ namespace BabyBlocks
         // and ContainsPoint / IsTypingInUI are always false — zero runtime cost.
         public static bool Enabled = false;
 
-        const float WinW    = 370f;
-        const float WinH    = 150f;
+        const float WinW = 370f;
+        const float WinH = 150f;
         const float HeaderH = 24f;
-        const float Pad     = 7f;
+        const float Pad = 7f;
 
         const string PathField = "ObjImportPath";
 
@@ -26,8 +26,8 @@ namespace BabyBlocks
         static bool    _initialized;
         static bool    _dragging;
         static Vector2 _dragOffset;
-        static string  _path   = "";
-        static string  _status = "";
+        static string _path = "";
+        static string _status = "";
         static bool    _invertFaces = false;
 
         public static bool IsTypingInUI  { get; private set; }
@@ -39,7 +39,7 @@ namespace BabyBlocks
         {
             if (_initialized) return;
             _initialized = true;
-            _windowRect  = new Rect(20f, 200f, WinW, WinH);
+            _windowRect = new Rect(20f, 200f, WinW, WinH);
         }
 
         public static void DrawGUI(Event e)
@@ -60,7 +60,7 @@ namespace BabyBlocks
             var headerRect = new Rect(_windowRect.x, _windowRect.y, WinW, HeaderH);
             if (e.type == EventType.MouseDown && e.button == 0 && headerRect.Contains(e.mousePosition))
             {
-                _dragging   = true;
+                _dragging = true;
                 _dragOffset = e.mousePosition - new Vector2(_windowRect.x, _windowRect.y);
                 e.Use();
             }
@@ -75,8 +75,8 @@ namespace BabyBlocks
                 if (e.type == EventType.MouseUp) _dragging = false;
             }
 
-            float y  = _windowRect.y + HeaderH + Pad;
-            float x  = _windowRect.x + Pad;
+            float y = _windowRect.y + HeaderH + Pad;
+            float x = _windowRect.x + Pad;
             float iw = WinW - Pad * 2f;
 
             GUI.Label(new Rect(x, y, iw, 18f), "OBJ path:");
@@ -224,11 +224,11 @@ namespace BabyBlocks
                 if (mesh == null) continue;
                 info.parts.Add(new PropMeshPart
                 {
-                    mesh          = mesh,
-                    materials     = new[] { mat },
+                    mesh = mesh,
+                    materials = new[] { mat },
                     localPosition = Vector3.zero,
                     localRotation = Quaternion.identity,
-                    localScale    = Vector3.one,
+                    localScale = Vector3.one,
                 });
             }
 
@@ -250,11 +250,11 @@ namespace BabyBlocks
             ParseObjFile(string path, string objDir)
         {
             var positions = new List<Vector3>();
-            var uvs       = new List<Vector2>();
-            var normals   = new List<Vector3>();
-            var groups    = new List<MatGroup>();
+            var uvs = new List<Vector2>();
+            var normals = new List<Vector3>();
+            var groups = new List<MatGroup>();
             string mtllib = null;
-            MatGroup cur  = null;
+            MatGroup cur = null;
 
             void EnsureGroup(string matName)
             {
@@ -270,7 +270,7 @@ namespace BabyBlocks
                 if (line.Length == 0 || line[0] == '#') continue;
                 int sp = line.IndexOf(' ');
                 if (sp < 0) continue;
-                string tok  = line.Substring(0, sp);
+                string tok = line.Substring(0, sp);
                 string rest = line.Substring(sp + 1).Trim();
 
                 switch (tok)
@@ -359,14 +359,14 @@ namespace BabyBlocks
             string           matName,
             Dictionary<string, MtlDef> mtlDefs)
         {
-            bool hasUv   = uvArr   != null && uvArr.Count   > 0;
+            bool hasUv = uvArr != null && uvArr.Count > 0;
             bool hasNorm = normArr != null && normArr.Count > 0;
 
             var vertKey = new Dictionary<(int, int, int), int>();
-            var vPos    = new List<Vector3>();
-            var vUv     = new List<Vector2>();
-            var vNorm   = new List<Vector3>();
-            var idxs    = new List<int>(tris.Count);
+            var vPos = new List<Vector3>();
+            var vUv = new List<Vector2>();
+            var vNorm = new List<Vector3>();
+            var idxs = new List<int>(tris.Count);
 
             foreach (int[] fv in tris)
             {
@@ -374,7 +374,7 @@ namespace BabyBlocks
                 var key = (pi, ti, ni);
                 if (!vertKey.TryGetValue(key, out int idx))
                 {
-                    idx          = vPos.Count;
+                    idx = vPos.Count;
                     vertKey[key] = idx;
                     vPos.Add(pi >= 0 && pi < posArr.Count ? posArr[pi] : Vector3.zero);
                     vUv.Add(hasUv   && ti >= 0 && ti < uvArr.Count   ? uvArr[ti]   : Vector2.zero);
@@ -389,7 +389,7 @@ namespace BabyBlocks
             if (vPos.Count > 65535)
                 mesh.indexFormat = IndexFormat.UInt32;
 
-            mesh.vertices  = vPos.ToArray();
+            mesh.vertices = vPos.ToArray();
             if (hasUv) mesh.uv = vUv.ToArray();
 
             // Triangles are reversed winding (see ParseFaceInto) for correct backface culling
@@ -453,20 +453,20 @@ namespace BabyBlocks
 
         static MtlDef DefaultMtlDef() => new MtlDef
         {
-            Initialized    = true,
-            Diffuse        = Color.white,
-            Specular       = new Color(0.2f, 0.2f, 0.2f),
-            Smoothness     = 0.1f,
-            Alpha          = 1f,
+            Initialized = true,
+            Diffuse = Color.white,
+            Specular = new Color(0.2f, 0.2f, 0.2f),
+            Smoothness = 0.1f,
+            Alpha = 1f,
             DiffuseTexPath = null,
         };
 
         static Dictionary<string, MtlDef> ParseMtl(string mtlPath)
         {
-            var result  = new Dictionary<string, MtlDef>(StringComparer.OrdinalIgnoreCase);
-            string dir  = Path.GetDirectoryName(mtlPath) ?? "";
+            var result = new Dictionary<string, MtlDef>(StringComparer.OrdinalIgnoreCase);
+            string dir = Path.GetDirectoryName(mtlPath) ?? "";
             string curName = null;
-            MtlDef cur  = DefaultMtlDef();
+            MtlDef cur = DefaultMtlDef();
 
             void Flush() { if (curName != null) result[curName] = cur; }
 
@@ -476,7 +476,7 @@ namespace BabyBlocks
                 if (line.Length == 0 || line[0] == '#') continue;
                 int sp = line.IndexOf(' ');
                 if (sp < 0) continue;
-                string tok  = line.Substring(0, sp).ToLower();
+                string tok = line.Substring(0, sp).ToLower();
                 string rest = line.Substring(sp + 1).Trim();
 
                 switch (tok)
@@ -502,11 +502,11 @@ namespace BabyBlocks
                         cur.Smoothness = Mathf.Clamp01(float.Parse(rest, CultureInfo.InvariantCulture) / 1000f);
                         break;
                     case "d":
-                        cur.Alpha     = float.Parse(rest, CultureInfo.InvariantCulture);
+                        cur.Alpha = float.Parse(rest, CultureInfo.InvariantCulture);
                         cur.Diffuse.a = cur.Alpha;
                         break;
                     case "tr":
-                        cur.Alpha     = 1f - float.Parse(rest, CultureInfo.InvariantCulture);
+                        cur.Alpha = 1f - float.Parse(rest, CultureInfo.InvariantCulture);
                         cur.Diffuse.a = cur.Alpha;
                         break;
                     case "map_kd":
@@ -525,7 +525,7 @@ namespace BabyBlocks
             if (!def.Initialized) def = DefaultMtlDef();
 
             var shader = Shader.Find("Standard") ?? Shader.Find("Universal Render Pipeline/Lit");
-            var mat    = new Material(shader) { name = fallbackName };
+            var mat = new Material(shader) { name = fallbackName };
 
             mat.color = def.Diffuse;
             mat.SetColor("_SpecColor",   def.Specular);

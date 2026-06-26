@@ -24,13 +24,11 @@ namespace BabyBlocks
 
         public static LevelEditorManager Instance { get; private set; }
 
-        // Used by BaseMapController to identify/skip the editor's own placed props.
+        // used by BaseMapController to identify/skip the editor's own placed props
         internal static GameObject PropsContainer => Instance != null ? Instance._propsContainer : null;
 
         readonly List<LevelEditorObject> _objects = new();
-        // Keyed by groupId. Using a dictionary avoids the Il2Cpp wrapper-equality pitfall where
-        // List<GameObject>.Contains() always returns false because each access returns a new
-        // managed wrapper for the same native object.
+        // keyed by groupId; dictionary avoids Il2Cpp wrapper-equality pitfall where List.Contains always returns false
         internal readonly Dictionary<int, GameObject> _groupRoots = new();
         internal int _nextGroupId = 1;
         internal bool _editorModeActive;
@@ -50,12 +48,7 @@ namespace BabyBlocks
             if (!PropLibrary.IsInitialized) PropLibrary.Init();
         }
 
-        // Physics-managed props (Rigidbody/Grabable/Hat — see LevelEditorObject.isPhysicsManaged)
-        // get moved by native game code into a scene that's wiped and rebuilt on a save load,
-        // so their GameObjects are destroyed out from under us even though LevelEditorManager
-        // itself is DontDestroyOnLoad. _objects/_groupRoots/selection then hold dangling
-        // references to destroyed Il2Cpp objects, which breaks gizmo/selection updates. Drop
-        // those entries and reset selection so the editor recovers cleanly.
+        // physics-managed props get moved into the scene that a save-load rebuilds; drops stale refs so editor recovers cleanly
         [HideFromIl2Cpp]
         internal void PruneDestroyedObjects()
         {
@@ -82,10 +75,7 @@ namespace BabyBlocks
             LevelEditor.Select(null);
         }
 
-        // _propsContainer (and every prop parented under it) isn't DontDestroyOnLoad, so a
-        // native save load that reloads the scene destroys them out from under us. _objects
-        // and _groupRoots then hold dangling references to already-destroyed Il2Cpp objects,
-        // which breaks selection/gizmo updates. Detect that and reset to a clean state.
+        // _propsContainer isn't DontDestroyOnLoad; detect destruction after scene reload and reset to clean state
         [HideFromIl2Cpp]
         internal void EnsurePropsContainer()
         {
@@ -129,12 +119,12 @@ namespace BabyBlocks
                 root.layer = PropLayer;
                 for (int i = 0; i < info.parts.Count; i++)
                 {
-                    var part  = info.parts[i];
+                    var part = info.parts[i];
                     var child = new GameObject($"Part_{i}");
                     child.transform.SetParent(root.transform, false);
                     child.transform.localPosition = part.localPosition;
                     child.transform.localRotation = part.localRotation;
-                    child.transform.localScale    = part.localScale;
+                    child.transform.localScale = part.localScale;
                     child.layer = PropLayer;
 
                     var mf = child.AddComponent<MeshFilter>();
@@ -151,12 +141,9 @@ namespace BabyBlocks
                 }
                 else if (PropLibrary.IsSpawnPointProp(info.id))
                 {
-                    // The spawn point marker provides its own trigger volume — the
-                    // placeholder capsule mesh is hidden and never needs collision.
                     SpawnPointConfig.Configure(root);
                 }
-                // Standard colliders are applied below, after ApplyDisabledRenderersToRoot,
-                // so the render-mesh path sees the correct mr.enabled state.
+                // standard colliders applied below after ApplyDisabledRenderersToRoot so render-mesh path sees correct mr.enabled
             }
 
             if (_propsContainer != null)
@@ -186,28 +173,21 @@ namespace BabyBlocks
             }
 
             var leo = root.AddComponent<LevelEditorObject>();
-            leo.objectType     = "Addressable";
+            leo.objectType = "Addressable";
             leo.addressableKey = info.id;
 
-            // Mirror the metadata default so the Properties Panel can read it without
-            // relying on gameObject.tag (ApplySurfaceTypeToRoot above ran before this LEO existed).
             string metaSurfTag = PropMetadataStore.GetSurfaceType(info.id);
             if (!string.IsNullOrEmpty(metaSurfTag) && metaSurfTag != "Untagged")
                 leo.surfaceTypeTag = metaSurfTag;
 
-            // If the native prefab already contains a Rigidbody (e.g. the Toy Wagon),
-            // freeze it immediately so it doesn't fall while in editor mode. The normal
-            // ExitEditorPhysicsMode path unfreezes it when gameplay starts.
+            // if native prefab has a Rigidbody (e.g. Toy Wagon), freeze it immediately; ExitEditorPhysicsMode unfreezes
             if (keepHierarchy && root.GetComponent<Rigidbody>() != null)
             {
                 leo.physicsMode = PhysicsMode.Rigidbody;
                 PhysicsObjectManager.FreezeRigidBodyObject(leo, true);
-                // Disable native scripts (Skateboard etc.) so they don't fight our frozen
-                // transform while in editor mode. Re-enabled by ExitEditorPhysicsMode.
                 PhysicsObjectManager.DisableKeepHierarchyBehaviours(leo);
                 leo.isPhysicsManaged = true;
-                // AmplifyImpostor LODs have no baked texture in a runtime-placed context
-                // and render as invisible at distance. Force the highest LOD at all times.
+                // AmplifyImpostor LODs render invisible at distance without baked texture; force highest LOD
                 foreach (var lg in root.GetComponentsInChildren<LODGroup>(true))
                     lg.enabled = false;
             }
@@ -232,7 +212,7 @@ namespace BabyBlocks
         {
             var go = GameObject.CreatePrimitive(type);
             go.transform.position = position;
-            go.name  = $"LEO_{type}";
+            go.name = $"LEO_{type}";
             go.layer = PropLayer;
             if (_propsContainer != null)
                 go.transform.SetParent(_propsContainer.transform, true);
@@ -247,14 +227,13 @@ namespace BabyBlocks
             return leo;
         }
 
-        internal const int PropLayer        = 16; // "Props" layer — required for the surface Tag to work
-        internal const int PropsDynamicLayer = 24; // "PropsDynamic" layer — used by all native kickable/dynamic props
+        internal const int PropLayer = 16; // "Props" layer — required for surface tag to work
+        internal const int PropsDynamicLayer = 24; // "PropsDynamic" layer — matches native kickable/dynamic props
 
         public void Remove(LevelEditorObject obj)
         {
             if (obj == null) return;
-            // Dissolve the entire group before removing; DissolveGroup moves all
-            // siblings back to _propsContainer so they survive the deletion.
+            // dissolve entire group first; DissolveGroup moves siblings back to _propsContainer so they survive
             int gid = obj.groupId > 0 ? obj.groupId
                     : obj.physicsGroupId > 0 ? obj.physicsGroupId : 0;
             if (gid > 0) GroupManager.DissolveGroup(gid);
@@ -266,8 +245,7 @@ namespace BabyBlocks
 
         public static Vector2Int GetChunkCoord(Vector3 position)
         {
-            // X is periodic — wrap into [0, WorldLoopSize).
-            // Z is the forward/progress axis and is not periodic; clamp to chunk grid.
+            // X periodic wraps into [0,WorldLoopSize); Z is not periodic, clamp to chunk grid
             float wrappedX = Mathf.Repeat(position.x + WorldLoopSize * 0.5f, WorldLoopSize);
             int chunkX = Mathf.Clamp(Mathf.FloorToInt(wrappedX / ChunkWorldSize), 0, ChunksPerAxis - 1);
             int chunkZ = Mathf.Clamp(Mathf.FloorToInt(position.z / ChunkWorldSize), 0, ChunksPerAxis - 1);
@@ -289,10 +267,10 @@ namespace BabyBlocks
             if (obj == null) return;
             obj.loopBasePosition = obj.transform.position;
             obj.loopBaseRotation = obj.transform.rotation;
-            obj.loopBaseScale    = obj.transform.localScale;
+            obj.loopBaseScale = obj.transform.localScale;
             obj.hasLoopBasePosition = true;
             obj.hasLoopBaseRotation = true;
-            obj.hasLoopBaseScale    = true;
+            obj.hasLoopBaseScale = true;
             UpdateChunkData(obj, obj.loopBasePosition);
         }
 
@@ -304,8 +282,7 @@ namespace BabyBlocks
                 SyncLoopBase(obj);
         }
 
-        // Dead-zone around each loop boundary so the ~512-unit snap doesn't fire
-        // repeatedly when the reference oscillates right at the ±256 edge.
+        // dead-zone so ~512-unit snap doesn't fire repeatedly when reference oscillates at ±256 edge
         const float LoopHysteresis = 16f;
 
         void Update()
@@ -376,29 +353,23 @@ namespace BabyBlocks
             if (obj == null) return;
             obj.loopBasePosition = position;
             obj.loopBaseRotation = obj.transform.rotation;
-            obj.loopBaseScale    = obj.transform.localScale;
+            obj.loopBaseScale = obj.transform.localScale;
             obj.hasLoopBasePosition = true;
             obj.hasLoopBaseRotation = true;
-            obj.hasLoopBaseScale    = true;
+            obj.hasLoopBaseScale = true;
             UpdateChunkData(obj, position);
         }
 
         Vector3 GetLoopedPosition(Vector3 basePosition, Vector3 referencePosition)
         {
-            // Snap to the nearest integer multiple of WorldLoopSize so the result is always
-            // exactly basePosition.x + n*WorldLoopSize (n ∈ ℤ). This gives the same float
-            // every frame regardless of camera micro-movement, preventing sub-unit position
-            // jitter that causes position-based material shaders to flicker.
+            // snap to nearest integer multiple of WorldLoopSize so the result is the same float every frame; prevents shader flicker
             float n = Mathf.Round((referencePosition.x - basePosition.x) / WorldLoopSize);
             return new Vector3(basePosition.x + n * WorldLoopSize, basePosition.y, basePosition.z);
         }
 
         Transform GetRenderReference()
         {
-            // When the fly cam is active, use its virtual camera transform directly.
-            // Camera.main in fly-cam mode is the physical Cinemachine camera which can sit
-            // near the player (z≈289) while the virtual fly cam is at the edit site (z≈801),
-            // causing every object to ghost-loop to the wrong position.
+            // use virtual fly cam, not Camera.main: Cinemachine sits near player while fly cam may be far away
             var player = PlayerMovement.me;
             if (player != null && FlyCamController.FlyCamActive && player.flyCam != null)
                 return player.flyCam.transform;

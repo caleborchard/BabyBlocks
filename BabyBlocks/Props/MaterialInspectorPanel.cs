@@ -17,15 +17,13 @@ namespace BabyBlocks
         static string _inspectedName = "";
         static Vector2 _scroll;
 
-        const float HeaderH   = 22f;
-        const float Pad       = 6f;
+        const float HeaderH = 22f;
+        const float Pad = 6f;
         const float ThumbSize = 48f;
 
-        // ── Toggle ────────────────────────────────────────────────────────────
         public static void Toggle() => _visible = !_visible;
         public static bool Visible  => _visible;
 
-        // ── Main draw entry ───────────────────────────────────────────────────
         public static void DrawGUI()
         {
             if (!_visible) return;
@@ -79,12 +77,11 @@ namespace BabyBlocks
             GUILayout.EndArea();
         }
 
-        // ── Lookup ────────────────────────────────────────────────────────────
         static void FindMaterial(string name)
         {
             _inspectedName = name ?? "";
-            _inspected     = null;
-            _scroll        = Vector2.zero;
+            _inspected = null;
+            _scroll = Vector2.zero;
 
             if (string.IsNullOrEmpty(name)) return;
 
@@ -108,7 +105,6 @@ namespace BabyBlocks
             }
         }
 
-        // ── Property display ──────────────────────────────────────────────────
         static void DrawProperties()
         {
             var mat = _inspected;

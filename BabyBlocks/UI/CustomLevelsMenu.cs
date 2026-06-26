@@ -61,7 +61,7 @@ namespace BabyBlocks.UI
             tab.AddImage(Color.clear, 10f);
 
             _prevPageBtn = tab.AddButton("<", (UnityAction)OnPrevPage);
-            _pageLabel   = tab.AddLabel("1/1");
+            _pageLabel = tab.AddLabel("1/1");
             _nextPageBtn = tab.AddButton(">", (UnityAction)OnNextPage);
 
             for (int i = 0; i < PageSize; i++)
@@ -151,24 +151,12 @@ namespace BabyBlocks.UI
 
             string path = _levelFiles[index];
             LevelEditor.EnsureManager();
-            MelonLoader.MelonLogger.Msg($"[CustomLevels] Loading \"{System.IO.Path.GetFileName(path)}\"" +
-                $"  MaterialsLoaded={MaterialVariantTracker.MaterialsLoaded}" +
-                $"  SourcesLoaded={MaterialCatalog.MaterialSourcesLoaded}" +
-                $"  SourcesLoading={MaterialCatalog.IsLoadingMaterialSources}");
             GpuiPropScanner.ScanGpuiProps();
             MaterialCatalog.InvalidateMaterialSourcesSync();
-            MelonLoader.MelonLogger.Msg($"[CustomLevels] After InvalidateMaterialSources:" +
-                $"  MaterialsLoaded={MaterialVariantTracker.MaterialsLoaded}" +
-                $"  SourcesLoaded={MaterialCatalog.MaterialSourcesLoaded}" +
-                $"  SourcesLoading={MaterialCatalog.IsLoadingMaterialSources}");
             var (ok, _, _) = LevelSaveLoad.Load(path);
-            MelonLoader.MelonLogger.Msg($"[CustomLevels] After Load ok={ok}:" +
-                $"  MaterialsLoaded={MaterialVariantTracker.MaterialsLoaded}" +
-                $"  SourcesLoaded={MaterialCatalog.MaterialSourcesLoaded}");
             if (ok)
             {
                 MaterialVariantTracker.InvalidateMaterialCache();
-                MelonLoader.MelonLogger.Msg($"[CustomLevels] After InvalidateMaterialCache, calling ReapplyAllMaterialOverrides");
                 MaterialCatalog.ReapplyAllMaterialOverrides();
                 Core.LastSavePath = path;
                 Networking.ModNetworking.BroadcastLevelLoad();
@@ -186,7 +174,6 @@ namespace BabyBlocks.UI
             {
                 float until = UnityEngine.Time.realtimeSinceStartup + delay;
                 while (UnityEngine.Time.realtimeSinceStartup < until) yield return null;
-                MelonLoader.MelonLogger.Msg($"[CustomLevels] DeferredReapply after {delay}s");
                 MaterialVariantTracker.InvalidateMaterialCache();
                 MaterialCatalog.ReapplyAllMaterialOverrides();
             }
@@ -196,26 +183,26 @@ namespace BabyBlocks.UI
         {
             if (_prevPageBtn == null || _pageLabel == null || _nextPageBtn == null) return;
 
-            var prevRT  = _prevPageBtn.GetComponent<RectTransform>();
+            var prevRT = _prevPageBtn.GetComponent<RectTransform>();
             var labelRT = _pageLabel.GetComponent<RectTransform>();
-            var nextRT  = _nextPageBtn.GetComponent<RectTransform>();
+            var nextRT = _nextPageBtn.GetComponent<RectTransform>();
             if (prevRT == null || labelRT == null || nextRT == null) return;
 
             var parentRT = prevRT.parent as RectTransform;
-            float pageW  = parentRT != null && parentRT.rect.width > 10f ? parentRT.rect.width : 800f;
+            float pageW = parentRT != null && parentRT.rect.width > 10f ? parentRT.rect.width : 800f;
 
-            float rowY        = prevRT.anchoredPosition.y;
-            const float rowH  = 52f;
+            float rowY = prevRT.anchoredPosition.y;
+            const float rowH = 52f;
             const float arrowW = 90f;
-            float labelW      = pageW - arrowW * 2f;
+            float labelW = pageW - arrowW * 2f;
             const float shift = 2f * (rowH + 10f);
 
             void Place(RectTransform rt, float x, float w)
             {
-                rt.anchorMin        = new Vector2(0f, 1f);
-                rt.anchorMax        = new Vector2(0f, 1f);
-                rt.pivot            = new Vector2(0f, 1f);
-                rt.sizeDelta        = new Vector2(w, rowH);
+                rt.anchorMin = new Vector2(0f, 1f);
+                rt.anchorMax = new Vector2(0f, 1f);
+                rt.pivot = new Vector2(0f, 1f);
+                rt.sizeDelta = new Vector2(w, rowH);
                 rt.anchoredPosition = new Vector2(x, rowY);
             }
 
@@ -230,7 +217,7 @@ namespace BabyBlocks.UI
             if (nextTmp != null) { nextTmp.fontStyle = FontStyles.Bold; nextTmp.ForceMeshUpdate(); }
 
             _pageLabel.alignment = TextAlignmentOptions.Center;
-            _pageLabel.fontSize  = 20f;
+            _pageLabel.fontSize = 20f;
             _pageLabel.ForceMeshUpdate();
 
             foreach (var btn in _levelButtons)
