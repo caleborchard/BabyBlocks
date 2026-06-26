@@ -14,7 +14,7 @@ It's highly recommended that you use the Thunderstore Mod Manager to install thi
 [Join the Baby Steps Modding Discord!](https://discord.gg/fpBQW5cKdE)
 ---
 
-## 📸 Screenshots
+## Screenshots
 
 <p align="center">
   <img src="screenshots/editor.webp" width="32%"/>
@@ -33,7 +33,7 @@ It's highly recommended that you use the Thunderstore Mod Manager to install thi
 
 ---
 
-## ✨ Features
+## Features
 
 - **Works with the [Baby Steps: Multiplayer Mod](https://github.com/caleborchard/Baby-Steps-Multiplayer-Mod-Client)** — edits, prop placement, materials, grouping, physics modes, and custom accessories all sync live between players for collaborative, real-time level building
 - **Prop placement** — browse and place any prop from the game's catalog, organized in a searchable, categorized palette
@@ -49,7 +49,7 @@ It's highly recommended that you use the Thunderstore Mod Manager to install thi
 
 ---
 
-## 🔗 Links & Credits
+## Links & Credits
 
 ### My other Baby Steps projects
 - [Baby Steps: Multiplayer Mod — Client](https://github.com/caleborchard/Baby-Steps-Multiplayer-Mod-Client)
@@ -69,7 +69,7 @@ It's highly recommended that you use the Thunderstore Mod Manager to install thi
 
 ---
 
-## 🙏 Testers & Thanks
+## Testers & Thanks
 
 A huge thank-you to everyone that kept me going:
 
@@ -87,7 +87,7 @@ And to the *Baby Steps* community for the support. ❤️
 
 ---
 
-## 📄 License
+## License
 
 Baby Blocks is released under the [MIT License](LICENSE).
 
