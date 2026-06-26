@@ -1,8 +1,11 @@
 using BabyStepsMenuLib;
 using Il2CppTMPro;
 using MelonLoader.Utils;
+using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.UI;
@@ -18,11 +21,19 @@ namespace BabyBlocks.UI
         private static Button _prevPageBtn;
         private static TMP_Text _pageLabel;
         private static Button _nextPageBtn;
+        private static Button _openFolderBtn;
         private const int PageSize = 9;
         private static int _page;
         private static bool _buttonsReady;
         private static float _lastLoadClickTime = -10f;
         private static float _lastPageClickTime = -10f;
+        private static float _lastFolderClickTime = -10f;
+
+        // Poll the levels folder periodically so the list reflects files added or
+        // removed on disk while the menu is open.
+        private static float _lastScanTime = -10f;
+        private static string _lastScanSignature = "";
+        private const float ScanInterval = 1f;
 
         static string LevelsFolder =>
             Path.Combine(MelonEnvironment.UserDataDirectory, "BabyBlocks", "levels");
@@ -40,20 +51,87 @@ namespace BabyBlocks.UI
 
         public static void Update()
         {
-            if (_buttonsReady || _levelButtons.Count == 0) return;
-
-            _buttonsReady = true;
-            RepositionPaginationRow();
-
-            var backBtn = _menu?.GetFixedButton(0);
-            if (backBtn != null)
+            if (!_buttonsReady)
             {
-                var rt = backBtn.GetComponent<RectTransform>();
-                if (rt != null)
-                    rt.anchoredPosition = new Vector2(rt.anchoredPosition.x, rt.anchoredPosition.y - 135f);
+                if (_levelButtons.Count == 0) return;
+
+                _buttonsReady = true;
+                RepositionPaginationRow();
+
+                var backBtn = _menu?.GetFixedButton(0);
+                var backRT = backBtn?.GetComponent<RectTransform>();
+                var folderRT = _openFolderBtn?.GetComponent<RectTransform>();
+                if (backRT != null && folderRT != null)
+                {
+                    // Match the Back button exactly: reparent the folder button alongside
+                    // it and copy its transform + font so the two are identical in scale
+                    // and style, then stack the folder button one row above Back.
+                    folderRT.SetParent(backRT.parent, false);
+                    folderRT.anchorMin = backRT.anchorMin;
+                    folderRT.anchorMax = backRT.anchorMax;
+                    folderRT.pivot = backRT.pivot;
+                    folderRT.sizeDelta = backRT.sizeDelta;
+                    folderRT.localScale = backRT.localScale;
+
+                    var backTmp = backBtn.GetComponentInChildren<TMP_Text>(true);
+                    var folderTmp = _openFolderBtn.GetComponentInChildren<TMP_Text>(true);
+                    if (backTmp != null && folderTmp != null)
+                    {
+                        folderTmp.font = backTmp.font;
+                        folderTmp.fontSharedMaterial = backTmp.fontSharedMaterial;
+                        folderTmp.enableAutoSizing = backTmp.enableAutoSizing;
+                        folderTmp.fontSize = backTmp.fontSize;
+                        folderTmp.fontSizeMin = backTmp.fontSizeMin;
+                        folderTmp.fontSizeMax = backTmp.fontSizeMax;
+                        folderTmp.fontStyle = backTmp.fontStyle;
+                        folderTmp.alignment = backTmp.alignment;
+                        folderTmp.color = backTmp.color;
+                        folderTmp.ForceMeshUpdate();
+                    }
+
+                    // Place the pair near the bottom of the panel (down is -y here);
+                    // the folder button sits one row above Back.
+                    const float backDownShift = 200f;
+                    float row = backRT.sizeDelta.y + 10f;
+                    float backY = backRT.anchoredPosition.y - backDownShift;
+                    backRT.anchoredPosition = new Vector2(backRT.anchoredPosition.x, backY);
+                    folderRT.anchoredPosition = new Vector2(backRT.anchoredPosition.x, backY + row);
+                }
+
+                RebuildLevelUI();
+                return;
             }
 
-            RebuildLevelUI();
+            // Rescan the folder on an interval; rebuild only when the contents change.
+            float now = Time.realtimeSinceStartup;
+            if (now - _lastScanTime >= ScanInterval)
+            {
+                _lastScanTime = now;
+                if (ScanSignature() != _lastScanSignature)
+                    RebuildLevelUI();
+            }
+        }
+
+        // Cheap fingerprint of the levels folder (file names + write times) used to
+        // detect added/removed/changed files without rebuilding every frame.
+        static string ScanSignature()
+        {
+            try
+            {
+                string folder = LevelsFolder;
+                if (!Directory.Exists(folder)) return "";
+                var files = Directory.GetFiles(folder, "*.bbb", SearchOption.TopDirectoryOnly);
+                System.Array.Sort(files);
+                var sb = new System.Text.StringBuilder();
+                foreach (var f in files)
+                {
+                    sb.Append(f).Append('|');
+                    try { sb.Append(File.GetLastWriteTimeUtc(f).Ticks); } catch { }
+                    sb.Append(';');
+                }
+                return sb.ToString();
+            }
+            catch { return ""; }
         }
 
         static void ConfigureLevelsTab(MenuInjectionLibrary.TabBuilder tab)
@@ -74,6 +152,30 @@ namespace BabyBlocks.UI
                 btn.colors = cb;
                 _levelButtons.Add(btn);
             }
+
+            _openFolderBtn = tab.AddButton("Open Levels Folder", (UnityAction)OnOpenFolder);
+        }
+
+        static void OnOpenFolder()
+        {
+            // The injected button fires its click twice; debounce like the other buttons.
+            float now = Time.realtimeSinceStartup;
+            if (now - _lastFolderClickTime < 0.5f) return;
+            _lastFolderClickTime = now;
+
+            string folder = LevelsFolder;
+            try { Directory.CreateDirectory(folder); } catch { }
+            try
+            {
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    Process.Start("explorer.exe", folder);
+                else
+                    Process.Start(new ProcessStartInfo("xdg-open", folder) { UseShellExecute = false });
+            }
+            catch (Exception ex)
+            {
+                MelonLoader.MelonLogger.Warning($"[BabyBlocks] Could not open levels folder: {ex.Message}");
+            }
         }
 
         static void RebuildLevelUI()
@@ -90,6 +192,8 @@ namespace BabyBlocks.UI
                 }
             }
             catch { }
+
+            _lastScanSignature = ScanSignature();
 
             int pageCount = Mathf.Max(1, Mathf.CeilToInt(_levelFiles.Count / (float)PageSize));
             _page = Mathf.Clamp(_page, 0, pageCount - 1);
