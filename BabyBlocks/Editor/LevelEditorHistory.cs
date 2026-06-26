@@ -227,6 +227,13 @@ namespace BabyBlocks
                     _members[i].transform.localPosition = localPositions[i];
                 }
                 GroupManager.SetGroupDisplayScale(_groupId, displayScale);
+                // Re-sync each member's loop base pose to the restored world positions, or
+                // LevelEditorManager.Update's chunk-loop snaps them back to the pre-undo base
+                // (same revert that broke text-box group scaling). Matches TransformAction.
+                var lem = LevelEditorManager.Instance;
+                if (lem != null)
+                    foreach (var m in _members)
+                        if (m != null) lem.SyncLoopBase(m);
                 // Re-select a live member so the gizmo refreshes.
                 var live = _members.FirstOrDefault(m => m != null);
                 if (live != null) LevelEditor.Select(live);

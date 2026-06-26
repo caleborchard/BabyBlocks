@@ -1804,6 +1804,21 @@ namespace BabyBlocks.UI
                     break;
                 }
             }
+
+            // Scaling a group moves its members' world positions (via the group-root
+            // scale + orbit, or the member path). Re-sync each member's loop base pose so
+            // LevelEditorManager.Update's chunk-loop — which forces transform.position back
+            // to loopBasePosition every frame for non-physics props — keeps them at the new
+            // positions instead of snapping them back to the pre-scale spacing. The gizmo does
+            // the equivalent via SyncLoopBases at drag end; the text-box position fields already
+            // SyncLoopBase, but the scale fields previously did not (causing "shrink but stay apart").
+            if (i >= 3 && i <= 5 && _target.groupId > 0)
+            {
+                var lem = LevelEditorManager.Instance;
+                if (lem != null)
+                    foreach (var m in GetGroupMembers())
+                        if (m != null) lem.SyncLoopBase(m);
+            }
         }
 
         // Captures a full before-snapshot of the group scale state for undo.
@@ -1826,27 +1841,6 @@ namespace BabyBlocks.UI
         void CommitGroupScaleSnapshot()
         {
             if (_grpScSnapGroupId <= 0 || _grpScSnapMembers == null) return;
-
-            // ── TEMP DIAGNOSTIC: group-scale "stay apart" glitch ──────────────────
-            // Logs which path ran (rootNull => member path; otherwise display-scale path)
-            // and each member's position/scale BEFORE vs AFTER the gesture, so we can see
-            // whether the props actually moved together. Remove once the glitch is fixed.
-            MelonLoader.MelonLogger.Msg(
-                $"[GrpScaleDbg] gid={_grpScSnapGroupId} rootNull={_grpScSnapRoot == null} " +
-                $"pivot={GizmoRenderer.PivotPosition} startDispScale={_grpScSnapDisplayScale} " +
-                $"curDispScale={GroupManager.GetGroupDisplayScale(_grpScSnapGroupId)}");
-            for (int dbg = 0; dbg < _grpScSnapMembers.Length; dbg++)
-            {
-                var dm = _grpScSnapMembers[dbg];
-                if (dm == null) continue;
-                var sPos = dbg < (_grpScSnapMemberWorldPos?.Length ?? 0) ? _grpScSnapMemberWorldPos[dbg] : Vector3.zero;
-                var sScl = dbg < (_grpScSnapMemberScales?.Length   ?? 0) ? _grpScSnapMemberScales[dbg]   : Vector3.zero;
-                MelonLoader.MelonLogger.Msg(
-                    $"[GrpScaleDbg]   m{dbg} pos {sPos} -> {dm.transform.position} | " +
-                    $"localScale {sScl} -> {dm.transform.localScale}");
-            }
-            // ──────────────────────────────────────────────────────────────────────
-
             LevelEditorHistory.PushGroupScale(_grpScSnapGroupId, _grpScSnapRoot, _grpScSnapMembers,
                 _grpScSnapRootPos, _grpScSnapDisplayScale,
                 _grpScSnapMemberScales, _grpScSnapMemberLocalPos);
@@ -1928,6 +1922,17 @@ namespace BabyBlocks.UI
             else
             {
                 workT.localScale = scale;
+            }
+
+            // A group scale syncs loopBasePosition each frame (see SetVal); on abort we must
+            // re-sync it to these restored positions, or the chunk-loop pulls members back to
+            // the last dragged spot instead of the snapshot.
+            if (_target.groupId > 0)
+            {
+                var lem = LevelEditorManager.Instance;
+                if (lem != null)
+                    foreach (var m in GetGroupMembers())
+                        if (m != null) lem.SyncLoopBase(m);
             }
         }
 
