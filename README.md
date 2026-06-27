@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/banner.webp" alt="BabyBlocks" width="100%"/>
+  <img src="https://raw.githubusercontent.com/caleborchard/BabyBlocks/refs/heads/main/screenshots/banner.webp" alt="BabyBlocks" width="100%"/>
 </p>
 
 # Baby Blocks: A Level Editor for *Baby Steps*
@@ -17,18 +17,18 @@ It's highly recommended that you use the Thunderstore Mod Manager to install thi
 ## Screenshots
 
 <p align="center">
-  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/editor.webp" width="32%"/>
-  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/collaborative.webp" width="32%"/>
-  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/hat.webp" width="32%"/>
+  <img src="https://raw.githubusercontent.com/caleborchard/BabyBlocks/refs/heads/main/screenshots/editor.webp" width="32%"/>
+  <img src="https://raw.githubusercontent.com/caleborchard/BabyBlocks/refs/heads/main/screenshots/collaborative.webp" width="32%"/>
+  <img src="https://raw.githubusercontent.com/caleborchard/BabyBlocks/refs/heads/main/screenshots/hat.webp" width="32%"/>
 </p>
 <p align="center">
-  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/level1.webp" width="32%"/>
-  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/level2.webp" width="32%"/>
-  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/level3.webp" width="32%"/>
+  <img src="https://raw.githubusercontent.com/caleborchard/BabyBlocks/refs/heads/main/screenshots/level1.webp" width="32%"/>
+  <img src="https://raw.githubusercontent.com/caleborchard/BabyBlocks/refs/heads/main/screenshots/level2.webp" width="32%"/>
+  <img src="https://raw.githubusercontent.com/caleborchard/BabyBlocks/refs/heads/main/screenshots/level3.webp" width="32%"/>
 </p>
 <p align="center">
-  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/levelmenu.webp" width="21%"/>
-  <img src="https://github.com/caleborchard/BabyBlocks/blob/main/screenshots/grabable.webp" width="24%"/>
+  <img src="https://raw.githubusercontent.com/caleborchard/BabyBlocks/refs/heads/main/screenshots/levelmenu.webp" width="21%"/>
+  <img src="https://raw.githubusercontent.com/caleborchard/BabyBlocks/refs/heads/main/screenshots/grabable.webp" width="24%"/>
 </p>
 
 ---
